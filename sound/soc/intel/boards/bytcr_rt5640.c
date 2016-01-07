@@ -45,11 +45,6 @@
 
 #define RT5640_GPIO_NA			-1
 
-enum jack_int_select {
-	JACK_INT1, /* AUDIO_INT */
-	JACK_INT2, /* JACK_DET */
-};
-
 enum jack_bp_select {
 	JACK_BP_CODEC,
 	JACK_BP_MICBIAS,
@@ -76,7 +71,6 @@ struct byt_drvdata {
 	struct snd_soc_codec *codec;
 
 	int jack_active_low;
-	enum jack_int_select jack_int_sel;
 	enum jack_bp_select jack_bp_sel;
 
 	struct snd_soc_jack jack;
@@ -262,7 +256,7 @@ static inline bool byt_hs_inserted(struct byt_drvdata *drvdata)
 	const struct gpio_desc *desc;
 	int gpio;
 
-	if (drvdata->jack_int_sel == JACK_INT1)
+	if (drvdata->jack_bp_sel == JACK_BP_MICBIAS)
 		gpio = drvdata->gpios.jd_int_gpio;
 	else /* JACK_INT2 */
 		gpio = drvdata->gpios.jd_int2_gpio;
@@ -273,9 +267,9 @@ static inline bool byt_hs_inserted(struct byt_drvdata *drvdata)
 	if (drvdata->jack_active_low)
 		val = !val;
 
-	pr_info("%s: val = %d (pin = %d, active_low = %d, jack_int_sel = %d)\n",
+	pr_info("%s: val = %d (pin = %d, active_low = %d, jack_bp_sel = %d)\n",
 			__func__, val, gpio, drvdata->jack_active_low,
-			drvdata->jack_int_sel);
+			drvdata->jack_bp_sel);
 
 	return val;
 }
@@ -381,8 +375,7 @@ static bool byt_jack_check(struct byt_drvdata *drvdata, bool is_recheck,
 			} else if (status == RT5640_HEADSET_DET) {
 				pr_info("%s: Headset present.\n", __func__);
 				byt_set_mic_bias_ldo(codec, true);
-				if (drvdata->jack_bp_sel ==
-						JACK_BP_CODEC)
+				if (drvdata->jack_bp_sel == JACK_BP_CODEC)
 					rt5640_enable_ovcd_interrupt(codec,
 							true);
 				jack->status |= SND_JACK_HEADSET;
@@ -398,8 +391,7 @@ static bool byt_jack_check(struct byt_drvdata *drvdata, bool is_recheck,
 				jack->status &= ~SND_JACK_HEADSET;
 				changed = true;
 				byt_set_mic_bias_ldo(codec, false);
-				if (drvdata->jack_bp_sel ==
-						JACK_BP_CODEC)
+				if (drvdata->jack_bp_sel == JACK_BP_CODEC)
 					rt5640_enable_ovcd_interrupt(codec,
 							false);
 				pr_info("%s: Headset removed.\n", __func__);
@@ -431,7 +423,7 @@ static void byt_jack_recheck(struct work_struct *work)
 }
 
 /* Interrupt on micbias (JACK_DET_BAK/HOOK_INT) */
-static int byt_micbias_interrupt(void *data)
+static int byt_bp_detection_interrupt(void *data)
 {
 	struct byt_drvdata *drvdata = (struct byt_drvdata *)data;
 	struct snd_soc_jack *jack = &drvdata->jack;
@@ -451,17 +443,11 @@ static int byt_micbias_interrupt(void *data)
 	return jack->status;
 }
 
-/* Interrupt on int2 (JACK_DET) */
-static int byt_jack_int2_interrupt(void *data)
+/* Jack detection Interrupt */
+static int byt_jack_detection_interrupt(void *data)
 {
 	struct byt_drvdata *drvdata = (struct byt_drvdata *)data;
 	struct snd_soc_jack *jack = &drvdata->jack;
-
-	if ((drvdata->jack_bp_sel == JACK_BP_MICBIAS) &&
-			(drvdata->jack_int_sel == JACK_INT1)) {
-		pr_debug("%s: INT2 not used. Returning...\n", __func__);
-		return jack->status;
-	}
 
 	mutex_lock(&drvdata->jack_mlock);
 	pr_debug("%s: Enter (jack->status = %d).\n", __func__, jack->status);
@@ -471,42 +457,7 @@ static int byt_jack_int2_interrupt(void *data)
 	if (cancel_delayed_work_sync(&drvdata->jack_recheck))
 		pr_debug("%s: jack-recheck interrupted!\n", __func__);
 
-	/* Check for jack-events */
 	byt_jack_check(drvdata, false, false);
-
-	mutex_unlock(&drvdata->jack_mlock);
-	return jack->status;
-}
-
-/* Interrupt on int1 (AUDIO_INT) */
-static int byt_jack_int1_interrupt(void *data)
-{
-	struct byt_drvdata *drvdata = (struct byt_drvdata *)data;
-	struct snd_soc_jack *jack = &drvdata->jack;
-
-	if ((drvdata->jack_bp_sel == JACK_BP_MICBIAS) &&
-			(drvdata->jack_int_sel == JACK_INT2)) {
-		pr_debug("%s: INT1 not used. Returning...\n", __func__);
-		return jack->status;
-	}
-
-	mutex_lock(&drvdata->jack_mlock);
-	pr_debug("%s: Enter (jack->status = %d).\n", __func__, jack->status);
-
-	if (cancel_delayed_work_sync(&drvdata->bp_recheck))
-		pr_debug("%s: bp-recheck interrupted!\n", __func__);
-	if (drvdata->jack_bp_sel == JACK_BP_MICBIAS)
-		if (cancel_delayed_work_sync(&drvdata->jack_recheck))
-			pr_debug("%s: jack-recheck interrupted!\n", __func__);
-
-	/* Check for button-events if a headset is present (codec-mode only) */
-	if (drvdata->jack_bp_sel == JACK_BP_CODEC) {
-		if (jack->status & SND_JACK_MICROPHONE)
-			if (byt_bp_check(drvdata, false))
-				snd_soc_jack_report(jack, jack->status,
-						SND_JACK_BTN_0);
-	} else /* In micbias-mode we use int1 for jack-check */
-		byt_jack_check(drvdata, false, false);
 
 	mutex_unlock(&drvdata->jack_mlock);
 	return jack->status;
@@ -557,6 +508,7 @@ static void byt_init_gpios(struct snd_soc_codec *codec,
 			pr_warn("%s: GPIOs - JD-int2: Not present!\n", __func__);
 		}
 
+		/* this GPIO is used for MICBIAS button detection */
 		desc = devm_gpiod_get_index(codec->dev, NULL, RT5640_GPIO_JD_BUTTONS, GPIOD_ASIS);
 		if (!IS_ERR(desc)) {
 			drvdata->gpios.jd_buttons_gpio = desc_to_gpio(desc);
@@ -601,95 +553,81 @@ static void byt_init_gpios(struct snd_soc_codec *codec,
 static struct snd_soc_jack_gpio jack_gpio_int1[] = {
 	{
 		.name                   = "byt-int1-int",
-		.report                 = 0, /* Set dynamically */
 		.debounce_time          = BYT_JD_INTR_DEBOUNCE,
-		.jack_status_check      = byt_jack_int1_interrupt,
 	},
 };
 
 static struct snd_soc_jack_gpio jack_gpio_int2[] = {
 	{/*jack detection*/
 		.name                   = "byt-int2-int",
-		.report                 = SND_JACK_HEADSET,
 		.debounce_time          = BYT_JD_INTR_DEBOUNCE,
-		.jack_status_check      = byt_jack_int2_interrupt,
 	},
 };
 
-static struct snd_soc_jack_gpio jack_gpio_micbias[] = {
-	{
-		.name                   = "byt-micbias-int",
-		.report                 = SND_JACK_BTN_0,
-		.debounce_time          = BYT_JD_INTR_DEBOUNCE,
-		.jack_status_check      = byt_micbias_interrupt,
-	},
-};
 
 static int byt_config_jack_gpios(struct byt_drvdata *drvdata)
 {
-	int int_sel = drvdata->jack_int_sel;
 	int bp_sel = drvdata->jack_bp_sel;
 	int int1_gpio = drvdata->gpios.jd_int_gpio;
 	int int2_gpio = drvdata->gpios.jd_int2_gpio;
 	int bp_gpio = drvdata->gpios.jd_buttons_gpio;
+	bool int1_en = false;
+	bool int2_en = false;
 
-	pr_info("%s: Jack-GPIO config: jack_bp_sel = %d, jack_int_sel = %d\n",
-		__func__, bp_sel, int_sel);
+	pr_info("%s: Jack-GPIO config: jack_bp_sel = %s\n",
+			__func__, (bp_sel == JACK_BP_MICBIAS)? "MICBIAS" : "CODEC");
 
-	if ((bp_sel == JACK_BP_CODEC) && (int_sel == JACK_INT1)) {
-		pr_err("%s: Unsupported jack-config (jack_bp_sel = %d, jack_int_sel = %d)!\n",
-			__func__, JACK_BP_CODEC, JACK_INT1);
-		return -EINVAL;
-	}
-
-	if ((bp_sel == JACK_BP_MICBIAS) && (bp_gpio == RT5640_GPIO_NA)) {
-		pr_err("%s: Micbias-GPIO missing (jack_bp_sel = %d, jack_int_sel = %d)!\n",
-			__func__, JACK_BP_MICBIAS, int_sel);
-		return -EINVAL;
-	}
-
-	if (((int_sel == JACK_INT1) && (int1_gpio == RT5640_GPIO_NA)) ||
-		((int_sel == JACK_INT2) && (int2_gpio == RT5640_GPIO_NA))) {
-		pr_err("%s: Missing jack-GPIO (jack_bp_sel = %d, jack_int_sel = %d, )\n",
-			__func__, bp_sel, int_sel);
-		return -EINVAL;
-	}
-
-
-	if ((int_sel == JACK_INT1) ||
-		(bp_sel == JACK_BP_CODEC && (byt_rt5640_quirk & BYT_RT5640_JACK_BP_EN))) {
-
-		jack_gpio_int1[0].gpio = int1_gpio;
-		jack_gpio_int1[0].data = drvdata;
-		jack_gpio_int1[0].report = (int_sel == JACK_INT1) ?
-				SND_JACK_HEADSET : SND_JACK_BTN_0;
-		pr_err("%s: Add jack-GPIO 1 (%d).\n", __func__, int1_gpio);
-		if (snd_soc_jack_add_gpios(&drvdata->jack, 1,
-					&jack_gpio_int1[0])) {
-			pr_err("%s: Failed to add jack-GPIO 1!\n", __func__);
-			return -EIO;
+	/* int1 is always used depending the configuration of button detecion */
+	jack_gpio_int1[0].gpio = int1_gpio;
+	jack_gpio_int1[0].data = drvdata;
+	if (bp_sel == JACK_BP_MICBIAS) { /* int1 is used for jack detection */
+		jack_gpio_int1[0].report = SND_JACK_HEADSET;
+		jack_gpio_int1[0].jack_status_check = byt_jack_detection_interrupt;
+		int1_en = true;
+	} else { /* int1 is used for button */
+		if (byt_rt5640_quirk & BYT_RT5640_JACK_BP_EN) {
+			jack_gpio_int1[0].report = SND_JACK_BTN_0;
+			jack_gpio_int1[0].jack_status_check = byt_bp_detection_interrupt;
+			int1_en = true;
 		}
 	}
-	if (int_sel == JACK_INT2) {
+
+	/* setting int2 */
+	jack_gpio_int2[0].data = drvdata;
+	if (bp_sel == JACK_BP_MICBIAS) { /* int2 is for bp micbias */
+		if (byt_rt5640_quirk & BYT_RT5640_JACK_BP_EN) {
+			jack_gpio_int2[0].gpio = bp_gpio; /*this is micbias GPIO */
+			jack_gpio_int2[0].report = SND_JACK_BTN_0;
+			jack_gpio_int2[0].jack_status_check = byt_bp_detection_interrupt;
+			int2_en = true;
+		}
+	} else {
 		jack_gpio_int2[0].gpio = int2_gpio;
-		jack_gpio_int2[0].data = drvdata;
-		pr_err("%s: Add jack-GPIO 2 (%d).\n", __func__, int2_gpio);
+		jack_gpio_int2[0].report = SND_JACK_HEADSET;
+		jack_gpio_int2[0].jack_status_check = byt_jack_detection_interrupt;
+		int2_en = true;
+	}
+
+	/* adding gpios */
+	if (int1_en) {
+		if (snd_soc_jack_add_gpios(&drvdata->jack, 1,
+				&jack_gpio_int1[0])) {
+			pr_err("%s: Failed to add jack-GPIO %d!\n", __func__, jack_gpio_int1[0].gpio);
+			return -EIO;
+		} else
+			pr_info("%s: Add jack-GPIO %d (%s).\n", __func__, jack_gpio_int1[0].gpio,
+				(bp_sel == JACK_BP_MICBIAS) ? "jack detection" : "button detection");
+	}
+
+
+	if (int2_en) {
 		if (snd_soc_jack_add_gpios(&drvdata->jack, 1,
 					&jack_gpio_int2[0])) {
-			pr_err("%s: Failed to add jack-GPIO 2!\n", __func__);
+			pr_err("%s: Failed to add jack-GPIO %d!\n", __func__, jack_gpio_int2[0].gpio);
 			return -EIO;
-		}
-	}
-
-	if ((byt_rt5640_quirk & BYT_RT5640_JACK_BP_EN) && bp_sel == JACK_BP_MICBIAS) {
-		jack_gpio_micbias[0].gpio = bp_gpio;
-		jack_gpio_micbias[0].data = drvdata;
-		pr_debug("%s: Add micbias-GPIO (%d).\n", __func__, bp_gpio);
-		if (snd_soc_jack_add_gpios(&drvdata->jack, 1,
-					&jack_gpio_micbias[0])) {
-			pr_err("%s: Failed to add micbias-GPIO!\n", __func__);
-			return -EIO;
-		}
+		} else
+			pr_err("%s: Add jack-GPIO %d (%s).\n", __func__, jack_gpio_int2[0].gpio,
+				(bp_sel == JACK_BP_MICBIAS) ?  "button detection" : "jack detection");
 	}
 
 	return 0;
@@ -1091,11 +1029,6 @@ static int snd_byt_rt5640_mc_probe(struct platform_device *pdev)
 			drvdata->jack_active_low = 1;
 		else
 			drvdata->jack_active_low = 0;
-
-		if (byt_rt5640_quirk & BYT_RT5640_JACK_INT1)
-			drvdata->jack_int_sel = JACK_INT1;
-		else
-			drvdata->jack_int_sel = JACK_INT2;
 
 		if (byt_rt5640_quirk & BYT_RT5640_JACK_BP_CODEC)
 			drvdata->jack_bp_sel = JACK_BP_CODEC;
