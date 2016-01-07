@@ -42,6 +42,8 @@ enum {
 #define BYT_RT5640_JACK_INT2	        BIT(22)
 #define BYT_RT5640_JACK_BP_CODEC	BIT(23)
 #define BYT_RT5640_JACK_BP_MICBIAS	BIT(24)
+#define BYT_RT5640_JACK_DET_PIN2	BIT(25)  /* default 0 */
+#define BYT_RT5640_JACK_BP_EN		BIT(26)
 
 
 static unsigned long byt_rt5640_quirk = BYT_RT5640_DMIC1_MAP |
@@ -64,7 +66,8 @@ static const struct dmi_system_id byt_rt5640_quirk_table[] = {
 						 BYT_RT5640_JACK_DET_EN |
 						 BYT_RT5640_JACK_INT1 |
 						 BYT_RT5640_JACK_BP_MICBIAS |
-						 BYT_RT5640_MCLK_EN),
+						 BYT_RT5640_MCLK_EN |
+						 BYT_RT5640_JACK_DET_PIN2),
 	},
 	{
 		.callback = byt_rt5640_quirk_cb,

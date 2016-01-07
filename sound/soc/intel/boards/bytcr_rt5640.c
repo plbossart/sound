@@ -93,21 +93,21 @@ struct byt_drvdata {
 
 static inline struct snd_soc_dai *byt_get_codec_dai(struct snd_soc_card *card)
 {
-        int i;
+	int i;
 
 	for (i = 0; i < card->num_rtd; i++) {
 		struct snd_soc_pcm_runtime *rtd;
 
 		rtd = card->rtd + i;
 		if (!strncmp(rtd->codec_dai->name, BYT_CODEC_DAI,
-			     strlen(BYT_CODEC_DAI)))
+					strlen(BYT_CODEC_DAI)))
 			return rtd->codec_dai;
 	}
 	return NULL;
 }
 
 static int platform_clock_control(struct snd_soc_dapm_widget *w,
-				struct snd_kcontrol *k, int  event)
+		struct snd_kcontrol *k, int  event)
 {
 	struct snd_soc_dapm_context *dapm = w->dapm;
 	struct snd_soc_card *card = dapm->card;
@@ -117,7 +117,7 @@ static int platform_clock_control(struct snd_soc_dapm_widget *w,
 	codec_dai = byt_get_codec_dai(card);
 	if (!codec_dai) {
 		dev_err(card->dev,
-			"Codec dai not found; Unable to set platform clock\n");
+				"Codec dai not found; Unable to set platform clock\n");
 		return -EIO;
 	}
 
@@ -125,32 +125,32 @@ static int platform_clock_control(struct snd_soc_dapm_widget *w,
 
 		if (byt_rt5640_quirk & BYT_RT5640_MCLK_EN) {
 			ret = vlv2_plat_configure_clock(VLV2_PLT_CLK_AUDIO,
-						VLV2_PLT_CLK_CONFG_FORCE_ON);
+					VLV2_PLT_CLK_CONFG_FORCE_ON);
 			if (ret < 0) {
 				dev_err(card->dev,
-					"could not configure MCLK state");
+						"could not configure MCLK state");
 				return ret;
 			}
 		}
 		ret = snd_soc_dai_set_sysclk(codec_dai, RT5640_SCLK_S_PLL1,
-					48000 * 512,
-					SND_SOC_CLOCK_IN);
+				48000 * 512,
+				SND_SOC_CLOCK_IN);
 	} else {
 		/* Set codec clock source to internal clock before
 		   turning off the platform clock. Codec needs clock
 		   for Jack detection and button press */
 
 		ret = snd_soc_dai_set_sysclk(codec_dai, RT5640_SCLK_S_RCCLK,
-					0,
-					SND_SOC_CLOCK_IN);
+				0,
+				SND_SOC_CLOCK_IN);
 		if (!ret) {
 			if (byt_rt5640_quirk & BYT_RT5640_MCLK_EN) {
 				ret = vlv2_plat_configure_clock(
-					VLV2_PLT_CLK_AUDIO,
-					VLV2_PLT_CLK_CONFG_FORCE_OFF);
+						VLV2_PLT_CLK_AUDIO,
+						VLV2_PLT_CLK_CONFG_FORCE_OFF);
 				if (ret) {
 					dev_err(card->dev,
-						"could not configure MCLK state");
+							"could not configure MCLK state");
 					return ret;
 				}
 			}
@@ -246,10 +246,10 @@ static inline void byt_set_mic_bias_ldo(struct snd_soc_codec *codec,
 	struct snd_soc_dapm_context *dapm;
 	dapm = snd_soc_codec_get_dapm(codec);
 	if (enable) {
-		byt_force_enable_pin(codec, "micbias1", true);
+		byt_force_enable_pin(codec, "MICBIAS1", true);
 		byt_force_enable_pin(codec, "LDO2", true);
 	} else {
-		byt_force_enable_pin(codec, "micbias1", false);
+		byt_force_enable_pin(codec, "MICBIAS1", false);
 		byt_force_enable_pin(codec, "LDO2", false);
 	}
 
@@ -297,7 +297,7 @@ static int byt_bp_check(struct byt_drvdata *drvdata, bool is_recheck)
 	}
 
 	if (((val == 0) && !(jack->status & SND_JACK_BTN_0)) ||
-		((val > 0) && (jack->status & SND_JACK_BTN_0))) {
+			((val > 0) && (jack->status & SND_JACK_BTN_0))) {
 		pr_debug("%s: No change (%d).\n", __func__, val);
 		return false;
 	}
@@ -315,7 +315,7 @@ static int byt_bp_check(struct byt_drvdata *drvdata, bool is_recheck)
 		if (!is_recheck) {
 			pr_debug("%s: Button press (preliminary).\n", __func__);
 			schedule_delayed_work(&drvdata->bp_recheck,
-				drvdata->t_buttons_recheck);
+					drvdata->t_buttons_recheck);
 			return false;
 		} else {
 			jack->status |= SND_JACK_BTN_0;
@@ -540,57 +540,60 @@ static void byt_init_gpios(struct snd_soc_codec *codec,
 		pr_err("%s: GPIOs - JD-int: Not present!\n", __func__);
 	}
 
-	desc = devm_gpiod_get_index(codec->dev, NULL, RT5640_GPIO_JD_INT2, GPIOD_ASIS);
-	if (!IS_ERR(desc)) {
-		drvdata->gpios.jd_int2_gpio = desc_to_gpio(desc);
-		byt_export_gpio(desc, "JD-int2");
+	/* FIXME: Define which GPIOS should be enabled */
+	if (byt_rt5640_quirk & BYT_RT5640_JACK_BP_EN) {
+		desc = devm_gpiod_get_index(codec->dev, NULL, RT5640_GPIO_JD_INT2, GPIOD_ASIS);
+		if (!IS_ERR(desc)) {
+			drvdata->gpios.jd_int2_gpio = desc_to_gpio(desc);
+			byt_export_gpio(desc, "JD-int2");
 
-		pr_info("%s: GPIOs - JD-int2: %d (pol = %d, val = %d)\n",
-				__func__, drvdata->gpios.jd_int2_gpio,
-				gpiod_is_active_low(desc), gpiod_get_value(desc));
+			pr_info("%s: GPIOs - JD-int2: %d (pol = %d, val = %d)\n",
+					__func__, drvdata->gpios.jd_int2_gpio,
+					gpiod_is_active_low(desc), gpiod_get_value(desc));
 
-		devm_gpiod_put(codec->dev, desc);
-	} else {
-		drvdata->gpios.jd_int2_gpio = RT5640_GPIO_NA;
-		pr_warn("%s: GPIOs - JD-int2: Not present!\n", __func__);
-	}
+			devm_gpiod_put(codec->dev, desc);
+		} else {
+			drvdata->gpios.jd_int2_gpio = RT5640_GPIO_NA;
+			pr_warn("%s: GPIOs - JD-int2: Not present!\n", __func__);
+		}
 
-	desc = devm_gpiod_get_index(codec->dev, NULL, RT5640_GPIO_JD_BUTTONS, GPIOD_ASIS);
-	if (!IS_ERR(desc)) {
-		drvdata->gpios.jd_buttons_gpio = desc_to_gpio(desc);
-		byt_export_gpio(desc, "JD-buttons");
+		desc = devm_gpiod_get_index(codec->dev, NULL, RT5640_GPIO_JD_BUTTONS, GPIOD_ASIS);
+		if (!IS_ERR(desc)) {
+			drvdata->gpios.jd_buttons_gpio = desc_to_gpio(desc);
+			byt_export_gpio(desc, "JD-buttons");
 
-		pr_info("%s: GPIOs - JD-buttons: %d (pol = %d, val = %d)\n",
-				__func__, drvdata->gpios.jd_buttons_gpio,
-				gpiod_is_active_low(desc), gpiod_get_value(desc));
+			pr_info("%s: GPIOs - JD-buttons: %d (pol = %d, val = %d)\n",
+					__func__, drvdata->gpios.jd_buttons_gpio,
+					gpiod_is_active_low(desc), gpiod_get_value(desc));
 
-		devm_gpiod_put(codec->dev, desc);
-	} else {
-		drvdata->gpios.jd_buttons_gpio = RT5640_GPIO_NA;
-		pr_warn("%s: GPIOs - JD-buttons: Not present!\n", __func__);
-	}
+			devm_gpiod_put(codec->dev, desc);
+		} else {
+			drvdata->gpios.jd_buttons_gpio = RT5640_GPIO_NA;
+			pr_warn("%s: GPIOs - JD-buttons: Not present!\n", __func__);
+		}
 
-	desc = devm_gpiod_get_index(codec->dev, NULL, RT5640_GPIO_I2S_TRISTATE, GPIOD_ASIS);
-	if (!IS_ERR(desc)) {
-		drvdata->gpios.i2s_tristate_en_gpio = desc_to_gpio(desc);
+		desc = devm_gpiod_get_index(codec->dev, NULL, RT5640_GPIO_I2S_TRISTATE, GPIOD_ASIS);
+		if (!IS_ERR(desc)) {
+			drvdata->gpios.i2s_tristate_en_gpio = desc_to_gpio(desc);
 
-		ret = gpiod_direction_output(desc, 0);
-		if (ret)
-			pr_warn("%s: Failed to set direction for GPIO%d (err = %d)!\n",
+			ret = gpiod_direction_output(desc, 0);
+			if (ret)
+				pr_warn("%s: Failed to set direction for GPIO%d (err = %d)!\n",
+						__func__, drvdata->gpios.i2s_tristate_en_gpio,
+						ret);
+
+			byt_export_gpio(desc, "I2S-Tristate-En");
+
+			pr_info("%s: GPIOs - I2S-Tristate-En: %d (pol = %d, val = %d)\n",
 					__func__, drvdata->gpios.i2s_tristate_en_gpio,
-					ret);
+					gpiod_is_active_low(desc), gpiod_get_value(desc));
 
-		byt_export_gpio(desc, "I2S-Tristate-En");
-
-		pr_info("%s: GPIOs - I2S-Tristate-En: %d (pol = %d, val = %d)\n",
-				__func__, drvdata->gpios.i2s_tristate_en_gpio,
-				gpiod_is_active_low(desc), gpiod_get_value(desc));
-
-		devm_gpiod_put(codec->dev, desc);
-	} else {
-		drvdata->gpios.i2s_tristate_en_gpio = RT5640_GPIO_NA;
-		pr_warn("%s: GPIOs - i2s_tristate_en-mux: Not present!\n",
-				__func__);
+			devm_gpiod_put(codec->dev, desc);
+		} else {
+			drvdata->gpios.i2s_tristate_en_gpio = RT5640_GPIO_NA;
+			pr_warn("%s: GPIOs - i2s_tristate_en-mux: Not present!\n",
+					__func__);
+		}
 	}
 }
 
@@ -653,7 +656,9 @@ static int byt_config_jack_gpios(struct byt_drvdata *drvdata)
 	}
 
 
-	if ((int_sel == JACK_INT1) || (bp_sel == JACK_BP_CODEC)) {
+	if ((int_sel == JACK_INT1) ||
+		(bp_sel == JACK_BP_CODEC && (byt_rt5640_quirk & BYT_RT5640_JACK_BP_EN))) {
+
 		jack_gpio_int1[0].gpio = int1_gpio;
 		jack_gpio_int1[0].data = drvdata;
 		jack_gpio_int1[0].report = (int_sel == JACK_INT1) ?
@@ -676,7 +681,7 @@ static int byt_config_jack_gpios(struct byt_drvdata *drvdata)
 		}
 	}
 
-	if (bp_sel == JACK_BP_MICBIAS) {
+	if ((byt_rt5640_quirk & BYT_RT5640_JACK_BP_EN) && bp_sel == JACK_BP_MICBIAS) {
 		jack_gpio_micbias[0].gpio = bp_gpio;
 		jack_gpio_micbias[0].data = drvdata;
 		pr_debug("%s: Add micbias-GPIO (%d).\n", __func__, bp_gpio);
@@ -733,6 +738,29 @@ static int byt_rt5640_aif1_hw_params(struct snd_pcm_substream *substream,
 	return 0;
 }
 
+static void byt_rt5640_configure_jd2(struct snd_soc_codec *codec)
+{ /* only for devices using JD2 pin like T100 */
+	/* FIXME it's ugly, is there a better way? */
+	snd_soc_write(codec, RT5640_JD_CTRL, 0x6003);
+	snd_soc_write(codec, RT5640_IN3_IN4, 0x0000);
+	snd_soc_write(codec, RT5640_IN1_IN2, 0x51c0);
+
+	/* selecting pin as an interrupt */
+	snd_soc_write(codec, RT5640_GPIO_CTRL1, 0x8400);
+	/* set GPIO1 output */
+	snd_soc_write(codec, RT5640_GPIO_CTRL3, 0x0004);
+
+	/* enabling jd2 in general control 1 */
+	snd_soc_write(codec, RT5640_DUMMY1, 0x3f41);
+
+	/* enabling jd2 in general control 2 */
+	snd_soc_write(codec, RT5640_DUMMY2, 0x4001);
+
+	snd_soc_write(codec, RT5640_REC_L2_MIXER, 0x007f);
+
+	/* FIXME end */
+}
+
 static int byt_rt5640_init(struct snd_soc_pcm_runtime *runtime)
 {
 	int ret;
@@ -781,28 +809,15 @@ static int byt_rt5640_init(struct snd_soc_pcm_runtime *runtime)
 		}
 		/* Other jack/bp stuff */
 
-		/* JACK_DET_N signal as JD-source */
-		/* FIXME start */
-		//snd_soc_update_bits(byt_get_codec(card), RT5640_JD_CTRL,
-		//		RT5640_JD_MASK, RT5640_JD_JD2_IN4N);
-		snd_soc_write(codec, RT5640_JD_CTRL, 0x6003);
-		snd_soc_write(codec, RT5640_IN3_IN4, 0x0000);
-		snd_soc_write(codec, RT5640_IN1_IN2, 0x51c0);
+		/* for devices using JD2 pin should be configured some registers */
+		if (byt_rt5640_quirk & BYT_RT5640_JACK_DET_PIN2) {
+			byt_rt5640_configure_jd2(codec);
+		} else {
+			/* JACK_DET_N signal as JD-source */
+			snd_soc_update_bits(codec, RT5640_JD_CTRL,
+					RT5640_JD_MASK, RT5640_JD_JD2_IN4N);
+		}
 
-		/* selecting pin as an interrupt */
-		snd_soc_write(codec, RT5640_GPIO_CTRL1, 0x8400);
-		/* set GPIO1 output */
-		snd_soc_write(codec, RT5640_GPIO_CTRL3, 0x0004);
-
-		/* enabling jd2 in general control 1 */
-		snd_soc_write(codec, RT5640_DUMMY1, 0x3f41);
-
-		/* enabling jd2 in general control 2 */
-		snd_soc_write(codec, RT5640_DUMMY2, 0x4001);
-
-		snd_soc_write(codec, RT5640_REC_L2_MIXER, 0x007f);
-
-		/* FIXME end */
 		/* Prevent sta_jd_internal to trigger IRQ in CODEC-mode */
 		if (drvdata->jack_bp_sel == JACK_BP_CODEC)
 			snd_soc_write(codec, RT5640_IRQ_CTRL1, 0x0000);
@@ -1060,7 +1075,7 @@ static int snd_byt_rt5640_mc_probe(struct platform_device *pdev)
 	}
 
 	/* register the soc card */
-	byt_rt5640_card.dev = &pdev->dev;
+	card->dev = &pdev->dev;
 	mach = byt_rt5640_card.dev->platform_data;
 
 	/* fixup codec name based on HID */
@@ -1088,14 +1103,12 @@ static int snd_byt_rt5640_mc_probe(struct platform_device *pdev)
 			drvdata->jack_bp_sel = JACK_BP_MICBIAS;
 	}
 
-	/* register the soc card */
-	card->dev = &pdev->dev;
 
 	snd_soc_card_set_drvdata(card, drvdata);
-	ret_val = devm_snd_soc_register_card(&pdev->dev, card);
+	ret_val = devm_snd_soc_register_card(card->dev, card);
 
 	if (ret_val) {
-		dev_err(&pdev->dev, "devm_snd_soc_register_card failed %d\n",
+		dev_err(card->dev, "devm_snd_soc_register_card failed %d\n",
 			ret_val);
 		return ret_val;
 	}
