@@ -11,10 +11,6 @@
  * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
  * more details.
  *
- * You should have received a copy of the GNU General Public License along with
- * this program; if not, write to the Free Software Foundation, Inc., 59
- * Temple Place - Suite 330, Boston, MA  02111-1307, USA.
- *
  * The full GNU General Public License is included in this distribution in the
  * file called COPYING.
  */
@@ -79,6 +75,8 @@
 #define IOAT_CAP_APIC				0x00000080
 #define IOAT_CAP_XOR				0x00000100
 #define IOAT_CAP_PQ				0x00000200
+#define IOAT_CAP_DWBES				0x00002000
+#define IOAT_CAP_RAID16SS			0x00020000
 
 #define IOAT_CHANNEL_MMIO_SIZE			0x80	/* Each Channel MMIO space is this size */
 
@@ -93,25 +91,17 @@
 #define IOAT_CHANCTRL_ERR_COMPLETION_EN		0x0004
 #define IOAT_CHANCTRL_INT_REARM			0x0001
 #define IOAT_CHANCTRL_RUN			(IOAT_CHANCTRL_INT_REARM |\
+						 IOAT_CHANCTRL_ERR_INT_EN |\
+						 IOAT_CHANCTRL_ERR_COMPLETION_EN |\
 						 IOAT_CHANCTRL_ANY_ERR_ABORT_EN)
 
 #define IOAT_DMA_COMP_OFFSET			0x02	/* 16-bit DMA channel compatibility */
 #define IOAT_DMA_COMP_V1			0x0001	/* Compatibility with DMA version 1 */
 #define IOAT_DMA_COMP_V2			0x0002	/* Compatibility with DMA version 2 */
 
-
-#define IOAT1_CHANSTS_OFFSET		0x04	/* 64-bit Channel Status Register */
-#define IOAT2_CHANSTS_OFFSET		0x08	/* 64-bit Channel Status Register */
-#define IOAT_CHANSTS_OFFSET(ver)		((ver) < IOAT_VER_2_0 \
-						? IOAT1_CHANSTS_OFFSET : IOAT2_CHANSTS_OFFSET)
-#define IOAT1_CHANSTS_OFFSET_LOW	0x04
-#define IOAT2_CHANSTS_OFFSET_LOW	0x08
-#define IOAT_CHANSTS_OFFSET_LOW(ver)		((ver) < IOAT_VER_2_0 \
-						? IOAT1_CHANSTS_OFFSET_LOW : IOAT2_CHANSTS_OFFSET_LOW)
-#define IOAT1_CHANSTS_OFFSET_HIGH	0x08
-#define IOAT2_CHANSTS_OFFSET_HIGH	0x0C
-#define IOAT_CHANSTS_OFFSET_HIGH(ver)		((ver) < IOAT_VER_2_0 \
-						? IOAT1_CHANSTS_OFFSET_HIGH : IOAT2_CHANSTS_OFFSET_HIGH)
+/* IOAT1 define left for i7300_idle driver to not fail compiling */
+#define IOAT1_CHANSTS_OFFSET		0x04
+#define IOAT_CHANSTS_OFFSET		0x08	/* 64-bit Channel Status Register */
 #define IOAT_CHANSTS_COMPLETED_DESCRIPTOR_ADDR	(~0x3fULL)
 #define IOAT_CHANSTS_SOFT_ERR			0x10ULL
 #define IOAT_CHANSTS_UNAFFILIATED_ERR		0x8ULL

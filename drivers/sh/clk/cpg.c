@@ -36,9 +36,47 @@ static void sh_clk_write(int value, struct clk *clk)
 		iowrite32(value, clk->mapped_reg);
 }
 
+static unsigned int r8(const void __iomem *addr)
+{
+	return ioread8(addr);
+}
+
+static unsigned int r16(const void __iomem *addr)
+{
+	return ioread16(addr);
+}
+
+static unsigned int r32(const void __iomem *addr)
+{
+	return ioread32(addr);
+}
+
 static int sh_clk_mstp_enable(struct clk *clk)
 {
 	sh_clk_write(sh_clk_read(clk) & ~(1 << clk->enable_bit), clk);
+	if (clk->status_reg) {
+		unsigned int (*read)(const void __iomem *addr);
+		int i;
+		void __iomem *mapped_status = (phys_addr_t)clk->status_reg -
+			(phys_addr_t)clk->enable_reg + clk->mapped_reg;
+
+		if (clk->flags & CLK_ENABLE_REG_8BIT)
+			read = r8;
+		else if (clk->flags & CLK_ENABLE_REG_16BIT)
+			read = r16;
+		else
+			read = r32;
+
+		for (i = 1000;
+		     (read(mapped_status) & (1 << clk->enable_bit)) && i;
+		     i--)
+			cpu_relax();
+		if (!i) {
+			pr_err("cpg: failed to enable %p[%d]\n",
+			       clk->enable_reg, clk->enable_bit);
+			return -ETIMEDOUT;
+		}
+	}
 	return 0;
 }
 
@@ -126,6 +164,12 @@ static int sh_clk_div_set_rate(struct clk *clk, unsigned long rate)
 
 static int sh_clk_div_enable(struct clk *clk)
 {
+	if (clk->div_mask == SH_CLK_DIV6_MSK) {
+		int ret = sh_clk_div_set_rate(clk, clk->rate);
+		if (ret < 0)
+			return ret;
+	}
+
 	sh_clk_write(sh_clk_read(clk) & ~CPG_CKSTP_BIT, clk);
 	return 0;
 }
@@ -360,4 +404,89 @@ int __init sh_clk_div4_reparent_register(struct clk *clks, int nr,
 {
 	return sh_clk_div_register_ops(clks, nr, table,
 				       &sh_clk_div4_reparent_clk_ops);
+}
+
+/* FSI-DIV */
+static unsigned long fsidiv_recalc(struct clk *clk)
+{
+	u32 value;
+
+	value = __raw_readl(clk->mapping->base);
+
+	value >>= 16;
+	if (value < 2)
+		return clk->parent->rate;
+
+	return clk->parent->rate / value;
+}
+
+static long fsidiv_round_rate(struct clk *clk, unsigned long rate)
+{
+	return clk_rate_div_range_round(clk, 1, 0xffff, rate);
+}
+
+static void fsidiv_disable(struct clk *clk)
+{
+	__raw_writel(0, clk->mapping->base);
+}
+
+static int fsidiv_enable(struct clk *clk)
+{
+	u32 value;
+
+	value  = __raw_readl(clk->mapping->base) >> 16;
+	if (value < 2)
+		return 0;
+
+	__raw_writel((value << 16) | 0x3, clk->mapping->base);
+
+	return 0;
+}
+
+static int fsidiv_set_rate(struct clk *clk, unsigned long rate)
+{
+	int idx;
+
+	idx = (clk->parent->rate / rate) & 0xffff;
+	if (idx < 2)
+		__raw_writel(0, clk->mapping->base);
+	else
+		__raw_writel(idx << 16, clk->mapping->base);
+
+	return 0;
+}
+
+static struct sh_clk_ops fsidiv_clk_ops = {
+	.recalc		= fsidiv_recalc,
+	.round_rate	= fsidiv_round_rate,
+	.set_rate	= fsidiv_set_rate,
+	.enable		= fsidiv_enable,
+	.disable	= fsidiv_disable,
+};
+
+int __init sh_clk_fsidiv_register(struct clk *clks, int nr)
+{
+	struct clk_mapping *map;
+	int i;
+
+	for (i = 0; i < nr; i++) {
+
+		map = kzalloc(sizeof(struct clk_mapping), GFP_KERNEL);
+		if (!map) {
+			pr_err("%s: unable to alloc memory\n", __func__);
+			return -ENOMEM;
+		}
+
+		/* clks[i].enable_reg came from SH_CLK_FSIDIV() */
+		map->phys		= (phys_addr_t)clks[i].enable_reg;
+		map->len		= 8;
+
+		clks[i].enable_reg	= 0; /* remove .enable_reg */
+		clks[i].ops		= &fsidiv_clk_ops;
+		clks[i].mapping		= map;
+
+		clk_register(&clks[i]);
+	}
+
+	return 0;
 }

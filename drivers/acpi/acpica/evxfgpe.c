@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2012, Intel Corp.
+ * Copyright (C) 2000 - 2016, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -41,7 +41,8 @@
  * POSSIBILITY OF SUCH DAMAGES.
  */
 
-#include <linux/export.h>
+#define EXPORT_ACPI_INTERFACES
+
 #include <acpi/acpi.h>
 #include "accommon.h"
 #include "acevents.h"
@@ -51,7 +52,7 @@
 ACPI_MODULE_NAME("evxfgpe")
 
 #if (!ACPI_REDUCED_HARDWARE)	/* Entire module */
-/******************************************************************************
+/*******************************************************************************
  *
  * FUNCTION:    acpi_update_all_gpes
  *
@@ -105,8 +106,8 @@ ACPI_EXPORT_SYMBOL(acpi_update_all_gpes)
  *
  * FUNCTION:    acpi_enable_gpe
  *
- * PARAMETERS:  gpe_device      - Parent GPE Device. NULL for GPE0/GPE1
- *              gpe_number      - GPE level within the GPE block
+ * PARAMETERS:  gpe_device          - Parent GPE Device. NULL for GPE0/GPE1
+ *              gpe_number          - GPE level within the GPE block
  *
  * RETURN:      Status
  *
@@ -114,7 +115,6 @@ ACPI_EXPORT_SYMBOL(acpi_update_all_gpes)
  *              hardware-enabled.
  *
  ******************************************************************************/
-
 acpi_status acpi_enable_gpe(acpi_handle gpe_device, u32 gpe_number)
 {
 	acpi_status status = AE_BAD_PARAMETER;
@@ -125,11 +125,19 @@ acpi_status acpi_enable_gpe(acpi_handle gpe_device, u32 gpe_number)
 
 	flags = acpi_os_acquire_lock(acpi_gbl_gpe_lock);
 
-	/* Ensure that we have a valid GPE number */
-
+	/*
+	 * Ensure that we have a valid GPE number and that there is some way
+	 * of handling the GPE (handler or a GPE method). In other words, we
+	 * won't allow a valid GPE to be enabled if there is no way to handle it.
+	 */
 	gpe_event_info = acpi_ev_get_gpe_event_info(gpe_device, gpe_number);
 	if (gpe_event_info) {
-		status = acpi_ev_add_gpe_reference(gpe_event_info);
+		if (ACPI_GPE_DISPATCH_TYPE(gpe_event_info->flags) !=
+		    ACPI_GPE_DISPATCH_NONE) {
+			status = acpi_ev_add_gpe_reference(gpe_event_info);
+		} else {
+			status = AE_NO_HANDLER;
+		}
 	}
 
 	acpi_os_release_lock(acpi_gbl_gpe_lock, flags);
@@ -172,8 +180,127 @@ acpi_status acpi_disable_gpe(acpi_handle gpe_device, u32 gpe_number)
 	acpi_os_release_lock(acpi_gbl_gpe_lock, flags);
 	return_ACPI_STATUS(status);
 }
+
 ACPI_EXPORT_SYMBOL(acpi_disable_gpe)
 
+/*******************************************************************************
+ *
+ * FUNCTION:    acpi_set_gpe
+ *
+ * PARAMETERS:  gpe_device          - Parent GPE Device. NULL for GPE0/GPE1
+ *              gpe_number          - GPE level within the GPE block
+ *              action              - ACPI_GPE_ENABLE or ACPI_GPE_DISABLE
+ *
+ * RETURN:      Status
+ *
+ * DESCRIPTION: Enable or disable an individual GPE. This function bypasses
+ *              the reference count mechanism used in the acpi_enable_gpe(),
+ *              acpi_disable_gpe() interfaces.
+ *              This API is typically used by the GPE raw handler mode driver
+ *              to switch between the polling mode and the interrupt mode after
+ *              the driver has enabled the GPE.
+ *              The APIs should be invoked in this order:
+ *               acpi_enable_gpe()            <- Ensure the reference count > 0
+ *               acpi_set_gpe(ACPI_GPE_DISABLE) <- Enter polling mode
+ *               acpi_set_gpe(ACPI_GPE_ENABLE) <- Leave polling mode
+ *               acpi_disable_gpe()           <- Decrease the reference count
+ *
+ * Note: If a GPE is shared by 2 silicon components, then both the drivers
+ *       should support GPE polling mode or disabling the GPE for long period
+ *       for one driver may break the other. So use it with care since all
+ *       firmware _Lxx/_Exx handlers currently rely on the GPE interrupt mode.
+ *
+ ******************************************************************************/
+acpi_status acpi_set_gpe(acpi_handle gpe_device, u32 gpe_number, u8 action)
+{
+	struct acpi_gpe_event_info *gpe_event_info;
+	acpi_status status;
+	acpi_cpu_flags flags;
+
+	ACPI_FUNCTION_TRACE(acpi_set_gpe);
+
+	flags = acpi_os_acquire_lock(acpi_gbl_gpe_lock);
+
+	/* Ensure that we have a valid GPE number */
+
+	gpe_event_info = acpi_ev_get_gpe_event_info(gpe_device, gpe_number);
+	if (!gpe_event_info) {
+		status = AE_BAD_PARAMETER;
+		goto unlock_and_exit;
+	}
+
+	/* Perform the action */
+
+	switch (action) {
+	case ACPI_GPE_ENABLE:
+
+		status = acpi_hw_low_set_gpe(gpe_event_info, ACPI_GPE_ENABLE);
+		break;
+
+	case ACPI_GPE_DISABLE:
+
+		status = acpi_hw_low_set_gpe(gpe_event_info, ACPI_GPE_DISABLE);
+		break;
+
+	default:
+
+		status = AE_BAD_PARAMETER;
+		break;
+	}
+
+unlock_and_exit:
+	acpi_os_release_lock(acpi_gbl_gpe_lock, flags);
+	return_ACPI_STATUS(status);
+}
+
+ACPI_EXPORT_SYMBOL(acpi_set_gpe)
+
+/*******************************************************************************
+ *
+ * FUNCTION:    acpi_mark_gpe_for_wake
+ *
+ * PARAMETERS:  gpe_device          - Parent GPE Device. NULL for GPE0/GPE1
+ *              gpe_number          - GPE level within the GPE block
+ *
+ * RETURN:      Status
+ *
+ * DESCRIPTION: Mark a GPE as having the ability to wake the system. Simply
+ *              sets the ACPI_GPE_CAN_WAKE flag.
+ *
+ * Some potential callers of acpi_setup_gpe_for_wake may know in advance that
+ * there won't be any notify handlers installed for device wake notifications
+ * from the given GPE (one example is a button GPE in Linux). For these cases,
+ * acpi_mark_gpe_for_wake should be used instead of acpi_setup_gpe_for_wake.
+ * This will set the ACPI_GPE_CAN_WAKE flag for the GPE without trying to
+ * setup implicit wake notification for it (since there's no handler method).
+ *
+ ******************************************************************************/
+acpi_status acpi_mark_gpe_for_wake(acpi_handle gpe_device, u32 gpe_number)
+{
+	struct acpi_gpe_event_info *gpe_event_info;
+	acpi_status status = AE_BAD_PARAMETER;
+	acpi_cpu_flags flags;
+
+	ACPI_FUNCTION_TRACE(acpi_mark_gpe_for_wake);
+
+	flags = acpi_os_acquire_lock(acpi_gbl_gpe_lock);
+
+	/* Ensure that we have a valid GPE number */
+
+	gpe_event_info = acpi_ev_get_gpe_event_info(gpe_device, gpe_number);
+	if (gpe_event_info) {
+
+		/* Mark the GPE as a possible wake event */
+
+		gpe_event_info->flags |= ACPI_GPE_CAN_WAKE;
+		status = AE_OK;
+	}
+
+	acpi_os_release_lock(acpi_gbl_gpe_lock, flags);
+	return_ACPI_STATUS(status);
+}
+
+ACPI_EXPORT_SYMBOL(acpi_mark_gpe_for_wake)
 
 /*******************************************************************************
  *
@@ -221,10 +348,11 @@ acpi_setup_gpe_for_wake(acpi_handle wake_device,
 	if (wake_device == ACPI_ROOT_OBJECT) {
 		device_node = acpi_gbl_root_node;
 	} else {
-		device_node = ACPI_CAST_PTR(struct acpi_namespace_node, wake_device);
+		device_node =
+		    ACPI_CAST_PTR(struct acpi_namespace_node, wake_device);
 	}
 
-	/* Validate WakeDevice is of type Device */
+	/* Validate wake_device is of type Device */
 
 	if (device_node->type != ACPI_TYPE_DEVICE) {
 		return_ACPI_STATUS (AE_BAD_PARAMETER);
@@ -256,7 +384,7 @@ acpi_setup_gpe_for_wake(acpi_handle wake_device,
 	 * known as an "implicit notify". Note: The GPE is assumed to be
 	 * level-triggered (for windows compatibility).
 	 */
-	if ((gpe_event_info->flags & ACPI_GPE_DISPATCH_MASK) ==
+	if (ACPI_GPE_DISPATCH_TYPE(gpe_event_info->flags) ==
 	    ACPI_GPE_DISPATCH_NONE) {
 		/*
 		 * This is the first device for implicit notify on this GPE.
@@ -270,7 +398,7 @@ acpi_setup_gpe_for_wake(acpi_handle wake_device,
 	 * If we already have an implicit notify on this GPE, add
 	 * this device to the notify list.
 	 */
-	if ((gpe_event_info->flags & ACPI_GPE_DISPATCH_MASK) ==
+	if (ACPI_GPE_DISPATCH_TYPE(gpe_event_info->flags) ==
 	    ACPI_GPE_DISPATCH_NOTIFY) {
 
 		/* Ensure that the device is not already in the list */
@@ -324,7 +452,8 @@ ACPI_EXPORT_SYMBOL(acpi_setup_gpe_for_wake)
  *
  ******************************************************************************/
 
-acpi_status acpi_set_gpe_wake_mask(acpi_handle gpe_device, u32 gpe_number, u8 action)
+acpi_status
+acpi_set_gpe_wake_mask(acpi_handle gpe_device, u32 gpe_number, u8 action)
 {
 	acpi_status status = AE_OK;
 	struct acpi_gpe_event_info *gpe_event_info;
@@ -357,23 +486,25 @@ acpi_status acpi_set_gpe_wake_mask(acpi_handle gpe_device, u32 gpe_number, u8 ac
 		goto unlock_and_exit;
 	}
 
-	register_bit =
-	    acpi_hw_get_gpe_register_bit(gpe_event_info, gpe_register_info);
+	register_bit = acpi_hw_get_gpe_register_bit(gpe_event_info);
 
 	/* Perform the action */
 
 	switch (action) {
 	case ACPI_GPE_ENABLE:
+
 		ACPI_SET_BIT(gpe_register_info->enable_for_wake,
 			     (u8)register_bit);
 		break;
 
 	case ACPI_GPE_DISABLE:
+
 		ACPI_CLEAR_BIT(gpe_register_info->enable_for_wake,
 			       (u8)register_bit);
 		break;
 
 	default:
+
 		ACPI_ERROR((AE_INFO, "%u, Invalid action", action));
 		status = AE_BAD_PARAMETER;
 		break;
@@ -429,10 +560,10 @@ ACPI_EXPORT_SYMBOL(acpi_clear_gpe)
  *
  * FUNCTION:    acpi_get_gpe_status
  *
- * PARAMETERS:  gpe_device      - Parent GPE Device. NULL for GPE0/GPE1
- *              gpe_number      - GPE level within the GPE block
- *              event_status    - Where the current status of the event will
- *                                be returned
+ * PARAMETERS:  gpe_device          - Parent GPE Device. NULL for GPE0/GPE1
+ *              gpe_number          - GPE level within the GPE block
+ *              event_status        - Where the current status of the event
+ *                                    will be returned
  *
  * RETURN:      Status
  *
@@ -463,15 +594,55 @@ acpi_get_gpe_status(acpi_handle gpe_device,
 
 	status = acpi_hw_get_gpe_status(gpe_event_info, event_status);
 
-	if (gpe_event_info->flags & ACPI_GPE_DISPATCH_MASK)
-		*event_status |= ACPI_EVENT_FLAG_HANDLE;
-
-      unlock_and_exit:
+unlock_and_exit:
 	acpi_os_release_lock(acpi_gbl_gpe_lock, flags);
 	return_ACPI_STATUS(status);
 }
 
 ACPI_EXPORT_SYMBOL(acpi_get_gpe_status)
+
+/*******************************************************************************
+ *
+ * FUNCTION:    acpi_finish_gpe
+ *
+ * PARAMETERS:  gpe_device          - Namespace node for the GPE Block
+ *                                    (NULL for FADT defined GPEs)
+ *              gpe_number          - GPE level within the GPE block
+ *
+ * RETURN:      Status
+ *
+ * DESCRIPTION: Clear and conditionally reenable a GPE. This completes the GPE
+ *              processing. Intended for use by asynchronous host-installed
+ *              GPE handlers. The GPE is only reenabled if the enable_for_run bit
+ *              is set in the GPE info.
+ *
+ ******************************************************************************/
+acpi_status acpi_finish_gpe(acpi_handle gpe_device, u32 gpe_number)
+{
+	struct acpi_gpe_event_info *gpe_event_info;
+	acpi_status status;
+	acpi_cpu_flags flags;
+
+	ACPI_FUNCTION_TRACE(acpi_finish_gpe);
+
+	flags = acpi_os_acquire_lock(acpi_gbl_gpe_lock);
+
+	/* Ensure that we have a valid GPE number */
+
+	gpe_event_info = acpi_ev_get_gpe_event_info(gpe_device, gpe_number);
+	if (!gpe_event_info) {
+		status = AE_BAD_PARAMETER;
+		goto unlock_and_exit;
+	}
+
+	status = acpi_ev_finish_gpe(gpe_event_info);
+
+unlock_and_exit:
+	acpi_os_release_lock(acpi_gbl_gpe_lock, flags);
+	return_ACPI_STATUS(status);
+}
+
+ACPI_EXPORT_SYMBOL(acpi_finish_gpe)
 
 /******************************************************************************
  *
@@ -535,6 +706,37 @@ acpi_status acpi_enable_all_runtime_gpes(void)
 
 ACPI_EXPORT_SYMBOL(acpi_enable_all_runtime_gpes)
 
+/******************************************************************************
+ *
+ * FUNCTION:    acpi_enable_all_wakeup_gpes
+ *
+ * PARAMETERS:  None
+ *
+ * RETURN:      Status
+ *
+ * DESCRIPTION: Enable all "wakeup" GPEs and disable all of the other GPEs, in
+ *              all GPE blocks.
+ *
+ ******************************************************************************/
+acpi_status acpi_enable_all_wakeup_gpes(void)
+{
+	acpi_status status;
+
+	ACPI_FUNCTION_TRACE(acpi_enable_all_wakeup_gpes);
+
+	status = acpi_ut_acquire_mutex(ACPI_MTX_EVENTS);
+	if (ACPI_FAILURE(status)) {
+		return_ACPI_STATUS(status);
+	}
+
+	status = acpi_hw_enable_all_wakeup_gpes();
+	(void)acpi_ut_release_mutex(ACPI_MTX_EVENTS);
+
+	return_ACPI_STATUS(status);
+}
+
+ACPI_EXPORT_SYMBOL(acpi_enable_all_wakeup_gpes)
+
 /*******************************************************************************
  *
  * FUNCTION:    acpi_install_gpe_block
@@ -568,7 +770,7 @@ acpi_install_gpe_block(acpi_handle gpe_device,
 
 	status = acpi_ut_acquire_mutex(ACPI_MTX_NAMESPACE);
 	if (ACPI_FAILURE(status)) {
-		return (status);
+		return_ACPI_STATUS(status);
 	}
 
 	node = acpi_ns_validate_handle(gpe_device);
@@ -577,13 +779,26 @@ acpi_install_gpe_block(acpi_handle gpe_device,
 		goto unlock_and_exit;
 	}
 
+	/* Validate the parent device */
+
+	if (node->type != ACPI_TYPE_DEVICE) {
+		status = AE_TYPE;
+		goto unlock_and_exit;
+	}
+
+	if (node->object) {
+		status = AE_ALREADY_EXISTS;
+		goto unlock_and_exit;
+	}
+
 	/*
 	 * For user-installed GPE Block Devices, the gpe_block_base_number
 	 * is always zero
 	 */
-	status =
-	    acpi_ev_create_gpe_block(node, gpe_block_address, register_count, 0,
-				     interrupt_number, &gpe_block);
+	status = acpi_ev_create_gpe_block(node, gpe_block_address->address,
+					  gpe_block_address->space_id,
+					  register_count, 0, interrupt_number,
+					  &gpe_block);
 	if (ACPI_FAILURE(status)) {
 		goto unlock_and_exit;
 	}
@@ -619,7 +834,7 @@ acpi_install_gpe_block(acpi_handle gpe_device,
 
 	obj_desc->device.gpe_block = gpe_block;
 
-      unlock_and_exit:
+unlock_and_exit:
 	(void)acpi_ut_release_mutex(ACPI_MTX_NAMESPACE);
 	return_ACPI_STATUS(status);
 }
@@ -651,12 +866,19 @@ acpi_status acpi_remove_gpe_block(acpi_handle gpe_device)
 
 	status = acpi_ut_acquire_mutex(ACPI_MTX_NAMESPACE);
 	if (ACPI_FAILURE(status)) {
-		return (status);
+		return_ACPI_STATUS(status);
 	}
 
 	node = acpi_ns_validate_handle(gpe_device);
 	if (!node) {
 		status = AE_BAD_PARAMETER;
+		goto unlock_and_exit;
+	}
+
+	/* Validate the parent device */
+
+	if (node->type != ACPI_TYPE_DEVICE) {
+		status = AE_TYPE;
 		goto unlock_and_exit;
 	}
 
@@ -674,7 +896,7 @@ acpi_status acpi_remove_gpe_block(acpi_handle gpe_device)
 		obj_desc->device.gpe_block = NULL;
 	}
 
-      unlock_and_exit:
+unlock_and_exit:
 	(void)acpi_ut_release_mutex(ACPI_MTX_NAMESPACE);
 	return_ACPI_STATUS(status);
 }
@@ -695,8 +917,7 @@ ACPI_EXPORT_SYMBOL(acpi_remove_gpe_block)
  *              the FADT-defined gpe blocks. Otherwise, the GPE block device.
  *
  ******************************************************************************/
-acpi_status
-acpi_get_gpe_device(u32 index, acpi_handle *gpe_device)
+acpi_status acpi_get_gpe_device(u32 index, acpi_handle * gpe_device)
 {
 	struct acpi_gpe_device_info info;
 	acpi_status status;

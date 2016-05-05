@@ -15,7 +15,6 @@
  *   Copyright (C) 2007 David Sterba
  */
 
-#include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
@@ -94,11 +93,6 @@ static int ipw_open(struct tty_struct *linux_tty, struct file *filp)
 		return -ENODEV;
 
 	mutex_lock(&tty->ipw_tty_mutex);
-
-	if (tty->closing) {
-		mutex_unlock(&tty->ipw_tty_mutex);
-		return -ENODEV;
-	}
 	if (tty->port.count == 0)
 		tty->tx_bytes_queued = 0;
 
@@ -106,7 +100,7 @@ static int ipw_open(struct tty_struct *linux_tty, struct file *filp)
 
 	tty->port.tty = linux_tty;
 	linux_tty->driver_data = tty;
-	linux_tty->low_latency = 1;
+	tty->port.low_latency = 1;
 
 	if (tty->tty_type == TTYTYPE_MODEM)
 		ipwireless_ppp_open(tty->network);
@@ -160,15 +154,9 @@ static void ipw_close(struct tty_struct *linux_tty, struct file *filp)
 void ipwireless_tty_received(struct ipw_tty *tty, unsigned char *data,
 			unsigned int length)
 {
-	struct tty_struct *linux_tty;
 	int work = 0;
 
 	mutex_lock(&tty->ipw_tty_mutex);
-	linux_tty = tty->port.tty;
-	if (linux_tty == NULL) {
-		mutex_unlock(&tty->ipw_tty_mutex);
-		return;
-	}
 
 	if (!tty->port.count) {
 		mutex_unlock(&tty->ipw_tty_mutex);
@@ -176,18 +164,15 @@ void ipwireless_tty_received(struct ipw_tty *tty, unsigned char *data,
 	}
 	mutex_unlock(&tty->ipw_tty_mutex);
 
-	work = tty_insert_flip_string(linux_tty, data, length);
+	work = tty_insert_flip_string(&tty->port, data, length);
 
 	if (work != length)
 		printk(KERN_DEBUG IPWIRELESS_PCCARD_NAME
 				": %d chars not inserted to flip buffer!\n",
 				length - work);
 
-	/*
-	 * This may sleep if ->low_latency is set
-	 */
 	if (work)
-		tty_flip_buffer_push(linux_tty);
+		tty_flip_buffer_push(&tty->port);
 }
 
 static void ipw_write_packet_sent_callback(void *callback_data,
@@ -476,7 +461,7 @@ static int add_tty(int j,
 	mutex_init(&ttys[j]->ipw_tty_mutex);
 	tty_port_init(&ttys[j]->port);
 
-	tty_register_device(ipw_tty_driver, j, NULL);
+	tty_port_register_device(&ttys[j]->port, ipw_tty_driver, j, NULL);
 	ipwireless_associate_network_tty(network, channel_idx, ttys[j]);
 
 	if (secondary_channel_idx != -1)
@@ -566,6 +551,7 @@ void ipwireless_tty_free(struct ipw_tty *tty)
 			ipwireless_disassociate_network_ttys(network,
 							     ttyj->channel_idx);
 			tty_unregister_device(ipw_tty_driver, j);
+			tty_port_destroy(&ttyj->port);
 			ttys[j] = NULL;
 			mutex_unlock(&ttyj->ipw_tty_mutex);
 			kfree(ttyj);

@@ -128,12 +128,12 @@ static const struct regmap_config tegra20_das_regmap_config = {
 	.max_register = LAST_REG(DAC_INPUT_DATA_CLK_SEL),
 	.writeable_reg = tegra20_das_wr_rd_reg,
 	.readable_reg = tegra20_das_wr_rd_reg,
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_FLAT,
 };
 
-static int __devinit tegra20_das_probe(struct platform_device *pdev)
+static int tegra20_das_probe(struct platform_device *pdev)
 {
-	struct resource *res, *region;
+	struct resource *res;
 	void __iomem *regs;
 	int ret = 0;
 
@@ -149,24 +149,9 @@ static int __devinit tegra20_das_probe(struct platform_device *pdev)
 	das->dev = &pdev->dev;
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (!res) {
-		dev_err(&pdev->dev, "No memory resource\n");
-		ret = -ENODEV;
-		goto err;
-	}
-
-	region = devm_request_mem_region(&pdev->dev, res->start,
-					 resource_size(res), pdev->name);
-	if (!region) {
-		dev_err(&pdev->dev, "Memory region already claimed\n");
-		ret = -EBUSY;
-		goto err;
-	}
-
-	regs = devm_ioremap(&pdev->dev, res->start, resource_size(res));
-	if (!regs) {
-		dev_err(&pdev->dev, "ioremap failed\n");
-		ret = -ENOMEM;
+	regs = devm_ioremap_resource(&pdev->dev, res);
+	if (IS_ERR(regs)) {
+		ret = PTR_ERR(regs);
 		goto err;
 	}
 
@@ -191,6 +176,19 @@ static int __devinit tegra20_das_probe(struct platform_device *pdev)
 		goto err;
 	}
 
+	ret = tegra20_das_connect_dap_to_dac(TEGRA20_DAS_DAP_ID_3,
+					     TEGRA20_DAS_DAP_SEL_DAC3);
+	if (ret) {
+		dev_err(&pdev->dev, "Can't set up DAS DAP connection\n");
+		goto err;
+	}
+	ret = tegra20_das_connect_dac_to_dap(TEGRA20_DAS_DAC_ID_3,
+					     TEGRA20_DAS_DAC_SEL_DAP3);
+	if (ret) {
+		dev_err(&pdev->dev, "Can't set up DAS DAC connection\n");
+		goto err;
+	}
+
 	platform_set_drvdata(pdev, das);
 
 	return 0;
@@ -200,7 +198,7 @@ err:
 	return ret;
 }
 
-static int __devexit tegra20_das_remove(struct platform_device *pdev)
+static int tegra20_das_remove(struct platform_device *pdev)
 {
 	if (!das)
 		return -ENODEV;
@@ -210,17 +208,16 @@ static int __devexit tegra20_das_remove(struct platform_device *pdev)
 	return 0;
 }
 
-static const struct of_device_id tegra20_das_of_match[] __devinitconst = {
+static const struct of_device_id tegra20_das_of_match[] = {
 	{ .compatible = "nvidia,tegra20-das", },
 	{},
 };
 
 static struct platform_driver tegra20_das_driver = {
 	.probe = tegra20_das_probe,
-	.remove = __devexit_p(tegra20_das_remove),
+	.remove = tegra20_das_remove,
 	.driver = {
 		.name = DRV_NAME,
-		.owner = THIS_MODULE,
 		.of_match_table = tegra20_das_of_match,
 	},
 };

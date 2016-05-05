@@ -27,14 +27,9 @@ struct tps65910_gpio {
 	struct tps65910 *tps65910;
 };
 
-static inline struct tps65910_gpio *to_tps65910_gpio(struct gpio_chip *chip)
-{
-	return container_of(chip, struct tps65910_gpio, gpio_chip);
-}
-
 static int tps65910_gpio_get(struct gpio_chip *gc, unsigned offset)
 {
-	struct tps65910_gpio *tps65910_gpio = to_tps65910_gpio(gc);
+	struct tps65910_gpio *tps65910_gpio = gpiochip_get_data(gc);
 	struct tps65910 *tps65910 = tps65910_gpio->tps65910;
 	unsigned int val;
 
@@ -49,7 +44,7 @@ static int tps65910_gpio_get(struct gpio_chip *gc, unsigned offset)
 static void tps65910_gpio_set(struct gpio_chip *gc, unsigned offset,
 			      int value)
 {
-	struct tps65910_gpio *tps65910_gpio = to_tps65910_gpio(gc);
+	struct tps65910_gpio *tps65910_gpio = gpiochip_get_data(gc);
 	struct tps65910 *tps65910 = tps65910_gpio->tps65910;
 
 	if (value)
@@ -63,7 +58,7 @@ static void tps65910_gpio_set(struct gpio_chip *gc, unsigned offset,
 static int tps65910_gpio_output(struct gpio_chip *gc, unsigned offset,
 				int value)
 {
-	struct tps65910_gpio *tps65910_gpio = to_tps65910_gpio(gc);
+	struct tps65910_gpio *tps65910_gpio = gpiochip_get_data(gc);
 	struct tps65910 *tps65910 = tps65910_gpio->tps65910;
 
 	/* Set the initial value */
@@ -75,7 +70,7 @@ static int tps65910_gpio_output(struct gpio_chip *gc, unsigned offset,
 
 static int tps65910_gpio_input(struct gpio_chip *gc, unsigned offset)
 {
-	struct tps65910_gpio *tps65910_gpio = to_tps65910_gpio(gc);
+	struct tps65910_gpio *tps65910_gpio = gpiochip_get_data(gc);
 	struct tps65910 *tps65910 = tps65910_gpio->tps65910;
 
 	return tps65910_reg_clear_bits(tps65910, TPS65910_GPIO0 + offset,
@@ -113,7 +108,7 @@ static struct tps65910_board *tps65910_parse_dt_for_gpio(struct device *dev,
 }
 #endif
 
-static int __devinit tps65910_gpio_probe(struct platform_device *pdev)
+static int tps65910_gpio_probe(struct platform_device *pdev)
 {
 	struct tps65910 *tps65910 = dev_get_drvdata(pdev->dev.parent);
 	struct tps65910_board *pdata = dev_get_platdata(tps65910->dev);
@@ -123,17 +118,15 @@ static int __devinit tps65910_gpio_probe(struct platform_device *pdev)
 
 	tps65910_gpio = devm_kzalloc(&pdev->dev,
 				sizeof(*tps65910_gpio), GFP_KERNEL);
-	if (!tps65910_gpio) {
-		dev_err(&pdev->dev, "Could not allocate tps65910_gpio\n");
+	if (!tps65910_gpio)
 		return -ENOMEM;
-	}
 
 	tps65910_gpio->tps65910 = tps65910;
 
 	tps65910_gpio->gpio_chip.owner = THIS_MODULE;
 	tps65910_gpio->gpio_chip.label = tps65910->i2c_client->name;
 
-	switch(tps65910_chip_id(tps65910)) {
+	switch (tps65910_chip_id(tps65910)) {
 	case TPS65910:
 		tps65910_gpio->gpio_chip.ngpio = TPS65910_NUM_GPIO;
 		break;
@@ -143,12 +136,12 @@ static int __devinit tps65910_gpio_probe(struct platform_device *pdev)
 	default:
 		return -EINVAL;
 	}
-	tps65910_gpio->gpio_chip.can_sleep = 1;
+	tps65910_gpio->gpio_chip.can_sleep = true;
 	tps65910_gpio->gpio_chip.direction_input = tps65910_gpio_input;
 	tps65910_gpio->gpio_chip.direction_output = tps65910_gpio_output;
 	tps65910_gpio->gpio_chip.set	= tps65910_gpio_set;
 	tps65910_gpio->gpio_chip.get	= tps65910_gpio_get;
-	tps65910_gpio->gpio_chip.dev = &pdev->dev;
+	tps65910_gpio->gpio_chip.parent = &pdev->dev;
 #ifdef CONFIG_OF_GPIO
 	tps65910_gpio->gpio_chip.of_node = tps65910->dev->of_node;
 #endif
@@ -177,7 +170,8 @@ static int __devinit tps65910_gpio_probe(struct platform_device *pdev)
 	}
 
 skip_init:
-	ret = gpiochip_add(&tps65910_gpio->gpio_chip);
+	ret = devm_gpiochip_add_data(&pdev->dev, &tps65910_gpio->gpio_chip,
+				     tps65910_gpio);
 	if (ret < 0) {
 		dev_err(&pdev->dev, "Could not register gpiochip, %d\n", ret);
 		return ret;
@@ -188,18 +182,10 @@ skip_init:
 	return ret;
 }
 
-static int __devexit tps65910_gpio_remove(struct platform_device *pdev)
-{
-	struct tps65910_gpio *tps65910_gpio = platform_get_drvdata(pdev);
-
-	return gpiochip_remove(&tps65910_gpio->gpio_chip);
-}
-
 static struct platform_driver tps65910_gpio_driver = {
 	.driver.name    = "tps65910-gpio",
 	.driver.owner   = THIS_MODULE,
 	.probe		= tps65910_gpio_probe,
-	.remove		= __devexit_p(tps65910_gpio_remove),
 };
 
 static int __init tps65910_gpio_init(void)

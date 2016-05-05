@@ -21,6 +21,9 @@
 
 #define AR_PHY_CCA_FILTERWINDOW_LENGTH          5
 
+/* Internal noise floor can vary by about 6db depending on the frequency */
+#define ATH9K_NF_CAL_NOISE_THRESH		6
+
 #define NUM_NF_READINGS       6
 #define ATH9K_NF_CAL_HIST_MAX 5
 
@@ -29,6 +32,12 @@ struct ar5416IniArray {
 	u32 ia_rows;
 	u32 ia_columns;
 };
+
+#define STATIC_INI_ARRAY(array) {			\
+		.ia_array = (u32 *)(array),		\
+		.ia_rows = ARRAY_SIZE(array),		\
+		.ia_columns = ARRAY_SIZE(array[0]),	\
+	}
 
 #define INIT_INI_ARRAY(iniarray, array) do {	\
 		(iniarray)->ia_array = (u32 *)(array);		\
@@ -100,14 +109,15 @@ struct ath9k_pacal_info{
 
 bool ath9k_hw_reset_calvalid(struct ath_hw *ah);
 void ath9k_hw_start_nfcal(struct ath_hw *ah, bool update);
-void ath9k_hw_loadnf(struct ath_hw *ah, struct ath9k_channel *chan);
+int ath9k_hw_loadnf(struct ath_hw *ah, struct ath9k_channel *chan);
 bool ath9k_hw_getnf(struct ath_hw *ah, struct ath9k_channel *chan);
 void ath9k_init_nfcal_hist_buffer(struct ath_hw *ah,
 				  struct ath9k_channel *chan);
 void ath9k_hw_bstuck_nfcal(struct ath_hw *ah);
 void ath9k_hw_reset_calibration(struct ath_hw *ah,
 				struct ath9k_cal_list *currCal);
-s16 ath9k_hw_getchan_noise(struct ath_hw *ah, struct ath9k_channel *chan);
+s16 ath9k_hw_getchan_noise(struct ath_hw *ah, struct ath9k_channel *chan,
+			   s16 nf);
 
 
 #endif /* CALIB_H */

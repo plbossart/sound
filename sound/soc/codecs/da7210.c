@@ -267,33 +267,29 @@ enum clk_src {
  *
  * Reserved area are considered as "mute".
  */
-static const unsigned int hp_out_tlv[] = {
-	TLV_DB_RANGE_HEAD(2),
+static const DECLARE_TLV_DB_RANGE(hp_out_tlv,
 	0x0, 0x10, TLV_DB_SCALE_ITEM(TLV_DB_GAIN_MUTE, 0, 1),
 	/* -54 dB to +15 dB */
-	0x11, 0x3f, TLV_DB_SCALE_ITEM(-5400, 150, 0),
-};
+	0x11, 0x3f, TLV_DB_SCALE_ITEM(-5400, 150, 0)
+);
 
-static const unsigned int lineout_vol_tlv[] = {
-	TLV_DB_RANGE_HEAD(2),
+static const DECLARE_TLV_DB_RANGE(lineout_vol_tlv,
 	0x0, 0x10, TLV_DB_SCALE_ITEM(TLV_DB_GAIN_MUTE, 0, 1),
 	/* -54dB to 15dB */
 	0x11, 0x3f, TLV_DB_SCALE_ITEM(-5400, 150, 0)
-};
+);
 
-static const unsigned int mono_vol_tlv[] = {
-	TLV_DB_RANGE_HEAD(2),
+static const DECLARE_TLV_DB_RANGE(mono_vol_tlv,
 	0x0, 0x2, TLV_DB_SCALE_ITEM(-1800, 0, 1),
 	/* -18dB to 6dB */
 	0x3, 0x7, TLV_DB_SCALE_ITEM(-1800, 600, 0)
-};
+);
 
-static const unsigned int aux1_vol_tlv[] = {
-	TLV_DB_RANGE_HEAD(2),
+static const DECLARE_TLV_DB_RANGE(aux1_vol_tlv,
 	0x0, 0x10, TLV_DB_SCALE_ITEM(TLV_DB_GAIN_MUTE, 0, 1),
 	/* -48dB to 21dB */
 	0x11, 0x3f, TLV_DB_SCALE_ITEM(-4800, 150, 0)
-};
+);
 
 static const DECLARE_TLV_DB_SCALE(eq_gain_tlv, -1050, 150, 0);
 static const DECLARE_TLV_DB_SCALE(adc_eq_master_gain_tlv, -1800, 600, 1);
@@ -307,35 +303,35 @@ static const char * const da7210_hpf_cutoff_txt[] = {
 	"Fs/8192*pi", "Fs/4096*pi", "Fs/2048*pi", "Fs/1024*pi"
 };
 
-static const struct soc_enum da7210_dac_hpf_cutoff =
-	SOC_ENUM_SINGLE(DA7210_DAC_HPF, 0, 4, da7210_hpf_cutoff_txt);
+static SOC_ENUM_SINGLE_DECL(da7210_dac_hpf_cutoff,
+			    DA7210_DAC_HPF, 0, da7210_hpf_cutoff_txt);
 
-static const struct soc_enum da7210_adc_hpf_cutoff =
-	SOC_ENUM_SINGLE(DA7210_ADC_HPF, 0, 4, da7210_hpf_cutoff_txt);
+static SOC_ENUM_SINGLE_DECL(da7210_adc_hpf_cutoff,
+			    DA7210_ADC_HPF, 0, da7210_hpf_cutoff_txt);
 
 /* ADC and DAC voice (8kHz) high pass cutoff value */
 static const char * const da7210_vf_cutoff_txt[] = {
 	"2.5Hz", "25Hz", "50Hz", "100Hz", "150Hz", "200Hz", "300Hz", "400Hz"
 };
 
-static const struct soc_enum da7210_dac_vf_cutoff =
-	SOC_ENUM_SINGLE(DA7210_DAC_HPF, 4, 8, da7210_vf_cutoff_txt);
+static SOC_ENUM_SINGLE_DECL(da7210_dac_vf_cutoff,
+			    DA7210_DAC_HPF, 4, da7210_vf_cutoff_txt);
 
-static const struct soc_enum da7210_adc_vf_cutoff =
-	SOC_ENUM_SINGLE(DA7210_ADC_HPF, 4, 8, da7210_vf_cutoff_txt);
+static SOC_ENUM_SINGLE_DECL(da7210_adc_vf_cutoff,
+			    DA7210_ADC_HPF, 4, da7210_vf_cutoff_txt);
 
 static const char *da7210_hp_mode_txt[] = {
 	"Class H", "Class G"
 };
 
-static const struct soc_enum da7210_hp_mode_sel =
-	SOC_ENUM_SINGLE(DA7210_HP_CFG, 0, 2, da7210_hp_mode_txt);
+static SOC_ENUM_SINGLE_DECL(da7210_hp_mode_sel,
+			    DA7210_HP_CFG, 0, da7210_hp_mode_txt);
 
 /* ALC can be enabled only if noise suppression is disabled */
 static int da7210_put_alc_sw(struct snd_kcontrol *kcontrol,
 			     struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_codec *codec = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_codec *codec = snd_soc_kcontrol_codec(kcontrol);
 
 	if (ucontrol->value.integer.value[0]) {
 		/* Check if noise suppression is enabled */
@@ -358,7 +354,7 @@ static int da7210_put_alc_sw(struct snd_kcontrol *kcontrol,
 static int da7210_put_noise_sup_sw(struct snd_kcontrol *kcontrol,
 				   struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_codec *codec = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_codec *codec = snd_soc_kcontrol_codec(kcontrol);
 	u8 val;
 
 	if (ucontrol->value.integer.value[0]) {
@@ -680,7 +676,7 @@ struct da7210_priv {
 	int master;
 };
 
-static struct reg_default da7210_reg_defaults[] = {
+static const struct reg_default da7210_reg_defaults[] = {
 	{ 0x00, 0x00 },
 	{ 0x01, 0x11 },
 	{ 0x03, 0x00 },
@@ -778,17 +774,17 @@ static int da7210_hw_params(struct snd_pcm_substream *substream,
 
 	dai_cfg1 = 0xFC & snd_soc_read(codec, DA7210_DAI_CFG1);
 
-	switch (params_format(params)) {
-	case SNDRV_PCM_FORMAT_S16_LE:
+	switch (params_width(params)) {
+	case 16:
 		dai_cfg1 |= DA7210_DAI_WORD_S16_LE;
 		break;
-	case SNDRV_PCM_FORMAT_S20_3LE:
+	case 20:
 		dai_cfg1 |= DA7210_DAI_WORD_S20_3LE;
 		break;
-	case SNDRV_PCM_FORMAT_S24_LE:
+	case 24:
 		dai_cfg1 |= DA7210_DAI_WORD_S24_LE;
 		break;
-	case SNDRV_PCM_FORMAT_S32_LE:
+	case 32:
 		dai_cfg1 |= DA7210_DAI_WORD_S32_LE;
 		break;
 	default:
@@ -1071,16 +1067,8 @@ static struct snd_soc_dai_driver da7210_dai = {
 static int da7210_probe(struct snd_soc_codec *codec)
 {
 	struct da7210_priv *da7210 = snd_soc_codec_get_drvdata(codec);
-	int ret;
 
 	dev_info(codec->dev, "DA7210 Audio Codec %s\n", DA7210_VERSION);
-
-	codec->control_data = da7210->regmap;
-	ret = snd_soc_codec_set_cache_io(codec, 8, 8, SND_SOC_REGMAP);
-	if (ret < 0) {
-		dev_err(codec->dev, "Failed to set cache I/O: %d\n", ret);
-		return ret;
-	}
 
 	da7210->mclk_rate       = 0;    /* This will be set from set_sysclk() */
 	da7210->master          = 0;    /* This will be set from set_fmt() */
@@ -1188,9 +1176,9 @@ static struct snd_soc_codec_driver soc_codec_dev_da7210 = {
 	.num_dapm_routes	= ARRAY_SIZE(da7210_audio_map),
 };
 
-#if defined(CONFIG_I2C) || defined(CONFIG_I2C_MODULE)
+#if IS_ENABLED(CONFIG_I2C)
 
-static struct reg_default da7210_regmap_i2c_patch[] = {
+static const struct reg_sequence da7210_regmap_i2c_patch[] = {
 
 	/* System controller master disable */
 	{ DA7210_STARTUP1, 0x00 },
@@ -1218,8 +1206,8 @@ static const struct regmap_config da7210_regmap_config_i2c = {
 	.cache_type = REGCACHE_RBTREE,
 };
 
-static int __devinit da7210_i2c_probe(struct i2c_client *i2c,
-			   	      const struct i2c_device_id *id)
+static int da7210_i2c_probe(struct i2c_client *i2c,
+			    const struct i2c_device_id *id)
 {
 	struct da7210_priv *da7210;
 	int ret;
@@ -1231,7 +1219,7 @@ static int __devinit da7210_i2c_probe(struct i2c_client *i2c,
 
 	i2c_set_clientdata(i2c, da7210);
 
-	da7210->regmap = regmap_init_i2c(i2c, &da7210_regmap_config_i2c);
+	da7210->regmap = devm_regmap_init_i2c(i2c, &da7210_regmap_config_i2c);
 	if (IS_ERR(da7210->regmap)) {
 		ret = PTR_ERR(da7210->regmap);
 		dev_err(&i2c->dev, "regmap_init() failed: %d\n", ret);
@@ -1245,24 +1233,15 @@ static int __devinit da7210_i2c_probe(struct i2c_client *i2c,
 
 	ret =  snd_soc_register_codec(&i2c->dev,
 			&soc_codec_dev_da7210, &da7210_dai, 1);
-	if (ret < 0) {
+	if (ret < 0)
 		dev_err(&i2c->dev, "Failed to register codec: %d\n", ret);
-		goto err_regmap;
-	}
-	return ret;
-
-err_regmap:
-	regmap_exit(da7210->regmap);
 
 	return ret;
 }
 
-static int __devexit da7210_i2c_remove(struct i2c_client *client)
+static int da7210_i2c_remove(struct i2c_client *client)
 {
-	struct da7210_priv *da7210 = i2c_get_clientdata(client);
-
 	snd_soc_unregister_codec(&client->dev);
-	regmap_exit(da7210->regmap);
 	return 0;
 }
 
@@ -1276,17 +1255,16 @@ MODULE_DEVICE_TABLE(i2c, da7210_i2c_id);
 static struct i2c_driver da7210_i2c_driver = {
 	.driver = {
 		.name = "da7210",
-		.owner = THIS_MODULE,
 	},
 	.probe		= da7210_i2c_probe,
-	.remove		= __devexit_p(da7210_i2c_remove),
+	.remove		= da7210_i2c_remove,
 	.id_table	= da7210_i2c_id,
 };
 #endif
 
 #if defined(CONFIG_SPI_MASTER)
 
-static struct reg_default da7210_regmap_spi_patch[] = {
+static const struct reg_sequence da7210_regmap_spi_patch[] = {
 	/* Dummy read to give two pulses over nCS for SPI */
 	{ DA7210_AUX2, 0x00 },
 	{ DA7210_AUX2, 0x00 },
@@ -1323,7 +1301,7 @@ static const struct regmap_config da7210_regmap_config_spi = {
 	.cache_type = REGCACHE_RBTREE,
 };
 
-static int __devinit da7210_spi_probe(struct spi_device *spi)
+static int da7210_spi_probe(struct spi_device *spi)
 {
 	struct da7210_priv *da7210;
 	int ret;
@@ -1346,41 +1324,31 @@ static int __devinit da7210_spi_probe(struct spi_device *spi)
 	if (ret != 0)
 		dev_warn(&spi->dev, "Failed to apply regmap patch: %d\n", ret);
 
-	ret =  snd_soc_register_codec(&spi->dev,
+	ret = snd_soc_register_codec(&spi->dev,
 			&soc_codec_dev_da7210, &da7210_dai, 1);
-	if (ret < 0)
-		goto err_regmap;
-
-	return ret;
-
-err_regmap:
-	regmap_exit(da7210->regmap);
 
 	return ret;
 }
 
-static int __devexit da7210_spi_remove(struct spi_device *spi)
+static int da7210_spi_remove(struct spi_device *spi)
 {
-	struct da7210_priv *da7210 = spi_get_drvdata(spi);
 	snd_soc_unregister_codec(&spi->dev);
-	regmap_exit(da7210->regmap);
 	return 0;
 }
 
 static struct spi_driver da7210_spi_driver = {
 	.driver = {
 		.name = "da7210",
-		.owner = THIS_MODULE,
 	},
 	.probe = da7210_spi_probe,
-	.remove = __devexit_p(da7210_spi_remove)
+	.remove = da7210_spi_remove
 };
 #endif
 
 static int __init da7210_modinit(void)
 {
 	int ret = 0;
-#if defined(CONFIG_I2C) || defined(CONFIG_I2C_MODULE)
+#if IS_ENABLED(CONFIG_I2C)
 	ret = i2c_add_driver(&da7210_i2c_driver);
 #endif
 #if defined(CONFIG_SPI_MASTER)
@@ -1396,7 +1364,7 @@ module_init(da7210_modinit);
 
 static void __exit da7210_exit(void)
 {
-#if defined(CONFIG_I2C) || defined(CONFIG_I2C_MODULE)
+#if IS_ENABLED(CONFIG_I2C)
 	i2c_del_driver(&da7210_i2c_driver);
 #endif
 #if defined(CONFIG_SPI_MASTER)

@@ -36,7 +36,6 @@
 #include <linux/errno.h>
 #include <linux/random.h>
 #include <linux/poll.h>
-#include <linux/init.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
 #include <linux/usb.h>
@@ -338,7 +337,7 @@ write_rio(struct file *file, const char __user *buffer,
 				thistime -= partial;
 			} else
 				break;
-		};
+		}
 		if (result) {
 			dev_err(&rio->rio_dev->dev, "Write Whoops - %x\n",
 				result);

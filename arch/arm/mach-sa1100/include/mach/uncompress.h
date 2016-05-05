@@ -19,7 +19,7 @@
 
 #define UART(x)		(*(volatile unsigned long *)(serial_port + (x)))
 
-static void putc(int c)
+static inline void putc(int c)
 {
 	unsigned long serial_port;
 
@@ -49,4 +49,3 @@ static inline void flush(void)
  * Nothing to do for these
  */
 #define arch_decomp_setup()
-#define arch_decomp_wdog()

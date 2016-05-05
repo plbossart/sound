@@ -51,6 +51,12 @@ cost.
         rproc_shutdown() returns, and users can still use it with a subsequent
         rproc_boot(), if needed.
 
+  struct rproc *rproc_get_by_phandle(phandle phandle)
+    - Find an rproc handle using a device tree phandle. Returns the rproc
+      handle on success, and NULL on failure. This function increments
+      the remote processor's refcount, so always use rproc_put() to
+      decrement it back once rproc isn't needed anymore.
+
 3. Typical usage
 
 #include <linux/remoteproc.h>
@@ -128,6 +134,13 @@ int dummy_rproc_example(struct rproc *my_rproc)
       last refcount should be decremented by calling rproc_put().
 
       Returns 0 on success and -EINVAL if @rproc isn't valid.
+
+  void rproc_report_crash(struct rproc *rproc, enum rproc_crash_type type)
+    - Report a crash in a remoteproc
+      This function must be called every time a crash is detected by the
+      platform specific rproc implementation. This should not be called from a
+      non-remoteproc driver. This function can be called from atomic/interrupt
+      context.
 
 5. Implementation callbacks
 

@@ -687,6 +687,7 @@ static int find_rsb_dir(struct dlm_ls *ls, char *name, int len,
 		log_error(ls, "find_rsb new from_other %d dir %d our %d %s",
 			  from_nodeid, dir_nodeid, our_nodeid, r->res_name);
 		dlm_free_rsb(r);
+		r = NULL;
 		error = -ENOTBLK;
 		goto out_unlock;
 	}
@@ -1132,6 +1133,7 @@ static void toss_rsb(struct kref *kref)
 	rb_erase(&r->res_hashnode, &ls->ls_rsbtbl[r->res_bucket].keep);
 	rsb_insert(r, &ls->ls_rsbtbl[r->res_bucket].toss);
 	r->res_toss_time = jiffies;
+	ls->ls_rsbtbl[r->res_bucket].flags |= DLM_RTF_SHRINK;
 	if (r->res_lvbptr) {
 		dlm_free_lvb(r->res_lvbptr);
 		r->res_lvbptr = NULL;
@@ -1182,7 +1184,7 @@ static void detach_lkb(struct dlm_lkb *lkb)
 static int create_lkb(struct dlm_ls *ls, struct dlm_lkb **lkb_ret)
 {
 	struct dlm_lkb *lkb;
-	int rv, id;
+	int rv;
 
 	lkb = dlm_allocate_lkb(ls);
 	if (!lkb)
@@ -1198,19 +1200,13 @@ static int create_lkb(struct dlm_ls *ls, struct dlm_lkb **lkb_ret)
 	mutex_init(&lkb->lkb_cb_mutex);
 	INIT_WORK(&lkb->lkb_cb_work, dlm_callback_work);
 
- retry:
-	rv = idr_pre_get(&ls->ls_lkbidr, GFP_NOFS);
-	if (!rv)
-		return -ENOMEM;
-
+	idr_preload(GFP_NOFS);
 	spin_lock(&ls->ls_lkbidr_spin);
-	rv = idr_get_new_above(&ls->ls_lkbidr, lkb, 1, &id);
-	if (!rv)
-		lkb->lkb_id = id;
+	rv = idr_alloc(&ls->ls_lkbidr, lkb, 1, 0, GFP_NOWAIT);
+	if (rv >= 0)
+		lkb->lkb_id = rv;
 	spin_unlock(&ls->ls_lkbidr_spin);
-
-	if (rv == -EAGAIN)
-		goto retry;
+	idr_preload_end();
 
 	if (rv < 0) {
 		log_error(ls, "create_lkb idr error %d", rv);
@@ -1659,11 +1655,18 @@ static void shrink_bucket(struct dlm_ls *ls, int b)
 	char *name;
 	int our_nodeid = dlm_our_nodeid();
 	int remote_count = 0;
+	int need_shrink = 0;
 	int i, len, rv;
 
 	memset(&ls->ls_remove_lens, 0, sizeof(int) * DLM_REMOVE_NAMES_MAX);
 
 	spin_lock(&ls->ls_rsbtbl[b].lock);
+
+	if (!(ls->ls_rsbtbl[b].flags & DLM_RTF_SHRINK)) {
+		spin_unlock(&ls->ls_rsbtbl[b].lock);
+		return;
+	}
+
 	for (n = rb_first(&ls->ls_rsbtbl[b].toss); n; n = next) {
 		next = rb_next(n);
 		r = rb_entry(n, struct dlm_rsb, res_hashnode);
@@ -1678,6 +1681,8 @@ static void shrink_bucket(struct dlm_ls *ls, int b)
 		    (dlm_dir_nodeid(r) == our_nodeid)) {
 			continue;
 		}
+
+		need_shrink = 1;
 
 		if (!time_after_eq(jiffies, r->res_toss_time +
 				   dlm_config.ci_toss_secs * HZ)) {
@@ -1710,6 +1715,11 @@ static void shrink_bucket(struct dlm_ls *ls, int b)
 		rb_erase(&r->res_hashnode, &ls->ls_rsbtbl[b].toss);
 		dlm_free_rsb(r);
 	}
+
+	if (need_shrink)
+		ls->ls_rsbtbl[b].flags |= DLM_RTF_SHRINK;
+	else
+		ls->ls_rsbtbl[b].flags &= ~DLM_RTF_SHRINK;
 	spin_unlock(&ls->ls_rsbtbl[b].lock);
 
 	/*
@@ -2029,8 +2039,8 @@ static void set_lvb_lock_pc(struct dlm_rsb *r, struct dlm_lkb *lkb,
 	b = dlm_lvb_operations[lkb->lkb_grmode + 1][lkb->lkb_rqmode + 1];
 	if (b == 1) {
 		int len = receive_extralen(ms);
-		if (len > DLM_RESNAME_MAXLEN)
-			len = DLM_RESNAME_MAXLEN;
+		if (len > r->res_ls->ls_lvblen)
+			len = r->res_ls->ls_lvblen;
 		memcpy(lkb->lkb_lvbptr, ms->m_extra, len);
 		lkb->lkb_lvbseq = ms->m_lvbseq;
 	}
@@ -3884,8 +3894,8 @@ static int receive_lvb(struct dlm_ls *ls, struct dlm_lkb *lkb,
 		if (!lkb->lkb_lvbptr)
 			return -ENOMEM;
 		len = receive_extralen(ms);
-		if (len > DLM_RESNAME_MAXLEN)
-			len = DLM_RESNAME_MAXLEN;
+		if (len > ls->ls_lvblen)
+			len = ls->ls_lvblen;
 		memcpy(lkb->lkb_lvbptr, ms->m_extra, len);
 	}
 	return 0;
@@ -5393,6 +5403,13 @@ static void purge_dead_list(struct dlm_ls *ls, struct dlm_rsb *r,
 		if ((lkb->lkb_nodeid == nodeid_gone) ||
 		    dlm_is_removed(ls, lkb->lkb_nodeid)) {
 
+			/* tell recover_lvb to invalidate the lvb
+			   because a node holding EX/PW failed */
+			if ((lkb->lkb_exflags & DLM_LKF_VALBLK) &&
+			    (lkb->lkb_grmode >= DLM_LOCK_PW)) {
+				rsb_set_flag(r, RSB_RECOVER_LVB_INVAL);
+			}
+
 			del_lkb(r, lkb);
 
 			/* this put should free the lkb */
@@ -5446,7 +5463,7 @@ void dlm_recover_purge(struct dlm_ls *ls)
 	up_write(&ls->ls_root_sem);
 
 	if (lkb_count)
-		log_debug(ls, "dlm_recover_purge %u locks for %u nodes",
+		log_rinfo(ls, "dlm_recover_purge %u locks for %u nodes",
 			  lkb_count, nodes_count);
 }
 
@@ -5520,7 +5537,7 @@ void dlm_recover_grant(struct dlm_ls *ls)
 	}
 
 	if (lkb_count)
-		log_debug(ls, "dlm_recover_grant %u locks on %u resources",
+		log_rinfo(ls, "dlm_recover_grant %u locks on %u resources",
 			  lkb_count, rsb_count);
 }
 
@@ -5679,7 +5696,7 @@ int dlm_recover_master_copy(struct dlm_ls *ls, struct dlm_rcom *rc)
 	put_rsb(r);
  out:
 	if (error && error != -EEXIST)
-		log_debug(ls, "dlm_recover_master_copy remote %d %x error %d",
+		log_rinfo(ls, "dlm_recover_master_copy remote %d %x error %d",
 			  from_nodeid, remid, error);
 	rl->rl_result = cpu_to_le32(error);
 	return error;
@@ -5869,6 +5886,78 @@ int dlm_user_convert(struct dlm_ls *ls, struct dlm_user_args *ua_tmp,
 	return error;
 }
 
+/*
+ * The caller asks for an orphan lock on a given resource with a given mode.
+ * If a matching lock exists, it's moved to the owner's list of locks and
+ * the lkid is returned.
+ */
+
+int dlm_user_adopt_orphan(struct dlm_ls *ls, struct dlm_user_args *ua_tmp,
+		     int mode, uint32_t flags, void *name, unsigned int namelen,
+		     unsigned long timeout_cs, uint32_t *lkid)
+{
+	struct dlm_lkb *lkb;
+	struct dlm_user_args *ua;
+	int found_other_mode = 0;
+	int found = 0;
+	int rv = 0;
+
+	mutex_lock(&ls->ls_orphans_mutex);
+	list_for_each_entry(lkb, &ls->ls_orphans, lkb_ownqueue) {
+		if (lkb->lkb_resource->res_length != namelen)
+			continue;
+		if (memcmp(lkb->lkb_resource->res_name, name, namelen))
+			continue;
+		if (lkb->lkb_grmode != mode) {
+			found_other_mode = 1;
+			continue;
+		}
+
+		found = 1;
+		list_del_init(&lkb->lkb_ownqueue);
+		lkb->lkb_flags &= ~DLM_IFL_ORPHAN;
+		*lkid = lkb->lkb_id;
+		break;
+	}
+	mutex_unlock(&ls->ls_orphans_mutex);
+
+	if (!found && found_other_mode) {
+		rv = -EAGAIN;
+		goto out;
+	}
+
+	if (!found) {
+		rv = -ENOENT;
+		goto out;
+	}
+
+	lkb->lkb_exflags = flags;
+	lkb->lkb_ownpid = (int) current->pid;
+
+	ua = lkb->lkb_ua;
+
+	ua->proc = ua_tmp->proc;
+	ua->xid = ua_tmp->xid;
+	ua->castparam = ua_tmp->castparam;
+	ua->castaddr = ua_tmp->castaddr;
+	ua->bastparam = ua_tmp->bastparam;
+	ua->bastaddr = ua_tmp->bastaddr;
+	ua->user_lksb = ua_tmp->user_lksb;
+
+	/*
+	 * The lkb reference from the ls_orphans list was not
+	 * removed above, and is now considered the reference
+	 * for the proc locks list.
+	 */
+
+	spin_lock(&ua->proc->locks_spin);
+	list_add_tail(&lkb->lkb_ownqueue, &ua->proc->locks);
+	spin_unlock(&ua->proc->locks_spin);
+ out:
+	kfree(ua_tmp);
+	return rv;
+}
+
 int dlm_user_unlock(struct dlm_ls *ls, struct dlm_user_args *ua_tmp,
 		    uint32_t flags, uint32_t lkid, char *lvb_in)
 {
@@ -6012,7 +6101,7 @@ static int orphan_proc_lock(struct dlm_ls *ls, struct dlm_lkb *lkb)
 	struct dlm_args args;
 	int error;
 
-	hold_lkb(lkb);
+	hold_lkb(lkb); /* reference for the ls_orphans list */
 	mutex_lock(&ls->ls_orphans_mutex);
 	list_add_tail(&lkb->lkb_ownqueue, &ls->ls_orphans);
 	mutex_unlock(&ls->ls_orphans_mutex);
@@ -6025,15 +6114,18 @@ static int orphan_proc_lock(struct dlm_ls *ls, struct dlm_lkb *lkb)
 	return error;
 }
 
-/* The force flag allows the unlock to go ahead even if the lkb isn't granted.
-   Regardless of what rsb queue the lock is on, it's removed and freed. */
+/* The FORCEUNLOCK flag allows the unlock to go ahead even if the lkb isn't
+   granted.  Regardless of what rsb queue the lock is on, it's removed and
+   freed.  The IVVALBLK flag causes the lvb on the resource to be invalidated
+   if our lock is PW/EX (it's ignored if our granted mode is smaller.) */
 
 static int unlock_proc_lock(struct dlm_ls *ls, struct dlm_lkb *lkb)
 {
 	struct dlm_args args;
 	int error;
 
-	set_unlock_args(DLM_LKF_FORCEUNLOCK, lkb->lkb_ua, &args);
+	set_unlock_args(DLM_LKF_FORCEUNLOCK | DLM_LKF_IVVALBLK,
+			lkb->lkb_ua, &args);
 
 	error = unlock_lock(ls, lkb, &args);
 	if (error == -DLM_EUNLOCK)
@@ -6197,7 +6289,7 @@ int dlm_user_purge(struct dlm_ls *ls, struct dlm_user_proc *proc,
 {
 	int error = 0;
 
-	if (nodeid != dlm_our_nodeid()) {
+	if (nodeid && (nodeid != dlm_our_nodeid())) {
 		error = send_purge(ls, nodeid, pid);
 	} else {
 		dlm_lock_recovery(ls);

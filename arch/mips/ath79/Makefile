@@ -8,7 +8,7 @@
 # under the terms of the GNU General Public License version 2 as published
 # by the Free Software Foundation.
 
-obj-y	:= prom.o setup.o irq.o common.o clock.o gpio.o
+obj-y	:= prom.o setup.o irq.o common.o clock.o
 
 obj-$(CONFIG_EARLY_PRINTK)		+= early_printk.o
 obj-$(CONFIG_PCI)			+= pci.o
@@ -27,6 +27,7 @@ obj-$(CONFIG_ATH79_DEV_WMAC)		+= dev-wmac.o
 # Machines
 #
 obj-$(CONFIG_ATH79_MACH_AP121)		+= mach-ap121.o
+obj-$(CONFIG_ATH79_MACH_AP136)		+= mach-ap136.o
 obj-$(CONFIG_ATH79_MACH_AP81)		+= mach-ap81.o
 obj-$(CONFIG_ATH79_MACH_DB120)		+= mach-db120.o
 obj-$(CONFIG_ATH79_MACH_PB44)		+= mach-pb44.o

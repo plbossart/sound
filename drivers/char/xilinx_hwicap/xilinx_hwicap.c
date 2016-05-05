@@ -595,7 +595,7 @@ static const struct file_operations hwicap_fops = {
 	.llseek = noop_llseek,
 };
 
-static int __devinit hwicap_setup(struct device *dev, int id,
+static int hwicap_setup(struct device *dev, int id,
 		const struct resource *regs_res,
 		const struct hwicap_driver_config *config,
 		const struct config_registers *config_regs)
@@ -661,6 +661,7 @@ static int __devinit hwicap_setup(struct device *dev, int id,
 	drvdata->base_address = ioremap(drvdata->mem_start, drvdata->mem_size);
 	if (!drvdata->base_address) {
 		dev_err(dev, "ioremap() failed\n");
+		retval = -ENOMEM;
 		goto failed2;
 	}
 
@@ -717,11 +718,11 @@ static struct hwicap_driver_config fifo_icap_config = {
 	.reset = fifo_icap_reset,
 };
 
-static int __devexit hwicap_remove(struct device *dev)
+static int hwicap_remove(struct device *dev)
 {
 	struct hwicap_drvdata *drvdata;
 
-	drvdata = (struct hwicap_drvdata *)dev_get_drvdata(dev);
+	drvdata = dev_get_drvdata(dev);
 
 	if (!drvdata)
 		return 0;
@@ -731,7 +732,6 @@ static int __devexit hwicap_remove(struct device *dev)
 	iounmap(drvdata->base_address);
 	release_mem_region(drvdata->mem_start, drvdata->mem_size);
 	kfree(drvdata);
-	dev_set_drvdata(dev, NULL);
 
 	mutex_lock(&icap_sem);
 	probed_devices[MINOR(dev->devt)-XHWICAP_MINOR] = 0;
@@ -740,7 +740,7 @@ static int __devexit hwicap_remove(struct device *dev)
 }
 
 #ifdef CONFIG_OF
-static int __devinit hwicap_of_probe(struct platform_device *op,
+static int hwicap_of_probe(struct platform_device *op,
 				     const struct hwicap_driver_config *config)
 {
 	struct resource res;
@@ -785,8 +785,8 @@ static inline int hwicap_of_probe(struct platform_device *op,
 }
 #endif /* CONFIG_OF */
 
-static const struct of_device_id __devinitconst hwicap_of_match[];
-static int __devinit hwicap_drv_probe(struct platform_device *pdev)
+static const struct of_device_id hwicap_of_match[];
+static int hwicap_drv_probe(struct platform_device *pdev)
 {
 	const struct of_device_id *match;
 	struct resource *res;
@@ -822,14 +822,14 @@ static int __devinit hwicap_drv_probe(struct platform_device *pdev)
 			&buffer_icap_config, regs);
 }
 
-static int __devexit hwicap_drv_remove(struct platform_device *pdev)
+static int hwicap_drv_remove(struct platform_device *pdev)
 {
 	return hwicap_remove(&pdev->dev);
 }
 
 #ifdef CONFIG_OF
 /* Match table for device tree binding */
-static const struct of_device_id __devinitconst hwicap_of_match[] = {
+static const struct of_device_id hwicap_of_match[] = {
 	{ .compatible = "xlnx,opb-hwicap-1.00.b", .data = &buffer_icap_config},
 	{ .compatible = "xlnx,xps-hwicap-1.00.a", .data = &fifo_icap_config},
 	{},
@@ -843,7 +843,6 @@ static struct platform_driver hwicap_platform_driver = {
 	.probe = hwicap_drv_probe,
 	.remove = hwicap_drv_remove,
 	.driver = {
-		.owner = THIS_MODULE,
 		.name = DRIVER_NAME,
 		.of_match_table = hwicap_of_match,
 	},

@@ -10,9 +10,9 @@
  * published by the Free Software Foundation.
  */
 
-#include <linux/slab.h>
 #include <linux/device.h>
 #include <linux/lzo.h>
+#include <linux/slab.h>
 
 #include "internal.h"
 
@@ -139,7 +139,7 @@ static int regcache_lzo_init(struct regmap *map)
 	ret = 0;
 
 	blkcount = regcache_lzo_block_count(map);
-	map->cache = kzalloc(blkcount * sizeof *lzo_blocks,
+	map->cache = kcalloc(blkcount, sizeof(*lzo_blocks),
 			     GFP_KERNEL);
 	if (!map->cache)
 		return -ENOMEM;
@@ -152,8 +152,8 @@ static int regcache_lzo_init(struct regmap *map)
 	 * that register.
 	 */
 	bmp_size = map->num_reg_defaults_raw;
-	sync_bmp = kmalloc(BITS_TO_LONGS(bmp_size) * sizeof(long),
-			   GFP_KERNEL);
+	sync_bmp = kmalloc_array(BITS_TO_LONGS(bmp_size), sizeof(long),
+				 GFP_KERNEL);
 	if (!sync_bmp) {
 		ret = -ENOMEM;
 		goto err;
@@ -260,8 +260,7 @@ static int regcache_lzo_read(struct regmap *map,
 	ret = regcache_lzo_decompress_cache_block(map, lzo_block);
 	if (ret >= 0)
 		/* fetch the value from the cache */
-		*value = regcache_get_val(lzo_block->dst, blkpos,
-					  map->cache_word_size);
+		*value = regcache_get_val(map, lzo_block->dst, blkpos);
 
 	kfree(lzo_block->dst);
 	/* restore the pointer and length of the compressed block */
@@ -304,8 +303,7 @@ static int regcache_lzo_write(struct regmap *map,
 	}
 
 	/* write the new value to the cache */
-	if (regcache_set_val(lzo_block->dst, blkpos, value,
-			     map->cache_word_size)) {
+	if (regcache_set_val(map, lzo_block->dst, blkpos, value)) {
 		kfree(lzo_block->dst);
 		goto out;
 	}
@@ -357,9 +355,9 @@ static int regcache_lzo_sync(struct regmap *map, unsigned int min,
 		if (ret > 0 && val == map->reg_defaults[ret].def)
 			continue;
 
-		map->cache_bypass = 1;
+		map->cache_bypass = true;
 		ret = _regmap_write(map, i, val);
-		map->cache_bypass = 0;
+		map->cache_bypass = false;
 		if (ret)
 			return ret;
 		dev_dbg(map->dev, "Synced register %#x, value %#x\n",

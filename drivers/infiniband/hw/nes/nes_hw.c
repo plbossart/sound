@@ -35,17 +35,10 @@
 #include <linux/moduleparam.h>
 #include <linux/netdevice.h>
 #include <linux/etherdevice.h>
-#include <linux/ip.h>
-#include <linux/tcp.h>
 #include <linux/if_vlan.h>
-#include <linux/inet_lro.h>
 #include <linux/slab.h>
 
 #include "nes.h"
-
-static unsigned int nes_lro_max_aggr = NES_LRO_MAX_AGGR;
-module_param(nes_lro_max_aggr, uint, 0444);
-MODULE_PARM_DESC(nes_lro_max_aggr, "NIC LRO max packet aggregation");
 
 static int wide_ppm_offset;
 module_param(wide_ppm_offset, int, 0644);
@@ -75,7 +68,6 @@ static void nes_process_iwarp_aeqe(struct nes_device *nesdev,
 static void process_critical_error(struct nes_device *nesdev);
 static void nes_process_mac_intr(struct nes_device *nesdev, u32 mac_number);
 static unsigned int nes_reset_adapter_ne020(struct nes_device *nesdev, u8 *OneG_Mode);
-static void nes_terminate_timeout(unsigned long context);
 static void nes_terminate_start_timer(struct nes_qp *nesqp);
 
 #ifdef CONFIG_INFINIBAND_NES_DEBUG
@@ -1004,13 +996,13 @@ int nes_init_cqp(struct nes_device *nesdev)
 			(sizeof(struct nes_hw_aeqe) * nesadapter->max_qp) +
 			sizeof(struct nes_hw_cqp_qp_context);
 
-	nesdev->cqp_vbase = pci_alloc_consistent(nesdev->pcidev, nesdev->cqp_mem_size,
-			&nesdev->cqp_pbase);
+	nesdev->cqp_vbase = pci_zalloc_consistent(nesdev->pcidev,
+						  nesdev->cqp_mem_size,
+						  &nesdev->cqp_pbase);
 	if (!nesdev->cqp_vbase) {
 		nes_debug(NES_DBG_INIT, "Unable to allocate memory for host descriptor rings\n");
 		return -ENOMEM;
 	}
-	memset(nesdev->cqp_vbase, 0, nesdev->cqp_mem_size);
 
 	/* Allocate a twice the number of CQP requests as the SQ size */
 	nesdev->nes_cqp_requests = kzalloc(sizeof(struct nes_cqp_request) *
@@ -1643,25 +1635,6 @@ static void nes_rq_wqes_timeout(unsigned long parm)
 }
 
 
-static int nes_lro_get_skb_hdr(struct sk_buff *skb, void **iphdr,
-			       void **tcph, u64 *hdr_flags, void *priv)
-{
-	unsigned int ip_len;
-	struct iphdr *iph;
-	skb_reset_network_header(skb);
-	iph = ip_hdr(skb);
-	if (iph->protocol != IPPROTO_TCP)
-		return -1;
-	ip_len = ip_hdrlen(skb);
-	skb_set_transport_header(skb, ip_len);
-	*tcph = tcp_hdr(skb);
-
-	*hdr_flags = LRO_IPV4 | LRO_TCP;
-	*iphdr = iph;
-	return 0;
-}
-
-
 /**
  * nes_init_nic_qp
  */
@@ -1692,13 +1665,13 @@ int nes_init_nic_qp(struct nes_device *nesdev, struct net_device *netdev)
 			(NES_NIC_WQ_SIZE * 2 * sizeof(struct nes_hw_nic_cqe)) +
 			sizeof(struct nes_hw_nic_qp_context);
 
-	nesvnic->nic_vbase = pci_alloc_consistent(nesdev->pcidev, nesvnic->nic_mem_size,
-			&nesvnic->nic_pbase);
+	nesvnic->nic_vbase = pci_zalloc_consistent(nesdev->pcidev,
+						   nesvnic->nic_mem_size,
+						   &nesvnic->nic_pbase);
 	if (!nesvnic->nic_vbase) {
 		nes_debug(NES_DBG_INIT, "Unable to allocate memory for NIC host descriptor rings\n");
 		return -ENOMEM;
 	}
-	memset(nesvnic->nic_vbase, 0, nesvnic->nic_mem_size);
 	nes_debug(NES_DBG_INIT, "Allocated NIC QP structures at %p (phys = %016lX), size = %u.\n",
 			nesvnic->nic_vbase, (unsigned long)nesvnic->nic_pbase, nesvnic->nic_mem_size);
 
@@ -1896,14 +1869,6 @@ int nes_init_nic_qp(struct nes_device *nesdev, struct net_device *netdev)
 		return -ENOMEM;
 	}
 
-	nesvnic->lro_mgr.max_aggr       = nes_lro_max_aggr;
-	nesvnic->lro_mgr.max_desc       = NES_MAX_LRO_DESCRIPTORS;
-	nesvnic->lro_mgr.lro_arr        = nesvnic->lro_desc;
-	nesvnic->lro_mgr.get_skb_header = nes_lro_get_skb_hdr;
-	nesvnic->lro_mgr.features       = LRO_F_NAPI | LRO_F_EXTRACT_VLAN_ID;
-	nesvnic->lro_mgr.dev            = netdev;
-	nesvnic->lro_mgr.ip_summed      = CHECKSUM_UNNECESSARY;
-	nesvnic->lro_mgr.ip_summed_aggr = CHECKSUM_UNNECESSARY;
 	return 0;
 }
 
@@ -2679,11 +2644,9 @@ static void nes_process_mac_intr(struct nes_device *nesdev, u32 mac_number)
 			}
 		}
 		if (nesadapter->phy_type[mac_index] == NES_PHY_TYPE_SFP_D) {
-			if (nesdev->link_recheck)
-				cancel_delayed_work(&nesdev->work);
 			nesdev->link_recheck = 1;
-			schedule_delayed_work(&nesdev->work,
-					      NES_LINK_RECHECK_DELAY);
+			mod_delayed_work(system_wq, &nesdev->work,
+					 NES_LINK_RECHECK_DELAY);
 		}
 	}
 
@@ -2812,13 +2775,10 @@ void nes_nic_ce_handler(struct nes_device *nesdev, struct nes_hw_nic_cq *cq)
 	u16 pkt_type;
 	u16 rqes_processed = 0;
 	u8 sq_cqes = 0;
-	u8 nes_use_lro = 0;
 
 	head = cq->cq_head;
 	cq_size = cq->cq_size;
 	cq->cqes_pending = 1;
-	if (nesvnic->netdev->features & NETIF_F_LRO)
-		nes_use_lro = 1;
 	do {
 		if (le32_to_cpu(cq->cq_vbase[head].cqe_words[NES_NIC_CQE_MISC_IDX]) &
 				NES_NIC_CQE_VALID) {
@@ -2951,12 +2911,9 @@ void nes_nic_ce_handler(struct nes_device *nesdev, struct nes_hw_nic_cq *cq)
 					nes_debug(NES_DBG_CQ, "%s: Reporting stripped VLAN packet. Tag = 0x%04X\n",
 							nesvnic->netdev->name, vlan_tag);
 
-					__vlan_hwaccel_put_tag(rx_skb, vlan_tag);
+					__vlan_hwaccel_put_tag(rx_skb, htons(ETH_P_8021Q), vlan_tag);
 				}
-				if (nes_use_lro)
-					lro_receive_skb(&nesvnic->lro_mgr, rx_skb, NULL);
-				else
-					netif_receive_skb(rx_skb);
+				napi_gro_receive(&nesvnic->napi, rx_skb);
 
 skip_rx_indicate0:
 				;
@@ -2987,8 +2944,6 @@ skip_rx_indicate0:
 
 	} while (1);
 
-	if (nes_use_lro)
-		lro_flush_all(&nesvnic->lro_mgr);
 	if (sq_cqes) {
 		barrier();
 		/* restart the queue if it had been stopped */
@@ -3522,7 +3477,7 @@ static void nes_terminate_received(struct nes_device *nesdev,
 }
 
 /* Timeout routine in case terminate fails to complete */
-static void nes_terminate_timeout(unsigned long context)
+void nes_terminate_timeout(unsigned long context)
 {
 	struct nes_qp *nesqp = (struct nes_qp *)(unsigned long)context;
 
@@ -3532,11 +3487,7 @@ static void nes_terminate_timeout(unsigned long context)
 /* Set a timer in case hw cannot complete the terminate sequence */
 static void nes_terminate_start_timer(struct nes_qp *nesqp)
 {
-	init_timer(&nesqp->terminate_timer);
-	nesqp->terminate_timer.function = nes_terminate_timeout;
-	nesqp->terminate_timer.expires = jiffies + HZ;
-	nesqp->terminate_timer.data = (unsigned long)nesqp;
-	add_timer(&nesqp->terminate_timer);
+	mod_timer(&nesqp->terminate_timer, (jiffies + HZ));
 }
 
 /**
@@ -3868,7 +3819,7 @@ void nes_manage_arp_cache(struct net_device *netdev, unsigned char *mac_addr,
 				(((u32)mac_addr[2]) << 24) | (((u32)mac_addr[3]) << 16) |
 				(((u32)mac_addr[4]) << 8)  | (u32)mac_addr[5]);
 		cqp_wqe->wqe_words[NES_CQP_ARP_WQE_MAC_HIGH_IDX] = cpu_to_le32(
-				(((u32)mac_addr[0]) << 16) | (u32)mac_addr[1]);
+				(((u32)mac_addr[0]) << 8) | (u32)mac_addr[1]);
 	} else {
 		cqp_wqe->wqe_words[NES_CQP_ARP_WQE_MAC_ADDR_LOW_IDX] = 0;
 		cqp_wqe->wqe_words[NES_CQP_ARP_WQE_MAC_HIGH_IDX] = 0;

@@ -90,6 +90,7 @@ enum fip_state {
  * @lp:		   &fc_lport: libfc local port.
  * @sel_fcf:	   currently selected FCF, or NULL.
  * @fcfs:	   list of discovered FCFs.
+ * @cdev:          (Optional) pointer to sysfs fcoe_ctlr_device.
  * @fcf_count:	   number of discovered FCF entries.
  * @sol_time:	   time when a multicast solicitation was last sent.
  * @sel_time:	   time after which to select an FCF.
@@ -127,6 +128,7 @@ struct fcoe_ctlr {
 	struct fc_lport *lp;
 	struct fcoe_fcf *sel_fcf;
 	struct list_head fcfs;
+	struct fcoe_ctlr_device *cdev;
 	u16 fcf_count;
 	unsigned long sol_time;
 	unsigned long sel_time;
@@ -168,8 +170,11 @@ static inline void *fcoe_ctlr_priv(const struct fcoe_ctlr *ctlr)
 	return (void *)(ctlr + 1);
 }
 
+/*
+ * This assumes that the fcoe_ctlr (x) is allocated with the fcoe_ctlr_device.
+ */
 #define fcoe_ctlr_to_ctlr_dev(x)					\
-	(struct fcoe_ctlr_device *)(((struct fcoe_ctlr_device *)(x)) - 1)
+	(x)->cdev
 
 /**
  * struct fcoe_fcf - Fibre-Channel Forwarder
@@ -260,6 +265,9 @@ void __fcoe_get_lesb(struct fc_lport *lport, struct fc_els_lesb *fc_lesb,
 		     struct net_device *netdev);
 void fcoe_wwn_to_str(u64 wwn, char *buf, int len);
 int fcoe_validate_vport_create(struct fc_vport *vport);
+int fcoe_link_speed_update(struct fc_lport *);
+void fcoe_get_lesb(struct fc_lport *, struct fc_els_lesb *);
+void fcoe_ctlr_get_lesb(struct fcoe_ctlr_device *ctlr_dev);
 
 /**
  * is_fip_mode() - returns true if FIP mode selected.
@@ -289,8 +297,11 @@ static inline bool is_fip_mode(struct fcoe_ctlr *fip)
  * @attached:	whether this transport is already attached
  * @list:	list linkage to all attached transports
  * @match:	handler to allow the transport driver to match up a given netdev
+ * @alloc:      handler to allocate per-instance FCoE structures
+ *		(no discovery or login)
  * @create:	handler to sysfs entry of create for FCoE instances
- * @destroy:	handler to sysfs entry of destroy for FCoE instances
+ * @destroy:    handler to delete per-instance FCoE structures
+ *		(frees all memory)
  * @enable:	handler to sysfs entry of enable for FCoE instances
  * @disable:	handler to sysfs entry of disable for FCoE instances
  */
@@ -299,6 +310,7 @@ struct fcoe_transport {
 	bool attached;
 	struct list_head list;
 	bool (*match) (struct net_device *device);
+	int (*alloc) (struct net_device *device);
 	int (*create) (struct net_device *device, enum fip_state fip_mode);
 	int (*destroy) (struct net_device *device);
 	int (*enable) (struct net_device *device);
@@ -327,7 +339,6 @@ struct fcoe_percpu_s {
  * @lport:		       The associated local port
  * @fcoe_pending_queue:	       The pending Rx queue of skbs
  * @fcoe_pending_queue_active: Indicates if the pending queue is active
- * @priority:		       Packet priority (DCB)
  * @max_queue_depth:	       Max queue depth of pending queue
  * @min_queue_depth:	       Min queue depth of pending queue
  * @timer:		       The queue timer
@@ -343,13 +354,25 @@ struct fcoe_port {
 	struct fc_lport	      *lport;
 	struct sk_buff_head   fcoe_pending_queue;
 	u8		      fcoe_pending_queue_active;
-	u8		      priority;
 	u32		      max_queue_depth;
 	u32		      min_queue_depth;
 	struct timer_list     timer;
 	struct work_struct    destroy_work;
 	u8		      data_src_addr[ETH_ALEN];
+	struct net_device * (*get_netdev)(const struct fc_lport *lport);
 };
+
+/**
+ * fcoe_get_netdev() - Return the net device associated with a local port
+ * @lport: The local port to get the net device from
+ */
+static inline struct net_device *fcoe_get_netdev(const struct fc_lport *lport)
+{
+	struct fcoe_port *port = ((struct fcoe_port *)lport_priv(lport));
+
+	return (port->get_netdev) ? port->get_netdev(lport) : NULL;
+}
+
 void fcoe_clean_pending_queue(struct fc_lport *);
 void fcoe_check_wait_queue(struct fc_lport *lport, struct sk_buff *skb);
 void fcoe_queue_timer(ulong lport);
@@ -358,7 +381,7 @@ int fcoe_get_paged_crc_eof(struct sk_buff *skb, int tlen,
 
 /* FCoE Sysfs helpers */
 void fcoe_fcf_get_selected(struct fcoe_fcf_device *);
-void fcoe_ctlr_get_fip_mode(struct fcoe_ctlr_device *);
+void fcoe_ctlr_set_fip_mode(struct fcoe_ctlr_device *);
 
 /**
  * struct netdev_list
@@ -374,4 +397,12 @@ struct fcoe_netdev_mapping {
 int fcoe_transport_attach(struct fcoe_transport *ft);
 int fcoe_transport_detach(struct fcoe_transport *ft);
 
+/* sysfs store handler for ctrl_control interface */
+ssize_t fcoe_ctlr_create_store(struct bus_type *bus,
+			       const char *buf, size_t count);
+ssize_t fcoe_ctlr_destroy_store(struct bus_type *bus,
+				const char *buf, size_t count);
+
 #endif /* _LIBFCOE_H */
+
+

@@ -14,25 +14,25 @@
 
 #include <sound/soc.h>
 
-struct asoc_simple_dai_init_info {
-	unsigned int fmt;
-	unsigned int cpu_daifmt;
-	unsigned int codec_daifmt;
+struct asoc_simple_dai {
+	const char *name;
 	unsigned int sysclk;
+	int slots;
+	int slot_width;
+	unsigned int tx_slot_mask;
+	unsigned int rx_slot_mask;
+	struct clk *clk;
 };
 
 struct asoc_simple_card_info {
 	const char *name;
 	const char *card;
-	const char *cpu_dai;
 	const char *codec;
 	const char *platform;
-	const char *codec_dai;
-	struct asoc_simple_dai_init_info *init; /* for snd_link.init */
 
-	/* used in simple-card.c */
-	struct snd_soc_dai_link snd_link;
-	struct snd_soc_card snd_card;
+	unsigned int daifmt;
+	struct asoc_simple_dai cpu_dai;
+	struct asoc_simple_dai codec_dai;
 };
 
 #endif /* __SIMPLE_CARD_H */

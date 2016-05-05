@@ -99,8 +99,8 @@ static const struct file_operations vmlogrdr_fops = {
 };
 
 
-static void vmlogrdr_iucv_path_complete(struct iucv_path *, u8 ipuser[16]);
-static void vmlogrdr_iucv_path_severed(struct iucv_path *, u8 ipuser[16]);
+static void vmlogrdr_iucv_path_complete(struct iucv_path *, u8 *ipuser);
+static void vmlogrdr_iucv_path_severed(struct iucv_path *, u8 *ipuser);
 static void vmlogrdr_iucv_message_pending(struct iucv_path *,
 					  struct iucv_message *);
 
@@ -160,7 +160,7 @@ static struct cdev  *vmlogrdr_cdev = NULL;
 static int recording_class_AB;
 
 
-static void vmlogrdr_iucv_path_complete(struct iucv_path *path, u8 ipuser[16])
+static void vmlogrdr_iucv_path_complete(struct iucv_path *path, u8 *ipuser)
 {
 	struct vmlogrdr_priv_t * logptr = path->private;
 
@@ -171,7 +171,7 @@ static void vmlogrdr_iucv_path_complete(struct iucv_path *path, u8 ipuser[16])
 }
 
 
-static void vmlogrdr_iucv_path_severed(struct iucv_path *path, u8 ipuser[16])
+static void vmlogrdr_iucv_path_severed(struct iucv_path *path, u8 *ipuser)
 {
 	struct vmlogrdr_priv_t * logptr = path->private;
 	u8 reason = (u8) ipuser[8];
@@ -313,7 +313,7 @@ static int vmlogrdr_open (struct inode *inode, struct file *filp)
 	int ret;
 
 	dev_num = iminor(inode);
-	if (dev_num > MAXMINOR)
+	if (dev_num >= MAXMINOR)
 		return -ENODEV;
 	logptr = &sys_ser[dev_num];
 
@@ -321,7 +321,7 @@ static int vmlogrdr_open (struct inode *inode, struct file *filp)
 	 * only allow for blocking reads to be open
 	 */
 	if (filp->f_flags & O_NONBLOCK)
-		return -ENOSYS;
+		return -EOPNOTSUPP;
 
 	/* Besure this device hasn't already been opened */
 	spin_lock_bh(&logptr->priv_lock);
@@ -338,14 +338,12 @@ static int vmlogrdr_open (struct inode *inode, struct file *filp)
 
 	/* set the file options */
 	filp->private_data = logptr;
-	filp->f_op = &vmlogrdr_fops;
 
 	/* start recording for this service*/
 	if (logptr->autorecording) {
 		ret = vmlogrdr_recording(logptr,1,logptr->autopurge);
 		if (ret)
-			pr_warning("vmlogrdr: failed to start "
-				   "recording automatically\n");
+			pr_warn("vmlogrdr: failed to start recording automatically\n");
 	}
 
 	/* create connection to the system service */
@@ -397,8 +395,7 @@ static int vmlogrdr_release (struct inode *inode, struct file *filp)
 	if (logptr->autorecording) {
 		ret = vmlogrdr_recording(logptr,0,logptr->autopurge);
 		if (ret)
-			pr_warning("vmlogrdr: failed to stop "
-				   "recording automatically\n");
+			pr_warn("vmlogrdr: failed to stop recording automatically\n");
 	}
 	logptr->dev_in_use = 0;
 
@@ -761,7 +758,7 @@ static int vmlogrdr_register_device(struct vmlogrdr_priv_t *priv)
 
 	dev = kzalloc(sizeof(struct device), GFP_KERNEL);
 	if (dev) {
-		dev_set_name(dev, priv->internal_name);
+		dev_set_name(dev, "%s", priv->internal_name);
 		dev->bus = &iucv_bus;
 		dev->parent = iucv_root;
 		dev->driver = &vmlogrdr_driver;

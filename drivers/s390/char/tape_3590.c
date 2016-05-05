@@ -1090,7 +1090,7 @@ tape_3590_print_io_sim_msg_f1(struct tape_device *device, struct irb *irb)
 				"channel path 0x%x on CU",
 				sense->fmt.f71.md[1]);
 		else
-			snprintf(service, BUFSIZE, "Repair will disable cannel"
+			snprintf(service, BUFSIZE, "Repair will disable channel"
 				" paths (0x%x-0x%x) on CU",
 				sense->fmt.f71.md[1], sense->fmt.f71.md[2]);
 		break;
@@ -1481,7 +1481,7 @@ tape_3590_irq(struct tape_device *device, struct tape_request *request,
 	}
 
 	if (irb->scsw.cmd.dstat & DEV_STAT_CHN_END) {
-		DBF_EVENT(2, "cannel end\n");
+		DBF_EVENT(2, "channel end\n");
 		return TAPE_IO_PENDING;
 	}
 
@@ -1656,7 +1656,7 @@ static struct ccw_driver tape_3590_driver = {
 	.set_offline = tape_generic_offline,
 	.set_online = tape_3590_online,
 	.freeze = tape_generic_pm_suspend,
-	.int_class = IOINT_TAP,
+	.int_class = IRQIO_TAP,
 };
 
 /*

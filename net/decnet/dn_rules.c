@@ -220,7 +220,7 @@ static void dn_fib_rule_flush_cache(struct fib_rules_ops *ops)
 	dn_rt_cache_flush(-1);
 }
 
-static const struct fib_rules_ops __net_initdata dn_fib_rules_ops_template = {
+static const struct fib_rules_ops __net_initconst dn_fib_rules_ops_template = {
 	.family		= AF_DECnet,
 	.rule_size	= sizeof(struct dn_fib_rule),
 	.addr_size	= sizeof(u16),
@@ -229,7 +229,6 @@ static const struct fib_rules_ops __net_initdata dn_fib_rules_ops_template = {
 	.configure	= dn_fib_rule_configure,
 	.compare	= dn_fib_rule_compare,
 	.fill		= dn_fib_rule_fill,
-	.default_pref	= fib_default_rule_pref,
 	.flush_cache	= dn_fib_rule_flush_cache,
 	.nlgroup	= RTNLGRP_DECnet_RULE,
 	.policy		= dn_fib_rule_policy,
@@ -248,7 +247,9 @@ void __init dn_fib_rules_init(void)
 
 void __exit dn_fib_rules_cleanup(void)
 {
+	rtnl_lock();
 	fib_rules_unregister(dn_fib_rules_ops);
+	rtnl_unlock();
 	rcu_barrier();
 }
 

@@ -41,19 +41,19 @@
 #include <linux/regulator/machine.h>
 #include <linux/regulator/fixed.h>
 
-#include <mach/hardware.h>
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
 #include <asm/mach/time.h>
 #include <asm/memory.h>
 #include <asm/mach/map.h>
 
-#include <mach/common.h>
-#include <mach/iomux-mx3.h>
-#include <mach/ulpi.h>
-
+#include "common.h"
 #include "devices-imx31.h"
 #include "crmregs-imx3.h"
+#include "ehci.h"
+#include "hardware.h"
+#include "iomux-mx3.h"
+#include "ulpi.h"
 
 static int armadillo5x0_pins[] = {
 	/* UART1 */
@@ -405,8 +405,7 @@ static int armadillo5x0_sdhc1_init(struct device *dev,
 
 	/* When supported the trigger type have to be BOTH */
 	ret = request_irq(gpio_to_irq(IOMUX_TO_GPIO(MX31_PIN_ATA_DMACK)),
-			  detect_irq,
-			  IRQF_DISABLED | IRQF_TRIGGER_FALLING,
+			  detect_irq, IRQF_TRIGGER_FALLING,
 			  "sdhc-detect", data);
 
 	if (ret)
@@ -526,7 +525,8 @@ static void __init armadillo5x0_init(void)
 	imx31_add_mxc_nand(&armadillo5x0_nand_board_info);
 
 	/* set NAND page size to 2k if not configured via boot mode pins */
-	__raw_writel(__raw_readl(MXC_CCM_RCSR) | (1 << 30), MXC_CCM_RCSR);
+	imx_writel(imx_readl(mx3_ccm_base + MXC_CCM_RCSR) | (1 << 30),
+		   mx3_ccm_base + MXC_CCM_RCSR);
 
 	/* RTC */
 	/* Get RTC IRQ and register the chip */
@@ -537,7 +537,7 @@ static void __init armadillo5x0_init(void)
 			gpio_free(ARMADILLO5X0_RTC_GPIO);
 	}
 	if (armadillo5x0_i2c_rtc.irq == 0)
-		pr_warning("armadillo5x0_init: failed to get RTC IRQ\n");
+		pr_warn("armadillo5x0_init: failed to get RTC IRQ\n");
 	i2c_register_board_info(1, &armadillo5x0_i2c_rtc, 1);
 
 	/* USB */
@@ -557,18 +557,13 @@ static void __init armadillo5x0_timer_init(void)
 	mx31_clocks_init(26000000);
 }
 
-static struct sys_timer armadillo5x0_timer = {
-	.init	= armadillo5x0_timer_init,
-};
-
 MACHINE_START(ARMADILLO5X0, "Armadillo-500")
 	/* Maintainer: Alberto Panizzo  */
 	.atag_offset = 0x100,
 	.map_io = mx31_map_io,
 	.init_early = imx31_init_early,
 	.init_irq = mx31_init_irq,
-	.handle_irq = imx31_handle_irq,
-	.timer = &armadillo5x0_timer,
+	.init_time	= armadillo5x0_timer_init,
 	.init_machine = armadillo5x0_init,
 	.restart	= mxc_restart,
 MACHINE_END

@@ -33,6 +33,11 @@ struct r10conf {
 					       * far_offset, in which case it is
 					       * 1 stripe.
 					       */
+		int             far_set_size; /* The number of devices in a set,
+					       * where a 'set' are devices that
+					       * contain far/offset copies of
+					       * each other.
+					       */
 		int		chunk_shift; /* shift from chunks to sectors */
 		sector_t	chunk_mask;
 	} prev, geo;
@@ -48,6 +53,12 @@ struct r10conf {
 	sector_t		offset_diff;
 
 	struct list_head	retry_list;
+	/* A separate list of r1bio which just need raid_end_bio_io called.
+	 * This mustn't happen for writes which had any errors if the superblock
+	 * needs to be written.
+	 */
+	struct list_head	bio_end_io_list;
+
 	/* queue pending writes and submit them on unplug */
 	struct bio_list		pending_bio_list;
 	int			pending_count;
@@ -110,7 +121,7 @@ struct r10bio {
 	 * We choose the number when they are allocated.
 	 * We sometimes need an extra bio to write to the replacement.
 	 */
-	struct {
+	struct r10dev {
 		struct bio	*bio;
 		union {
 			struct bio	*repl_bio; /* used for resync and
@@ -145,7 +156,4 @@ enum r10bio_state {
  */
 	R10BIO_Previous,
 };
-
-extern int md_raid10_congested(struct mddev *mddev, int bits);
-
 #endif

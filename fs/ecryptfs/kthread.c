@@ -102,12 +102,12 @@ int __init ecryptfs_init_kthread(void)
 
 void ecryptfs_destroy_kthread(void)
 {
-	struct ecryptfs_open_req *req;
+	struct ecryptfs_open_req *req, *tmp;
 
 	mutex_lock(&ecryptfs_kthread_ctl.mux);
 	ecryptfs_kthread_ctl.flags |= ECRYPTFS_KTHREAD_ZOMBIE;
-	list_for_each_entry(req, &ecryptfs_kthread_ctl.req_list,
-			    kthread_ctl_list) {
+	list_for_each_entry_safe(req, tmp, &ecryptfs_kthread_ctl.req_list,
+				 kthread_ctl_list) {
 		list_del(&req->kthread_ctl_list);
 		*req->lower_file = ERR_PTR(-EIO);
 		complete(&req->done);
@@ -144,7 +144,7 @@ int ecryptfs_privileged_open(struct file **lower_file,
 	/* Corresponding dput() and mntput() are done when the
 	 * lower file is fput() when all eCryptfs files for the inode are
 	 * released. */
-	flags |= IS_RDONLY(lower_dentry->d_inode) ? O_RDONLY : O_RDWR;
+	flags |= IS_RDONLY(d_inode(lower_dentry)) ? O_RDONLY : O_RDWR;
 	(*lower_file) = dentry_open(&req.path, flags, cred);
 	if (!IS_ERR(*lower_file))
 		goto out;

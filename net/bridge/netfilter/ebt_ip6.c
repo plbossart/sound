@@ -48,10 +48,12 @@ ebt_ip6_mt(const struct sk_buff *skb, struct xt_action_param *par)
 	if (info->bitmask & EBT_IP6_TCLASS &&
 	   FWINV(info->tclass != ipv6_get_dsfield(ih6), EBT_IP6_TCLASS))
 		return false;
-	if (FWINV(ipv6_masked_addr_cmp(&ih6->saddr, &info->smsk,
-				       &info->saddr), EBT_IP6_SOURCE) ||
+	if ((info->bitmask & EBT_IP6_SOURCE &&
+	    FWINV(ipv6_masked_addr_cmp(&ih6->saddr, &info->smsk,
+				       &info->saddr), EBT_IP6_SOURCE)) ||
+	    (info->bitmask & EBT_IP6_DEST &&
 	    FWINV(ipv6_masked_addr_cmp(&ih6->daddr, &info->dmsk,
-				       &info->daddr), EBT_IP6_DEST))
+				       &info->daddr), EBT_IP6_DEST)))
 		return false;
 	if (info->bitmask & EBT_IP6_PROTO) {
 		uint8_t nexthdr = ih6->nexthdr;
@@ -63,8 +65,8 @@ ebt_ip6_mt(const struct sk_buff *skb, struct xt_action_param *par)
 			return false;
 		if (FWINV(info->protocol != nexthdr, EBT_IP6_PROTO))
 			return false;
-		if (!(info->bitmask & ( EBT_IP6_DPORT |
-					EBT_IP6_SPORT | EBT_IP6_ICMP6)))
+		if (!(info->bitmask & (EBT_IP6_DPORT |
+				       EBT_IP6_SPORT | EBT_IP6_ICMP6)))
 			return true;
 
 		/* min icmpv6 headersize is 4, so sizeof(_pkthdr) is ok. */

@@ -30,12 +30,11 @@
 #include <asm/mach/arch.h>
 #include <asm/mach/map.h>
 
-#include <mach/hardware.h>
-#include <mach/common.h>
-#include <mach/iomux-mx3.h>
-#include <mach/board-mx31lilly.h>
-
+#include "board-mx31lilly.h"
+#include "common.h"
 #include "devices-imx31.h"
+#include "hardware.h"
+#include "iomux-mx3.h"
 
 /*
  * This file contains board-specific initialization routines for the
@@ -131,8 +130,7 @@ static int mxc_mmc1_init(struct device *dev,
 	gpio_direction_input(gpio_wp);
 
 	ret = request_irq(gpio_to_irq(IOMUX_TO_GPIO(MX31_PIN_GPIO1_1)),
-			  detect_irq,
-			  IRQF_DISABLED | IRQF_TRIGGER_FALLING,
+			  detect_irq, IRQF_TRIGGER_FALLING,
 			  "MMC detect", data);
 	if (ret)
 		goto exit_free_wp;

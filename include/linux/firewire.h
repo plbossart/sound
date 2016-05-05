@@ -200,6 +200,7 @@ struct fw_device {
 	unsigned irmc:1;
 	unsigned bc_implemented:2;
 
+	work_func_t workfn;
 	struct delayed_work work;
 	struct fw_attribute_group attribute_group;
 };
@@ -251,8 +252,10 @@ struct ieee1394_device_id;
 
 struct fw_driver {
 	struct device_driver driver;
+	int (*probe)(struct fw_unit *unit, const struct ieee1394_device_id *id);
 	/* Called when the parent device sits through a bus reset. */
 	void (*update)(struct fw_unit *unit);
+	void (*remove)(struct fw_unit *unit);
 	const struct ieee1394_device_id *id_table;
 };
 
@@ -265,8 +268,16 @@ typedef void (*fw_transaction_callback_t)(struct fw_card *card, int rcode,
 					  void *data, size_t length,
 					  void *callback_data);
 /*
- * Important note:  Except for the FCP registers, the callback must guarantee
- * that either fw_send_response() or kfree() is called on the @request.
+ * This callback handles an inbound request subaction.  It is called in
+ * RCU read-side context, therefore must not sleep.
+ *
+ * The callback should not initiate outbound request subactions directly.
+ * Otherwise there is a danger of recursion of inbound and outbound
+ * transactions from and to the local node.
+ *
+ * The callback is responsible that either fw_send_response() or kfree()
+ * is called on the @request, except for FCP registers for which the core
+ * takes care of that.
  */
 typedef void (*fw_address_callback_t)(struct fw_card *card,
 				      struct fw_request *request,
@@ -356,6 +367,9 @@ static inline int fw_stream_packet_destination_id(int tag, int channel, int sy)
 	return tag << 14 | channel << 8 | sy;
 }
 
+void fw_schedule_bus_reset(struct fw_card *card, bool delayed,
+			   bool short_reset);
+
 struct fw_descriptor {
 	struct list_head link;
 	size_t length;
@@ -426,6 +440,7 @@ struct fw_iso_context {
 	int type;
 	int channel;
 	int speed;
+	bool drop_overflow_headers;
 	size_t header_size;
 	union {
 		fw_iso_callback_t sc;

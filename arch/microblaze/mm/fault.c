@@ -32,7 +32,7 @@
 #include <asm/page.h>
 #include <asm/pgtable.h>
 #include <asm/mmu.h>
-#include <asm/mmu_context.h>
+#include <linux/mmu_context.h>
 #include <linux/uaccess.h>
 #include <asm/exceptions.h>
 
@@ -92,15 +92,14 @@ void do_page_fault(struct pt_regs *regs, unsigned long address,
 	int code = SEGV_MAPERR;
 	int is_write = error_code & ESR_S;
 	int fault;
-	unsigned int flags = FAULT_FLAG_ALLOW_RETRY | FAULT_FLAG_KILLABLE |
-					 (is_write ? FAULT_FLAG_WRITE : 0);
+	unsigned int flags = FAULT_FLAG_ALLOW_RETRY | FAULT_FLAG_KILLABLE;
 
 	regs->ear = address;
 	regs->esr = error_code;
 
 	/* On a kernel SLB miss we can only check for a valid exception entry */
 	if (unlikely(kernel_mode(regs) && (address >= TASK_SIZE))) {
-		printk(KERN_WARNING "kernel task_size exceed");
+		pr_warn("kernel task_size exceed");
 		_exception(SIGSEGV, regs, code, address);
 	}
 
@@ -108,18 +107,21 @@ void do_page_fault(struct pt_regs *regs, unsigned long address,
 	if ((error_code & 0x13) == 0x13 || (error_code & 0x11) == 0x11)
 		is_write = 0;
 
-	if (unlikely(in_atomic() || !mm)) {
+	if (unlikely(faulthandler_disabled() || !mm)) {
 		if (kernel_mode(regs))
 			goto bad_area_nosemaphore;
 
-		/* in_atomic() in user mode is really bad,
+		/* faulthandler_disabled() in user mode is really bad,
 		   as is current->mm == NULL. */
-		printk(KERN_EMERG "Page fault in user mode with "
-		       "in_atomic(), mm = %p\n", mm);
-		printk(KERN_EMERG "r15 = %lx  MSR = %lx\n",
+		pr_emerg("Page fault in user mode with faulthandler_disabled(), mm = %p\n",
+			 mm);
+		pr_emerg("r15 = %lx  MSR = %lx\n",
 		       regs->r15, regs->msr);
 		die("Weird page fault", regs, SIGSEGV);
 	}
+
+	if (user_mode(regs))
+		flags |= FAULT_FLAG_USER;
 
 	/* When running in the kernel we expect faults to occur only to
 	 * addresses in user space.  All other faults represent errors in the
@@ -199,6 +201,7 @@ good_area:
 	if (unlikely(is_write)) {
 		if (unlikely(!(vma->vm_flags & VM_WRITE)))
 			goto bad_area;
+		flags |= FAULT_FLAG_WRITE;
 	/* a read */
 	} else {
 		/* protection fault */
@@ -221,6 +224,8 @@ good_area:
 	if (unlikely(fault & VM_FAULT_ERROR)) {
 		if (fault & VM_FAULT_OOM)
 			goto out_of_memory;
+		else if (fault & VM_FAULT_SIGSEGV)
+			goto bad_area;
 		else if (fault & VM_FAULT_SIGBUS)
 			goto do_sigbus;
 		BUG();
@@ -233,6 +238,7 @@ good_area:
 			current->min_flt++;
 		if (fault & VM_FAULT_RETRY) {
 			flags &= ~FAULT_FLAG_ALLOW_RETRY;
+			flags |= FAULT_FLAG_TRIED;
 
 			/*
 			 * No need to up_read(&mm->mmap_sem) as we would

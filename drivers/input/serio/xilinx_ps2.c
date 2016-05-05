@@ -20,11 +20,11 @@
 #include <linux/interrupt.h>
 #include <linux/errno.h>
 #include <linux/slab.h>
-#include <linux/init.h>
 #include <linux/list.h>
 #include <linux/io.h>
 #include <linux/of_address.h>
 #include <linux/of_device.h>
+#include <linux/of_irq.h>
 #include <linux/of_platform.h>
 
 #define DRIVER_NAME		"xilinx_ps2"
@@ -233,14 +233,14 @@ static void sxps2_close(struct serio *pserio)
  * It returns 0, if the driver is bound to the PS/2 device, or a negative
  * value if there is an error.
  */
-static int __devinit xps2_of_probe(struct platform_device *ofdev)
+static int xps2_of_probe(struct platform_device *ofdev)
 {
-	struct resource r_irq; /* Interrupt resources */
 	struct resource r_mem; /* IO mem resources */
 	struct xps2data *drvdata;
 	struct serio *serio;
 	struct device *dev = &ofdev->dev;
 	resource_size_t remap_size, phys_addr;
+	unsigned int irq;
 	int error;
 
 	dev_info(dev, "Device Tree Probing \'%s\'\n",
@@ -254,7 +254,8 @@ static int __devinit xps2_of_probe(struct platform_device *ofdev)
 	}
 
 	/* Get IRQ for the device */
-	if (!of_irq_to_resource(ofdev->dev.of_node, 0, &r_irq)) {
+	irq = irq_of_parse_and_map(ofdev->dev.of_node, 0);
+	if (!irq) {
 		dev_err(dev, "no IRQ found\n");
 		return -ENODEV;
 	}
@@ -267,7 +268,7 @@ static int __devinit xps2_of_probe(struct platform_device *ofdev)
 	}
 
 	spin_lock_init(&drvdata->lock);
-	drvdata->irq = r_irq.start;
+	drvdata->irq = irq;
 	drvdata->serio = serio;
 	drvdata->dev = dev;
 
@@ -333,7 +334,7 @@ failed1:
  * if the driver module is being unloaded. It frees any resources allocated to
  * the device.
  */
-static int __devexit xps2_of_remove(struct platform_device *of_dev)
+static int xps2_of_remove(struct platform_device *of_dev)
 {
 	struct xps2data *drvdata = platform_get_drvdata(of_dev);
 	struct resource r_mem; /* IO mem resources */
@@ -349,13 +350,11 @@ static int __devexit xps2_of_remove(struct platform_device *of_dev)
 
 	kfree(drvdata);
 
-	platform_set_drvdata(of_dev, NULL);
-
 	return 0;
 }
 
 /* Match table for of_platform binding */
-static const struct of_device_id xps2_of_match[] __devinitconst = {
+static const struct of_device_id xps2_of_match[] = {
 	{ .compatible = "xlnx,xps-ps2-1.00.a", },
 	{ /* end of list */ },
 };
@@ -364,11 +363,10 @@ MODULE_DEVICE_TABLE(of, xps2_of_match);
 static struct platform_driver xps2_of_driver = {
 	.driver = {
 		.name = DRIVER_NAME,
-		.owner = THIS_MODULE,
 		.of_match_table = xps2_of_match,
 	},
 	.probe		= xps2_of_probe,
-	.remove		= __devexit_p(xps2_of_remove),
+	.remove		= xps2_of_remove,
 };
 module_platform_driver(xps2_of_driver);
 

@@ -9,9 +9,6 @@
 
 #include <mach-common/irq.h>
 
-#undef BFIN_IRQ
-#define BFIN_IRQ(x) ((x) + IVG15)
-
 #define NR_PERI_INTS		(5 * 32)
 
 #define IRQ_SEC_ERR		BFIN_IRQ(0)	/* SEC Error */
@@ -301,7 +298,7 @@
 extern u8 sec_int_priority[];
 
 /*
- * bfin pint registers layout
+ * gpio pint registers layout
  */
 struct bfin_pint_regs {
 	u32 mask_set;

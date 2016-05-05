@@ -14,7 +14,6 @@
 
 #include <linux/atomic.h>
 #include <linux/device.h>
-#include <linux/kobject.h>
 #include <linux/completion.h>
 #include <linux/workqueue.h>
 #include <linux/debugfs.h>
@@ -29,12 +28,38 @@ struct device;
 extern int edac_op_state;
 extern int edac_err_assert;
 extern atomic_t edac_handlers;
-extern struct bus_type edac_subsys;
 
 extern int edac_handler_set(void);
 extern void edac_atomic_assert_error(void);
 extern struct bus_type *edac_get_sysfs_subsys(void);
-extern void edac_put_sysfs_subsys(void);
+
+enum {
+	EDAC_REPORTING_ENABLED,
+	EDAC_REPORTING_DISABLED,
+	EDAC_REPORTING_FORCE
+};
+
+extern int edac_report_status;
+#ifdef CONFIG_EDAC
+static inline int get_edac_report_status(void)
+{
+	return edac_report_status;
+}
+
+static inline void set_edac_report_status(int new)
+{
+	edac_report_status = new;
+}
+#else
+static inline int get_edac_report_status(void)
+{
+	return EDAC_REPORTING_DISABLED;
+}
+
+static inline void set_edac_report_status(int new)
+{
+}
+#endif
 
 static inline void opstate_init(void)
 {
@@ -48,8 +73,17 @@ static inline void opstate_init(void)
 	return;
 }
 
+/* Max length of a DIMM label*/
 #define EDAC_MC_LABEL_LEN	31
-#define MC_PROC_NAME_MAX_LEN	7
+
+/* Maximum size of the location string */
+#define LOCATION_SIZE 256
+
+/* Defines the maximum number of labels that can be reported */
+#define EDAC_MAX_LABELS		8
+
+/* String used to join two or more labels */
+#define OTHER_LABEL " or "
 
 /**
  * enum dev_type - describe the type of memory DRAM chips used at the stick
@@ -101,7 +135,23 @@ enum hw_event_mc_err_type {
 	HW_EVENT_ERR_CORRECTED,
 	HW_EVENT_ERR_UNCORRECTED,
 	HW_EVENT_ERR_FATAL,
+	HW_EVENT_ERR_INFO,
 };
+
+static inline char *mc_event_error_type(const unsigned int err_type)
+{
+	switch (err_type) {
+	case HW_EVENT_ERR_CORRECTED:
+		return "Corrected";
+	case HW_EVENT_ERR_UNCORRECTED:
+		return "Uncorrected";
+	case HW_EVENT_ERR_FATAL:
+		return "Fatal";
+	default:
+	case HW_EVENT_ERR_INFO:
+		return "Info";
+	}
+}
 
 /**
  * enum mem_type - memory types. For a more detailed reference, please see
@@ -142,6 +192,10 @@ enum hw_event_mc_err_type {
  * @MEM_DDR3:		DDR3 RAM
  * @MEM_RDDR3:		Registered DDR3 RAM
  *			This is a variant of the DDR3 memories.
+ * @MEM_LRDDR3		Load-Reduced DDR3 memory.
+ * @MEM_DDR4:		Unbuffered DDR4 RAM
+ * @MEM_RDDR4:		Registered DDR4 RAM
+ *			This is a variant of the DDR4 memories.
  */
 enum mem_type {
 	MEM_EMPTY = 0,
@@ -161,6 +215,9 @@ enum mem_type {
 	MEM_XDR,
 	MEM_DDR3,
 	MEM_RDDR3,
+	MEM_LRDDR3,
+	MEM_DDR4,
+	MEM_RDDR4,
 };
 
 #define MEM_FLAG_EMPTY		BIT(MEM_EMPTY)
@@ -178,8 +235,10 @@ enum mem_type {
 #define MEM_FLAG_FB_DDR2        BIT(MEM_FB_DDR2)
 #define MEM_FLAG_RDDR2          BIT(MEM_RDDR2)
 #define MEM_FLAG_XDR            BIT(MEM_XDR)
-#define MEM_FLAG_DDR3		 BIT(MEM_DDR3)
-#define MEM_FLAG_RDDR3		 BIT(MEM_RDDR3)
+#define MEM_FLAG_DDR3           BIT(MEM_DDR3)
+#define MEM_FLAG_RDDR3          BIT(MEM_RDDR3)
+#define MEM_FLAG_DDR4           BIT(MEM_DDR4)
+#define MEM_FLAG_RDDR4          BIT(MEM_RDDR4)
 
 /**
  * enum edac-type - Error Detection and Correction capabilities and mode
@@ -376,6 +435,9 @@ enum scrub_type {
  * @EDAC_MC_LAYER_CHANNEL:	memory layer is named "channel"
  * @EDAC_MC_LAYER_SLOT:		memory layer is named "slot"
  * @EDAC_MC_LAYER_CHIP_SELECT:	memory layer is named "chip select"
+ * @EDAC_MC_LAYER_ALL_MEM:	memory layout is unknown. All memory is mapped
+ *				as a single memory area. This is used when
+ *				retrieving errors from a firmware driven driver.
  *
  * This enum is used by the drivers to tell edac_mc_sysfs what name should
  * be used when describing a memory stick location.
@@ -385,6 +447,7 @@ enum edac_mc_layer_type {
 	EDAC_MC_LAYER_CHANNEL,
 	EDAC_MC_LAYER_SLOT,
 	EDAC_MC_LAYER_CHIP_SELECT,
+	EDAC_MC_LAYER_ALL_MEM,
 };
 
 /**
@@ -550,11 +613,51 @@ struct errcount_attribute_data {
 	int layer0, layer1, layer2;
 };
 
+/**
+ * edac_raw_error_desc - Raw error report structure
+ * @grain:			minimum granularity for an error report, in bytes
+ * @error_count:		number of errors of the same type
+ * @top_layer:			top layer of the error (layer[0])
+ * @mid_layer:			middle layer of the error (layer[1])
+ * @low_layer:			low layer of the error (layer[2])
+ * @page_frame_number:		page where the error happened
+ * @offset_in_page:		page offset
+ * @syndrome:			syndrome of the error (or 0 if unknown or if
+ * 				the syndrome is not applicable)
+ * @msg:			error message
+ * @location:			location of the error
+ * @label:			label of the affected DIMM(s)
+ * @other_detail:		other driver-specific detail about the error
+ * @enable_per_layer_report:	if false, the error affects all layers
+ *				(typically, a memory controller error)
+ */
+struct edac_raw_error_desc {
+	/*
+	 * NOTE: everything before grain won't be cleaned by
+	 * edac_raw_error_desc_clean()
+	 */
+	char location[LOCATION_SIZE];
+	char label[(EDAC_MC_LABEL_LEN + 1 + sizeof(OTHER_LABEL)) * EDAC_MAX_LABELS];
+	long grain;
+
+	/* the vars below and grain will be cleaned on every new error report */
+	u16 error_count;
+	int top_layer;
+	int mid_layer;
+	int low_layer;
+	unsigned long page_frame_number;
+	unsigned long offset_in_page;
+	unsigned long syndrome;
+	const char *msg;
+	const char *other_detail;
+	bool enable_per_layer_report;
+};
+
 /* MEMORY controller information structure
  */
 struct mem_ctl_info {
 	struct device			dev;
-	struct bus_type			bus;
+	struct bus_type			*bus;
 
 	struct list_head link;	/* for global list of mem_ctl_info structs */
 
@@ -607,11 +710,11 @@ struct mem_ctl_info {
 	 * sees memory sticks ("dimms"), and the ones that sees memory ranks.
 	 * All old memory controllers enumerate memories per rank, but most
 	 * of the recent drivers enumerate memories per DIMM, instead.
-	 * When the memory controller is per rank, mem_is_per_rank is true.
+	 * When the memory controller is per rank, csbased is true.
 	 */
 	unsigned n_layers;
 	struct edac_mc_layer *layers;
-	bool mem_is_per_rank;
+	bool csbased;
 
 	/*
 	 * DIMM info. Will eventually remove the entire csrows_info some day
@@ -629,7 +732,6 @@ struct mem_ctl_info {
 	const char *mod_ver;
 	const char *ctl_name;
 	const char *dev_name;
-	char proc_name[MC_PROC_NAME_MAX_LEN + 1];
 	void *pvt_info;
 	unsigned long start_time;	/* mci load start time (in jiffies) */
 
@@ -658,15 +760,24 @@ struct mem_ctl_info {
 	/* work struct for this MC */
 	struct delayed_work work;
 
+	/*
+	 * Used to report an error - by being at the global struct
+	 * makes the memory allocated by the EDAC core
+	 */
+	struct edac_raw_error_desc error_desc;
+
 	/* the internal state of this controller instance */
 	int op_state;
 
-#ifdef CONFIG_EDAC_DEBUG
 	struct dentry *debugfs;
 	u8 fake_inject_layer[EDAC_MAX_LAYERS];
-	u32 fake_inject_ue;
+	bool fake_inject_ue;
 	u16 fake_inject_count;
-#endif
 };
+
+/*
+ * Maximum number of memory controllers in the coherent fabric.
+ */
+#define EDAC_MAX_MCS	16
 
 #endif

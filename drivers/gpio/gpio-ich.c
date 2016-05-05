@@ -1,5 +1,5 @@
 /*
- * Intel ICH6-10, Series 5 and 6 GPIO driver
+ * Intel ICH6-10, Series 5 and 6, Atom C2000 (Avoton/Rangeley) GPIO driver
  *
  * Copyright (C) 2010 Extreme Engineering Solutions.
  *
@@ -20,6 +20,7 @@
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
+#include <linux/ioport.h>
 #include <linux/module.h>
 #include <linux/pci.h>
 #include <linux/gpio.h>
@@ -41,12 +42,28 @@ enum GPIO_REG {
 	GPIO_USE_SEL = 0,
 	GPIO_IO_SEL,
 	GPIO_LVL,
+	GPO_BLINK
 };
 
-static const u8 ichx_regs[3][3] = {
+static const u8 ichx_regs[4][3] = {
 	{0x00, 0x30, 0x40},	/* USE_SEL[1-3] offsets */
 	{0x04, 0x34, 0x44},	/* IO_SEL[1-3] offsets */
 	{0x0c, 0x38, 0x48},	/* LVL[1-3] offsets */
+	{0x18, 0x18, 0x18},	/* BLINK offset */
+};
+
+static const u8 ichx_reglen[3] = {
+	0x30, 0x10, 0x10,
+};
+
+static const u8 avoton_regs[4][3] = {
+	{0x00, 0x80, 0x00},
+	{0x04, 0x84, 0x00},
+	{0x08, 0x88, 0x00},
+};
+
+static const u8 avoton_reglen[3] = {
+	0x10, 0x10, 0x00,
 };
 
 #define ICHX_WRITE(val, reg, base_res)	outl(val, (reg) + (base_res)->start)
@@ -55,6 +72,13 @@ static const u8 ichx_regs[3][3] = {
 struct ichx_desc {
 	/* Max GPIO pins the chipset can have */
 	uint ngpio;
+
+	/* chipset registers */
+	const u8 (*regs)[3];
+	const u8 *reglen;
+
+	/* GPO_BLINK is available on this chipset */
+	bool have_blink;
 
 	/* Whether the chipset has GPIO in GPE0_STS in the PM IO region */
 	bool uses_gpe0;
@@ -65,6 +89,12 @@ struct ichx_desc {
 	/* Some chipsets have quirks, let these use their own request/get */
 	int (*request)(struct gpio_chip *chip, unsigned offset);
 	int (*get)(struct gpio_chip *chip, unsigned offset);
+
+	/*
+	 * Some chipsets don't let reading output values on GPIO_LVL register
+	 * this option allows driver caching written output values
+	 */
+	bool use_outlvl_cache;
 };
 
 static struct {
@@ -75,6 +105,8 @@ static struct {
 	struct resource *pm_base;	/* Power Mangagment IO base */
 	struct ichx_desc *desc;	/* Pointer to chipset-specific description */
 	u32 orig_gpio_ctrl;	/* Orig CTRL value, used to restore on exit */
+	u8 use_gpio;		/* Which GPIO groups are usable */
+	int outlvl_cache[3];	/* cached output values */
 } ichx_priv;
 
 static int modparam_gpiobase = -1;	/* dynamic */
@@ -92,13 +124,23 @@ static int ichx_write_bit(int reg, unsigned nr, int val, int verify)
 
 	spin_lock_irqsave(&ichx_priv.lock, flags);
 
-	data = ICHX_READ(ichx_regs[reg][reg_nr], ichx_priv.gpio_base);
+	if (reg == GPIO_LVL && ichx_priv.desc->use_outlvl_cache)
+		data = ichx_priv.outlvl_cache[reg_nr];
+	else
+		data = ICHX_READ(ichx_priv.desc->regs[reg][reg_nr],
+				 ichx_priv.gpio_base);
+
 	if (val)
 		data |= 1 << bit;
 	else
 		data &= ~(1 << bit);
-	ICHX_WRITE(data, ichx_regs[reg][reg_nr], ichx_priv.gpio_base);
-	tmp = ICHX_READ(ichx_regs[reg][reg_nr], ichx_priv.gpio_base);
+	ICHX_WRITE(data, ichx_priv.desc->regs[reg][reg_nr],
+			 ichx_priv.gpio_base);
+	if (reg == GPIO_LVL && ichx_priv.desc->use_outlvl_cache)
+		ichx_priv.outlvl_cache[reg_nr] = data;
+
+	tmp = ICHX_READ(ichx_priv.desc->regs[reg][reg_nr],
+			ichx_priv.gpio_base);
 	if (verify && data != tmp)
 		ret = -EPERM;
 
@@ -116,11 +158,25 @@ static int ichx_read_bit(int reg, unsigned nr)
 
 	spin_lock_irqsave(&ichx_priv.lock, flags);
 
-	data = ICHX_READ(ichx_regs[reg][reg_nr], ichx_priv.gpio_base);
+	data = ICHX_READ(ichx_priv.desc->regs[reg][reg_nr],
+			 ichx_priv.gpio_base);
+
+	if (reg == GPIO_LVL && ichx_priv.desc->use_outlvl_cache)
+		data = ichx_priv.outlvl_cache[reg_nr] | data;
 
 	spin_unlock_irqrestore(&ichx_priv.lock, flags);
 
 	return data & (1 << bit) ? 1 : 0;
+}
+
+static bool ichx_gpio_check_available(struct gpio_chip *gpio, unsigned nr)
+{
+	return !!(ichx_priv.use_gpio & (1 << (nr / 32)));
+}
+
+static int ichx_gpio_get_direction(struct gpio_chip *gpio, unsigned nr)
+{
+	return ichx_read_bit(GPIO_IO_SEL, nr) ? GPIOF_DIR_IN : GPIOF_DIR_OUT;
 }
 
 static int ichx_gpio_direction_input(struct gpio_chip *gpio, unsigned nr)
@@ -138,6 +194,10 @@ static int ichx_gpio_direction_input(struct gpio_chip *gpio, unsigned nr)
 static int ichx_gpio_direction_output(struct gpio_chip *gpio, unsigned nr,
 					int val)
 {
+	/* Disable blink hardware which is available for GPIOs from 0 to 31. */
+	if (nr < 32 && ichx_priv.desc->have_blink)
+		ichx_write_bit(GPO_BLINK, nr, 0, 0);
+
 	/* Set GPIO output value. */
 	ichx_write_bit(GPIO_LVL, nr, val, 0);
 
@@ -185,6 +245,9 @@ static int ich6_gpio_get(struct gpio_chip *chip, unsigned nr)
 
 static int ichx_gpio_request(struct gpio_chip *chip, unsigned nr)
 {
+	if (!ichx_gpio_check_available(chip, nr))
+		return -ENXIO;
+
 	/*
 	 * Note we assume the BIOS properly set a bridge's USE value.  Some
 	 * chips (eg Intel 3100) have bogus USE values though, so first see if
@@ -192,7 +255,7 @@ static int ichx_gpio_request(struct gpio_chip *chip, unsigned nr)
 	 * If it can't be trusted, assume that the pin can be used as a GPIO.
 	 */
 	if (ichx_priv.desc->use_sel_ignore[nr / 32] & (1 << (nr & 0x1f)))
-		return 1;
+		return 0;
 
 	return ichx_read_bit(GPIO_USE_SEL, nr) ? 0 : -ENODEV;
 }
@@ -216,11 +279,11 @@ static void ichx_gpio_set(struct gpio_chip *chip, unsigned nr, int val)
 	ichx_write_bit(GPIO_LVL, nr, val, 0);
 }
 
-static void __devinit ichx_gpiolib_setup(struct gpio_chip *chip)
+static void ichx_gpiolib_setup(struct gpio_chip *chip)
 {
 	chip->owner = THIS_MODULE;
 	chip->label = DRV_NAME;
-	chip->dev = &ichx_priv.dev->dev;
+	chip->parent = &ichx_priv.dev->dev;
 
 	/* Allow chip-specific overrides of request()/get() */
 	chip->request = ichx_priv.desc->request ?
@@ -229,11 +292,12 @@ static void __devinit ichx_gpiolib_setup(struct gpio_chip *chip)
 		ichx_priv.desc->get : ichx_gpio_get;
 
 	chip->set = ichx_gpio_set;
+	chip->get_direction = ichx_gpio_get_direction;
 	chip->direction_input = ichx_gpio_direction_input;
 	chip->direction_output = ichx_gpio_direction_output;
 	chip->base = modparam_gpiobase;
 	chip->ngpio = ichx_priv.desc->ngpio;
-	chip->can_sleep = 0;
+	chip->can_sleep = false;
 	chip->dbg_show = NULL;
 }
 
@@ -247,6 +311,9 @@ static struct ichx_desc ich6_desc = {
 	.uses_gpe0 = true,
 
 	.ngpio = 50,
+	.have_blink = true,
+	.regs = ichx_regs,
+	.reglen = ichx_reglen,
 };
 
 /* Intel 3100 */
@@ -266,36 +333,82 @@ static struct ichx_desc i3100_desc = {
 	.uses_gpe0 = true,
 
 	.ngpio = 50,
+	.regs = ichx_regs,
+	.reglen = ichx_reglen,
 };
 
 /* ICH7 and ICH8-based */
 static struct ichx_desc ich7_desc = {
 	.ngpio = 50,
+	.have_blink = true,
+	.regs = ichx_regs,
+	.reglen = ichx_reglen,
 };
 
 /* ICH9-based */
 static struct ichx_desc ich9_desc = {
 	.ngpio = 61,
+	.have_blink = true,
+	.regs = ichx_regs,
+	.reglen = ichx_reglen,
 };
 
 /* ICH10-based - Consumer/corporate versions have different amount of GPIO */
 static struct ichx_desc ich10_cons_desc = {
 	.ngpio = 61,
+	.have_blink = true,
+	.regs = ichx_regs,
+	.reglen = ichx_reglen,
 };
 static struct ichx_desc ich10_corp_desc = {
 	.ngpio = 72,
+	.have_blink = true,
+	.regs = ichx_regs,
+	.reglen = ichx_reglen,
 };
 
 /* Intel 5 series, 6 series, 3400 series, and C200 series */
 static struct ichx_desc intel5_desc = {
 	.ngpio = 76,
+	.regs = ichx_regs,
+	.reglen = ichx_reglen,
 };
 
-static int __devinit ichx_gpio_probe(struct platform_device *pdev)
+/* Avoton */
+static struct ichx_desc avoton_desc = {
+	/* Avoton has only 59 GPIOs, but we assume the first set of register
+	 * (Core) has 32 instead of 31 to keep gpio-ich compliance
+	 */
+	.ngpio = 60,
+	.regs = avoton_regs,
+	.reglen = avoton_reglen,
+	.use_outlvl_cache = true,
+};
+
+static int ichx_gpio_request_regions(struct device *dev,
+	struct resource *res_base, const char *name, u8 use_gpio)
+{
+	int i;
+
+	if (!res_base || !res_base->start || !res_base->end)
+		return -ENODEV;
+
+	for (i = 0; i < ARRAY_SIZE(ichx_priv.desc->regs[0]); i++) {
+		if (!(use_gpio & (1 << i)))
+			continue;
+		if (!devm_request_region(dev,
+				res_base->start + ichx_priv.desc->regs[0][i],
+				ichx_priv.desc->reglen[i], name))
+			return -EBUSY;
+	}
+	return 0;
+}
+
+static int ichx_gpio_probe(struct platform_device *pdev)
 {
 	struct resource *res_base, *res_pm;
 	int err;
-	struct lpc_ich_info *ich_info = pdev->dev.platform_data;
+	struct lpc_ich_info *ich_info = dev_get_platdata(&pdev->dev);
 
 	if (!ich_info)
 		return -ENODEV;
@@ -324,17 +437,20 @@ static int __devinit ichx_gpio_probe(struct platform_device *pdev)
 	case ICH_V10CONS_GPIO:
 		ichx_priv.desc = &ich10_cons_desc;
 		break;
+	case AVOTON_GPIO:
+		ichx_priv.desc = &avoton_desc;
+		break;
 	default:
 		return -ENODEV;
 	}
 
+	spin_lock_init(&ichx_priv.lock);
 	res_base = platform_get_resource(pdev, IORESOURCE_IO, ICH_RES_GPIO);
-	if (!res_base || !res_base->start || !res_base->end)
-		return -ENODEV;
-
-	if (!request_region(res_base->start, resource_size(res_base),
-				pdev->name))
-		return -EBUSY;
+	ichx_priv.use_gpio = ich_info->use_gpio;
+	err = ichx_gpio_request_regions(&pdev->dev, res_base, pdev->name,
+					ichx_priv.use_gpio);
+	if (err)
+		return err;
 
 	ichx_priv.gpio_base = res_base;
 
@@ -352,8 +468,8 @@ static int __devinit ichx_gpio_probe(struct platform_device *pdev)
 		goto init;
 	}
 
-	if (!request_region(res_pm->start, resource_size(res_pm),
-			pdev->name)) {
+	if (!devm_request_region(&pdev->dev, res_pm->start,
+			resource_size(res_pm), pdev->name)) {
 		pr_warn("ACPI BAR is busy, GPI 0 - 15 unavailable\n");
 		goto init;
 	}
@@ -362,53 +478,31 @@ static int __devinit ichx_gpio_probe(struct platform_device *pdev)
 
 init:
 	ichx_gpiolib_setup(&ichx_priv.chip);
-	err = gpiochip_add(&ichx_priv.chip);
+	err = gpiochip_add_data(&ichx_priv.chip, NULL);
 	if (err) {
 		pr_err("Failed to register GPIOs\n");
-		goto add_err;
+		return err;
 	}
 
 	pr_info("GPIO from %d to %d on %s\n", ichx_priv.chip.base,
 	       ichx_priv.chip.base + ichx_priv.chip.ngpio - 1, DRV_NAME);
 
 	return 0;
-
-add_err:
-	release_region(ichx_priv.gpio_base->start,
-			resource_size(ichx_priv.gpio_base));
-	if (ichx_priv.pm_base)
-		release_region(ichx_priv.pm_base->start,
-				resource_size(ichx_priv.pm_base));
-	return err;
 }
 
-static int __devexit ichx_gpio_remove(struct platform_device *pdev)
+static int ichx_gpio_remove(struct platform_device *pdev)
 {
-	int err;
-
-	err = gpiochip_remove(&ichx_priv.chip);
-	if (err) {
-		dev_err(&pdev->dev, "%s failed, %d\n",
-				"gpiochip_remove()", err);
-		return err;
-	}
-
-	release_region(ichx_priv.gpio_base->start,
-				resource_size(ichx_priv.gpio_base));
-	if (ichx_priv.pm_base)
-		release_region(ichx_priv.pm_base->start,
-				resource_size(ichx_priv.pm_base));
+	gpiochip_remove(&ichx_priv.chip);
 
 	return 0;
 }
 
 static struct platform_driver ichx_gpio_driver = {
 	.driver		= {
-		.owner	= THIS_MODULE,
 		.name	= DRV_NAME,
 	},
 	.probe		= ichx_gpio_probe,
-	.remove		= __devexit_p(ichx_gpio_remove),
+	.remove		= ichx_gpio_remove,
 };
 
 module_platform_driver(ichx_gpio_driver);

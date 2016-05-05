@@ -20,12 +20,13 @@
 #include <linux/backlight.h>
 #include <drm/drmP.h>
 #include <drm/drm.h>
-#include "gma_drm.h"
+#include <drm/gma_drm.h>
 #include "psb_drv.h"
 #include "psb_reg.h"
 #include "psb_intel_reg.h"
 #include "intel_bios.h"
 #include "cdv_device.h"
+#include "gma_device.h"
 
 #define VGA_SR_INDEX		0x3c4
 #define VGA_SR_DATA		0x3c5
@@ -58,10 +59,17 @@ static int cdv_output_init(struct drm_device *dev)
 	cdv_intel_lvds_init(dev, &dev_priv->mode_dev);
 
 	/* These bits indicate HDMI not SDVO on CDV */
-	if (REG_READ(SDVOB) & SDVO_DETECTED)
+	if (REG_READ(SDVOB) & SDVO_DETECTED) {
 		cdv_hdmi_init(dev, &dev_priv->mode_dev, SDVOB);
-	if (REG_READ(SDVOC) & SDVO_DETECTED)
+		if (REG_READ(DP_B) & DP_DETECTED)
+			cdv_intel_dp_init(dev, &dev_priv->mode_dev, DP_B);
+	}
+
+	if (REG_READ(SDVOC) & SDVO_DETECTED) {
 		cdv_hdmi_init(dev, &dev_priv->mode_dev, SDVOC);
+		if (REG_READ(DP_C) & DP_DETECTED)
+			cdv_intel_dp_init(dev, &dev_priv->mode_dev, DP_C);
+	}
 	return 0;
 }
 
@@ -163,6 +171,7 @@ static int cdv_backlight_init(struct drm_device *dev)
 			cdv_get_brightness(cdv_backlight_device);
 	backlight_update_status(cdv_backlight_device);
 	dev_priv->backlight_device = cdv_backlight_device;
+	dev_priv->backlight_enabled = true;
 	return 0;
 }
 
@@ -418,42 +427,6 @@ static int cdv_power_up(struct drm_device *dev)
 	return 0;
 }
 
-/* FIXME ? - shared with Poulsbo */
-static void cdv_get_core_freq(struct drm_device *dev)
-{
-	uint32_t clock;
-	struct pci_dev *pci_root = pci_get_bus_and_slot(0, 0);
-	struct drm_psb_private *dev_priv = dev->dev_private;
-
-	pci_write_config_dword(pci_root, 0xD0, 0xD0050300);
-	pci_read_config_dword(pci_root, 0xD4, &clock);
-	pci_dev_put(pci_root);
-
-	switch (clock & 0x07) {
-	case 0:
-		dev_priv->core_freq = 100;
-		break;
-	case 1:
-		dev_priv->core_freq = 133;
-		break;
-	case 2:
-		dev_priv->core_freq = 150;
-		break;
-	case 3:
-		dev_priv->core_freq = 178;
-		break;
-	case 4:
-		dev_priv->core_freq = 200;
-		break;
-	case 5:
-	case 6:
-	case 7:
-		dev_priv->core_freq = 266;
-	default:
-		dev_priv->core_freq = 0;
-	}
-}
-
 static void cdv_hotplug_work_func(struct work_struct *work)
 {
         struct drm_psb_private *dev_priv = container_of(work, struct drm_psb_private,
@@ -486,6 +459,65 @@ static void cdv_hotplug_enable(struct drm_device *dev, bool on)
 		REG_WRITE(PORT_HOTPLUG_EN, 0);
 		REG_WRITE(PORT_HOTPLUG_STAT, REG_READ(PORT_HOTPLUG_STAT));
 	}	
+}
+
+static const char *force_audio_names[] = {
+	"off",
+	"auto",
+	"on",
+};
+
+void cdv_intel_attach_force_audio_property(struct drm_connector *connector)
+{
+	struct drm_device *dev = connector->dev;
+	struct drm_psb_private *dev_priv = dev->dev_private;
+	struct drm_property *prop;
+	int i;
+
+	prop = dev_priv->force_audio_property;
+	if (prop == NULL) {
+		prop = drm_property_create(dev, DRM_MODE_PROP_ENUM,
+					   "audio",
+					   ARRAY_SIZE(force_audio_names));
+		if (prop == NULL)
+			return;
+
+		for (i = 0; i < ARRAY_SIZE(force_audio_names); i++)
+			drm_property_add_enum(prop, i, i-1, force_audio_names[i]);
+
+		dev_priv->force_audio_property = prop;
+	}
+	drm_object_attach_property(&connector->base, prop, 0);
+}
+
+
+static const char *broadcast_rgb_names[] = {
+	"Full",
+	"Limited 16:235",
+};
+
+void cdv_intel_attach_broadcast_rgb_property(struct drm_connector *connector)
+{
+	struct drm_device *dev = connector->dev;
+	struct drm_psb_private *dev_priv = dev->dev_private;
+	struct drm_property *prop;
+	int i;
+
+	prop = dev_priv->broadcast_rgb_property;
+	if (prop == NULL) {
+		prop = drm_property_create(dev, DRM_MODE_PROP_ENUM,
+					   "Broadcast RGB",
+					   ARRAY_SIZE(broadcast_rgb_names));
+		if (prop == NULL)
+			return;
+
+		for (i = 0; i < ARRAY_SIZE(broadcast_rgb_names); i++)
+			drm_property_add_enum(prop, i, i, broadcast_rgb_names[i]);
+
+		dev_priv->broadcast_rgb_property = prop;
+	}
+
+	drm_object_attach_property(&connector->base, prop, 0);
 }
 
 /* Cedarview */
@@ -550,7 +582,7 @@ static int cdv_chip_setup(struct drm_device *dev)
 	if (pci_enable_msi(dev->pdev))
 		dev_warn(dev->dev, "Enabling MSI failed!\n");
 	dev_priv->regmap = cdv_regmap;
-	cdv_get_core_freq(dev);
+	gma_get_core_freq(dev);
 	psb_intel_opregion_init(dev);
 	psb_intel_init_bios(dev);
 	cdv_hotplug_enable(dev, false);
@@ -566,6 +598,7 @@ const struct psb_ops cdv_chip_ops = {
 	.crtcs = 2,
 	.hdmi_mask = (1 << 0) | (1 << 1),
 	.lvds_mask = (1 << 1),
+	.sdvo_mask = (1 << 0),
 	.cursor_needs_phys = 0,
 	.sgx_offset = MRST_SGX_OFFSET,
 	.chip_setup = cdv_chip_setup,
@@ -573,6 +606,7 @@ const struct psb_ops cdv_chip_ops = {
 
 	.crtc_helper = &cdv_intel_helper_funcs,
 	.crtc_funcs = &cdv_intel_crtc_funcs,
+	.clock_funcs = &cdv_clock_funcs,
 
 	.output_init = cdv_output_init,
 	.hotplug = cdv_hotplug_event,
@@ -585,6 +619,10 @@ const struct psb_ops cdv_chip_ops = {
 	.init_pm = cdv_init_pm,
 	.save_regs = cdv_save_display_registers,
 	.restore_regs = cdv_restore_display_registers,
+	.save_crtc = gma_crtc_save,
+	.restore_crtc = gma_crtc_restore,
 	.power_down = cdv_power_down,
 	.power_up = cdv_power_up,
+	.update_wm = cdv_update_wm,
+	.disable_sr = cdv_disable_sr,
 };

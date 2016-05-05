@@ -5,17 +5,17 @@
  *	Copyright (C) 1992, 1998 Linus Torvalds, Ingo Molnar
  */
 
-#include "linux/cpumask.h"
-#include "linux/hardirq.h"
-#include "linux/interrupt.h"
-#include "linux/kernel_stat.h"
-#include "linux/module.h"
-#include "linux/sched.h"
-#include "linux/seq_file.h"
-#include "linux/slab.h"
-#include "as-layout.h"
-#include "kern_util.h"
-#include "os.h"
+#include <linux/cpumask.h>
+#include <linux/hardirq.h>
+#include <linux/interrupt.h>
+#include <linux/kernel_stat.h>
+#include <linux/module.h>
+#include <linux/sched.h>
+#include <linux/seq_file.h>
+#include <linux/slab.h>
+#include <as-layout.h>
+#include <kern_util.h>
+#include <os.h>
 
 /*
  * This list is accessed under irq_lock, except in sigio_handler,
@@ -34,9 +34,6 @@ void sigio_handler(int sig, struct siginfo *unused_si, struct uml_pt_regs *regs)
 {
 	struct irq_fd *irq_fd;
 	int n;
-
-	if (smp_sigio_handler())
-		return;
 
 	while (1) {
 		n = os_waiting_for_events(active_fds);
@@ -337,6 +334,8 @@ static struct irq_chip normal_irq_type = {
 	.irq_disable = dummy,
 	.irq_enable = dummy,
 	.irq_ack = dummy,
+	.irq_mask = dummy,
+	.irq_unmask = dummy,
 };
 
 static struct irq_chip SIGVTALRM_irq_type = {
@@ -344,6 +343,8 @@ static struct irq_chip SIGVTALRM_irq_type = {
 	.irq_disable = dummy,
 	.irq_enable = dummy,
 	.irq_ack = dummy,
+	.irq_mask = dummy,
+	.irq_unmask = dummy,
 };
 
 void __init init_IRQ(void)

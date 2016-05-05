@@ -14,11 +14,6 @@
     but WITHOUT ANY WARRANTY; without even the implied warranty of
     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
     GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
 */
 /*
 Driver: ni_670x
@@ -41,11 +36,11 @@ Commands are not supported.
 
 */
 
+#include <linux/module.h>
 #include <linux/interrupt.h>
 #include <linux/slab.h>
-#include "../comedidev.h"
 
-#include "mite.h"
+#include "../comedi_pci.h"
 
 #define AO_VALUE_OFFSET			0x00
 #define	AO_CHAN_OFFSET			0x0c
@@ -58,206 +53,170 @@ Commands are not supported.
 #define	MISC_STATUS_OFFSET		0x14
 #define	MISC_CONTROL_OFFSET		0x14
 
-/* Board description*/
+enum ni_670x_boardid {
+	BOARD_PCI6703,
+	BOARD_PXI6704,
+	BOARD_PCI6704,
+};
 
 struct ni_670x_board {
 	const char *name;
-	unsigned short dev_id;
 	unsigned short ao_chans;
 };
 
 static const struct ni_670x_board ni_670x_boards[] = {
-	{
+	[BOARD_PCI6703] = {
 		.name		= "PCI-6703",
-		.dev_id		= 0x2c90,
 		.ao_chans	= 16,
-	}, {
+	},
+	[BOARD_PXI6704] = {
 		.name		= "PXI-6704",
-		.dev_id		= 0x1920,
 		.ao_chans	= 32,
-	}, {
+	},
+	[BOARD_PCI6704] = {
 		.name		= "PCI-6704",
-		.dev_id		= 0x1290,
 		.ao_chans	= 32,
 	},
 };
 
 struct ni_670x_private {
-
-	struct mite_struct *mite;
 	int boardtype;
 	int dio;
-	unsigned int ao_readback[32];
 };
 
-static struct comedi_lrange range_0_20mA = { 1, {RANGE_mA(0, 20)} };
-
-static int ni_670x_ao_winsn(struct comedi_device *dev,
-			    struct comedi_subdevice *s,
-			    struct comedi_insn *insn, unsigned int *data)
+static int ni_670x_ao_insn_write(struct comedi_device *dev,
+				 struct comedi_subdevice *s,
+				 struct comedi_insn *insn,
+				 unsigned int *data)
 {
-	struct ni_670x_private *devpriv = dev->private;
+	unsigned int chan = CR_CHAN(insn->chanspec);
+	unsigned int val = s->readback[chan];
 	int i;
-	int chan = CR_CHAN(insn->chanspec);
 
-	/* Channel number mapping :
-
-	   NI 6703/ NI 6704     | NI 6704 Only
-	   ----------------------------------------------------
-	   vch(0)       :       0       | ich(16)       :       1
-	   vch(1)       :       2       | ich(17)       :       3
-	   .    :       .       |   .                   .
-	   .    :       .       |   .                   .
-	   .    :       .       |   .                   .
-	   vch(15)      :       30      | ich(31)       :       31      */
-
+	/*
+	 * Channel number mapping:
+	 *
+	 * NI 6703/ NI 6704 | NI 6704 Only
+	 * -------------------------------
+	 * vch(0)  :  0     | ich(16) :  1
+	 * vch(1)  :  2     | ich(17) :  3
+	 * ...              | ...
+	 * vch(15) : 30     | ich(31) : 31
+	 */
 	for (i = 0; i < insn->n; i++) {
+		val = data[i];
 		/* First write in channel register which channel to use */
 		writel(((chan & 15) << 1) | ((chan & 16) >> 4),
-		       devpriv->mite->daq_io_addr + AO_CHAN_OFFSET);
+		       dev->mmio + AO_CHAN_OFFSET);
 		/* write channel value */
-		writel(data[i], devpriv->mite->daq_io_addr + AO_VALUE_OFFSET);
-		devpriv->ao_readback[chan] = data[i];
+		writel(val, dev->mmio + AO_VALUE_OFFSET);
 	}
+	s->readback[chan] = val;
 
-	return i;
-}
-
-static int ni_670x_ao_rinsn(struct comedi_device *dev,
-			    struct comedi_subdevice *s,
-			    struct comedi_insn *insn, unsigned int *data)
-{
-	struct ni_670x_private *devpriv = dev->private;
-	int i;
-	int chan = CR_CHAN(insn->chanspec);
-
-	for (i = 0; i < insn->n; i++)
-		data[i] = devpriv->ao_readback[chan];
-
-	return i;
+	return insn->n;
 }
 
 static int ni_670x_dio_insn_bits(struct comedi_device *dev,
 				 struct comedi_subdevice *s,
-				 struct comedi_insn *insn, unsigned int *data)
+				 struct comedi_insn *insn,
+				 unsigned int *data)
 {
-	struct ni_670x_private *devpriv = dev->private;
-	void __iomem *io_addr = devpriv->mite->daq_io_addr +
-					DIO_PORT0_DATA_OFFSET;
-	unsigned int mask = data[0];
-	unsigned int bits = data[1];
+	if (comedi_dio_update_state(s, data))
+		writel(s->state, dev->mmio + DIO_PORT0_DATA_OFFSET);
 
-	if (mask) {
-		s->state &= ~mask;
-		s->state |= (bits & mask);
-
-		writel(s->state, io_addr);
-	}
-
-	data[1] = readl(io_addr);
+	data[1] = readl(dev->mmio + DIO_PORT0_DATA_OFFSET);
 
 	return insn->n;
 }
 
 static int ni_670x_dio_insn_config(struct comedi_device *dev,
 				   struct comedi_subdevice *s,
-				   struct comedi_insn *insn, unsigned int *data)
+				   struct comedi_insn *insn,
+				   unsigned int *data)
 {
-	struct ni_670x_private *devpriv = dev->private;
-	int chan = CR_CHAN(insn->chanspec);
+	int ret;
 
-	switch (data[0]) {
-	case INSN_CONFIG_DIO_OUTPUT:
-		s->io_bits |= 1 << chan;
-		break;
-	case INSN_CONFIG_DIO_INPUT:
-		s->io_bits &= ~(1 << chan);
-		break;
-	case INSN_CONFIG_DIO_QUERY:
-		data[1] =
-		    (s->io_bits & (1 << chan)) ? COMEDI_OUTPUT : COMEDI_INPUT;
-		return insn->n;
-		break;
-	default:
-		return -EINVAL;
-		break;
-	}
-	writel(s->io_bits, devpriv->mite->daq_io_addr + DIO_PORT0_DIR_OFFSET);
+	ret = comedi_dio_insn_config(dev, s, insn, data, 0);
+	if (ret)
+		return ret;
+
+	writel(s->io_bits, dev->mmio + DIO_PORT0_DIR_OFFSET);
 
 	return insn->n;
 }
 
-static int ni_670x_find_device(struct comedi_device *dev, int bus, int slot)
+/* ripped from mite.h and mite_setup2() to avoid mite dependency */
+#define MITE_IODWBSR	0xc0	 /* IO Device Window Base Size Register */
+#define WENAB		(1 << 7) /* window enable */
+
+static int ni_670x_mite_init(struct pci_dev *pcidev)
 {
-	struct ni_670x_private *devpriv = dev->private;
-	struct mite_struct *mite;
-	int i;
+	void __iomem *mite_base;
+	u32 main_phys_addr;
 
-	for (mite = mite_devices; mite; mite = mite->next) {
-		if (mite->used)
-			continue;
-		if (bus || slot) {
-			if (bus != mite->pcidev->bus->number
-			    || slot != PCI_SLOT(mite->pcidev->devfn))
-				continue;
-		}
+	/* ioremap the MITE registers (BAR 0) temporarily */
+	mite_base = pci_ioremap_bar(pcidev, 0);
+	if (!mite_base)
+		return -ENOMEM;
 
-		for (i = 0; i < ARRAY_SIZE(ni_670x_boards); i++) {
-			if (mite_device_id(mite) == ni_670x_boards[i].dev_id) {
-				dev->board_ptr = ni_670x_boards + i;
-				devpriv->mite = mite;
+	/* set data window to main registers (BAR 1) */
+	main_phys_addr = pci_resource_start(pcidev, 1);
+	writel(main_phys_addr | WENAB, mite_base + MITE_IODWBSR);
 
-				return 0;
-			}
-		}
-	}
-	dev_warn(dev->class_dev, "no device found\n");
-	mite_list_devices();
-	return -EIO;
+	/* finished with MITE registers */
+	iounmap(mite_base);
+	return 0;
 }
 
-static int ni_670x_attach(struct comedi_device *dev,
-			  struct comedi_devconfig *it)
+static int ni_670x_auto_attach(struct comedi_device *dev,
+			       unsigned long context)
 {
-	const struct ni_670x_board *thisboard;
+	struct pci_dev *pcidev = comedi_to_pci_dev(dev);
+	const struct ni_670x_board *board = NULL;
 	struct ni_670x_private *devpriv;
 	struct comedi_subdevice *s;
 	int ret;
 	int i;
 
-	ret = alloc_private(dev, sizeof(*devpriv));
-	if (ret < 0)
-		return ret;
-	devpriv = dev->private;
+	if (context < ARRAY_SIZE(ni_670x_boards))
+		board = &ni_670x_boards[context];
+	if (!board)
+		return -ENODEV;
+	dev->board_ptr = board;
+	dev->board_name = board->name;
 
-	ret = ni_670x_find_device(dev, it->options[0], it->options[1]);
-	if (ret < 0)
+	ret = comedi_pci_enable(dev);
+	if (ret)
 		return ret;
-	thisboard = comedi_board(dev);
 
-	ret = mite_setup(devpriv->mite);
-	if (ret < 0) {
-		dev_warn(dev->class_dev, "error setting up mite\n");
+	devpriv = comedi_alloc_devpriv(dev, sizeof(*devpriv));
+	if (!devpriv)
+		return -ENOMEM;
+
+	ret = ni_670x_mite_init(pcidev);
+	if (ret)
 		return ret;
-	}
-	dev->board_name = thisboard->name;
-	dev->irq = mite_irq(devpriv->mite);
+
+	dev->mmio = pci_ioremap_bar(pcidev, 1);
+	if (!dev->mmio)
+		return -ENOMEM;
 
 	ret = comedi_alloc_subdevices(dev, 2);
 	if (ret)
 		return ret;
 
-	s = dev->subdevices + 0;
+	s = &dev->subdevices[0];
 	/* analog output subdevice */
 	s->type = COMEDI_SUBD_AO;
 	s->subdev_flags = SDF_WRITABLE;
-	s->n_chan = thisboard->ao_chans;
+	s->n_chan = board->ao_chans;
 	s->maxdata = 0xffff;
 	if (s->n_chan == 32) {
 		const struct comedi_lrange **range_table_list;
 
-		range_table_list = kmalloc(sizeof(struct comedi_lrange *) * 32,
-					   GFP_KERNEL);
+		range_table_list = kmalloc_array(32,
+						 sizeof(struct comedi_lrange *),
+						 GFP_KERNEL);
 		if (!range_table_list)
 			return -ENOMEM;
 		s->range_table_list = range_table_list;
@@ -268,10 +227,13 @@ static int ni_670x_attach(struct comedi_device *dev,
 	} else {
 		s->range_table = &range_bipolar10;
 	}
-	s->insn_write = &ni_670x_ao_winsn;
-	s->insn_read = &ni_670x_ao_rinsn;
+	s->insn_write = ni_670x_ao_insn_write;
 
-	s = dev->subdevices + 1;
+	ret = comedi_alloc_subdev_readback(s);
+	if (ret)
+		return ret;
+
+	s = &dev->subdevices[1];
 	/* digital i/o subdevice */
 	s->type = COMEDI_SUBD_DIO;
 	s->subdev_flags = SDF_READABLE | SDF_WRITABLE;
@@ -282,62 +244,51 @@ static int ni_670x_attach(struct comedi_device *dev,
 	s->insn_config = ni_670x_dio_insn_config;
 
 	/* Config of misc registers */
-	writel(0x10, devpriv->mite->daq_io_addr + MISC_CONTROL_OFFSET);
+	writel(0x10, dev->mmio + MISC_CONTROL_OFFSET);
 	/* Config of ao registers */
-	writel(0x00, devpriv->mite->daq_io_addr + AO_CONTROL_OFFSET);
-
-	dev_info(dev->class_dev, "%s: %s attached\n",
-		dev->driver->driver_name, dev->board_name);
+	writel(0x00, dev->mmio + AO_CONTROL_OFFSET);
 
 	return 0;
 }
 
 static void ni_670x_detach(struct comedi_device *dev)
 {
-	struct ni_670x_private *devpriv = dev->private;
 	struct comedi_subdevice *s;
 
+	comedi_pci_detach(dev);
 	if (dev->n_subdevices) {
-		s = dev->subdevices + 0;
+		s = &dev->subdevices[0];
 		if (s)
 			kfree(s->range_table_list);
 	}
-	if (devpriv && devpriv->mite)
-		mite_unsetup(devpriv->mite);
-	if (dev->irq)
-		free_irq(dev->irq, dev);
 }
 
 static struct comedi_driver ni_670x_driver = {
 	.driver_name	= "ni_670x",
 	.module		= THIS_MODULE,
-	.attach		= ni_670x_attach,
+	.auto_attach	= ni_670x_auto_attach,
 	.detach		= ni_670x_detach,
 };
 
-static int __devinit ni_670x_pci_probe(struct pci_dev *dev,
-				       const struct pci_device_id *ent)
+static int ni_670x_pci_probe(struct pci_dev *dev,
+			     const struct pci_device_id *id)
 {
-	return comedi_pci_auto_config(dev, &ni_670x_driver);
+	return comedi_pci_auto_config(dev, &ni_670x_driver, id->driver_data);
 }
 
-static void __devexit ni_670x_pci_remove(struct pci_dev *dev)
-{
-	comedi_pci_auto_unconfig(dev);
-}
-
-static DEFINE_PCI_DEVICE_TABLE(ni_670x_pci_table) = {
-	{ PCI_DEVICE(PCI_VENDOR_ID_NI, 0x2c90) },
-	{ PCI_DEVICE(PCI_VENDOR_ID_NI, 0x1920) },
+static const struct pci_device_id ni_670x_pci_table[] = {
+	{ PCI_VDEVICE(NI, 0x1290), BOARD_PCI6704 },
+	{ PCI_VDEVICE(NI, 0x1920), BOARD_PXI6704 },
+	{ PCI_VDEVICE(NI, 0x2c90), BOARD_PCI6703 },
 	{ 0 }
 };
 MODULE_DEVICE_TABLE(pci, ni_670x_pci_table);
 
 static struct pci_driver ni_670x_pci_driver = {
-	.name		="ni_670x",
+	.name		= "ni_670x",
 	.id_table	= ni_670x_pci_table,
 	.probe		= ni_670x_pci_probe,
-	.remove		= __devexit_p(ni_670x_pci_remove),
+	.remove		= comedi_pci_auto_unconfig,
 };
 module_comedi_pci_driver(ni_670x_driver, ni_670x_pci_driver);
 

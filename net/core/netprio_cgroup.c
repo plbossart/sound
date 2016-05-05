@@ -11,7 +11,6 @@
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
-#include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/types.h>
 #include <linux/string.h>
@@ -27,301 +26,224 @@
 
 #include <linux/fdtable.h>
 
-#define PRIOIDX_SZ 128
+/*
+ * netprio allocates per-net_device priomap array which is indexed by
+ * css->id.  Limiting css ID to 16bits doesn't lose anything.
+ */
+#define NETPRIO_ID_MAX		USHRT_MAX
 
-static unsigned long prioidx_map[PRIOIDX_SZ];
-static DEFINE_SPINLOCK(prioidx_map_lock);
-static atomic_t max_prioidx = ATOMIC_INIT(0);
+#define PRIOMAP_MIN_SZ		128
 
-static inline struct cgroup_netprio_state *cgrp_netprio_state(struct cgroup *cgrp)
+/*
+ * Extend @dev->priomap so that it's large enough to accommodate
+ * @target_idx.  @dev->priomap.priomap_len > @target_idx after successful
+ * return.  Must be called under rtnl lock.
+ */
+static int extend_netdev_table(struct net_device *dev, u32 target_idx)
 {
-	return container_of(cgroup_subsys_state(cgrp, net_prio_subsys_id),
-			    struct cgroup_netprio_state, css);
-}
+	struct netprio_map *old, *new;
+	size_t new_sz, new_len;
 
-static int get_prioidx(u32 *prio)
-{
-	unsigned long flags;
-	u32 prioidx;
+	/* is the existing priomap large enough? */
+	old = rtnl_dereference(dev->priomap);
+	if (old && old->priomap_len > target_idx)
+		return 0;
 
-	spin_lock_irqsave(&prioidx_map_lock, flags);
-	prioidx = find_first_zero_bit(prioidx_map, sizeof(unsigned long) * PRIOIDX_SZ);
-	if (prioidx == sizeof(unsigned long) * PRIOIDX_SZ) {
-		spin_unlock_irqrestore(&prioidx_map_lock, flags);
-		return -ENOSPC;
+	/*
+	 * Determine the new size.  Let's keep it power-of-two.  We start
+	 * from PRIOMAP_MIN_SZ and double it until it's large enough to
+	 * accommodate @target_idx.
+	 */
+	new_sz = PRIOMAP_MIN_SZ;
+	while (true) {
+		new_len = (new_sz - offsetof(struct netprio_map, priomap)) /
+			sizeof(new->priomap[0]);
+		if (new_len > target_idx)
+			break;
+		new_sz *= 2;
+		/* overflowed? */
+		if (WARN_ON(new_sz < PRIOMAP_MIN_SZ))
+			return -ENOSPC;
 	}
-	set_bit(prioidx, prioidx_map);
-	if (atomic_read(&max_prioidx) < prioidx)
-		atomic_set(&max_prioidx, prioidx);
-	spin_unlock_irqrestore(&prioidx_map_lock, flags);
-	*prio = prioidx;
-	return 0;
-}
 
-static void put_prioidx(u32 idx)
-{
-	unsigned long flags;
-
-	spin_lock_irqsave(&prioidx_map_lock, flags);
-	clear_bit(idx, prioidx_map);
-	spin_unlock_irqrestore(&prioidx_map_lock, flags);
-}
-
-static int extend_netdev_table(struct net_device *dev, u32 new_len)
-{
-	size_t new_size = sizeof(struct netprio_map) +
-			   ((sizeof(u32) * new_len));
-	struct netprio_map *new_priomap = kzalloc(new_size, GFP_KERNEL);
-	struct netprio_map *old_priomap;
-	int i;
-
-	old_priomap  = rtnl_dereference(dev->priomap);
-
-	if (!new_priomap) {
-		pr_warn("Unable to alloc new priomap!\n");
+	/* allocate & copy */
+	new = kzalloc(new_sz, GFP_KERNEL);
+	if (!new)
 		return -ENOMEM;
-	}
 
-	for (i = 0;
-	     old_priomap && (i < old_priomap->priomap_len);
-	     i++)
-		new_priomap->priomap[i] = old_priomap->priomap[i];
+	if (old)
+		memcpy(new->priomap, old->priomap,
+		       old->priomap_len * sizeof(old->priomap[0]));
 
-	new_priomap->priomap_len = new_len;
+	new->priomap_len = new_len;
 
-	rcu_assign_pointer(dev->priomap, new_priomap);
-	if (old_priomap)
-		kfree_rcu(old_priomap, rcu);
+	/* install the new priomap */
+	rcu_assign_pointer(dev->priomap, new);
+	if (old)
+		kfree_rcu(old, rcu);
 	return 0;
 }
 
-static int write_update_netdev_table(struct net_device *dev)
+/**
+ * netprio_prio - return the effective netprio of a cgroup-net_device pair
+ * @css: css part of the target pair
+ * @dev: net_device part of the target pair
+ *
+ * Should be called under RCU read or rtnl lock.
+ */
+static u32 netprio_prio(struct cgroup_subsys_state *css, struct net_device *dev)
 {
-	int ret = 0;
-	u32 max_len;
-	struct netprio_map *map;
+	struct netprio_map *map = rcu_dereference_rtnl(dev->priomap);
+	int id = css->cgroup->id;
 
-	rtnl_lock();
-	max_len = atomic_read(&max_prioidx) + 1;
+	if (map && id < map->priomap_len)
+		return map->priomap[id];
+	return 0;
+}
+
+/**
+ * netprio_set_prio - set netprio on a cgroup-net_device pair
+ * @css: css part of the target pair
+ * @dev: net_device part of the target pair
+ * @prio: prio to set
+ *
+ * Set netprio to @prio on @css-@dev pair.  Should be called under rtnl
+ * lock and may fail under memory pressure for non-zero @prio.
+ */
+static int netprio_set_prio(struct cgroup_subsys_state *css,
+			    struct net_device *dev, u32 prio)
+{
+	struct netprio_map *map;
+	int id = css->cgroup->id;
+	int ret;
+
+	/* avoid extending priomap for zero writes */
 	map = rtnl_dereference(dev->priomap);
-	if (!map || map->priomap_len < max_len)
-		ret = extend_netdev_table(dev, max_len);
-	rtnl_unlock();
+	if (!prio && (!map || map->priomap_len <= id))
+		return 0;
 
-	return ret;
+	ret = extend_netdev_table(dev, id);
+	if (ret)
+		return ret;
+
+	map = rtnl_dereference(dev->priomap);
+	map->priomap[id] = prio;
+	return 0;
 }
 
-static int update_netdev_tables(void)
+static struct cgroup_subsys_state *
+cgrp_css_alloc(struct cgroup_subsys_state *parent_css)
 {
-	int ret = 0;
-	struct net_device *dev;
-	u32 max_len;
-	struct netprio_map *map;
+	struct cgroup_subsys_state *css;
 
-	rtnl_lock();
-	max_len = atomic_read(&max_prioidx) + 1;
-	for_each_netdev(&init_net, dev) {
-		map = rtnl_dereference(dev->priomap);
-		/*
-		 * don't allocate priomap if we didn't
-		 * change net_prio.ifpriomap (map == NULL),
-		 * this will speed up skb_update_prio.
-		 */
-		if (map && map->priomap_len < max_len) {
-			ret = extend_netdev_table(dev, max_len);
-			if (ret < 0)
-				break;
-		}
-	}
-	rtnl_unlock();
-	return ret;
-}
-
-static struct cgroup_subsys_state *cgrp_create(struct cgroup *cgrp)
-{
-	struct cgroup_netprio_state *cs;
-	int ret = -EINVAL;
-
-	cs = kzalloc(sizeof(*cs), GFP_KERNEL);
-	if (!cs)
+	css = kzalloc(sizeof(*css), GFP_KERNEL);
+	if (!css)
 		return ERR_PTR(-ENOMEM);
 
-	if (cgrp->parent && cgrp_netprio_state(cgrp->parent)->prioidx)
-		goto out;
-
-	ret = get_prioidx(&cs->prioidx);
-	if (ret < 0) {
-		pr_warn("No space in priority index array\n");
-		goto out;
-	}
-
-	ret = update_netdev_tables();
-	if (ret < 0) {
-		put_prioidx(cs->prioidx);
-		goto out;
-	}
-
-	return &cs->css;
-out:
-	kfree(cs);
-	return ERR_PTR(ret);
+	return css;
 }
 
-static void cgrp_destroy(struct cgroup *cgrp)
+static int cgrp_css_online(struct cgroup_subsys_state *css)
 {
-	struct cgroup_netprio_state *cs;
+	struct cgroup_subsys_state *parent_css = css->parent;
 	struct net_device *dev;
-	struct netprio_map *map;
+	int ret = 0;
 
-	cs = cgrp_netprio_state(cgrp);
+	if (css->id > NETPRIO_ID_MAX)
+		return -ENOSPC;
+
+	if (!parent_css)
+		return 0;
+
 	rtnl_lock();
+	/*
+	 * Inherit prios from the parent.  As all prios are set during
+	 * onlining, there is no need to clear them on offline.
+	 */
 	for_each_netdev(&init_net, dev) {
-		map = rtnl_dereference(dev->priomap);
-		if (map && cs->prioidx < map->priomap_len)
-			map->priomap[cs->prioidx] = 0;
+		u32 prio = netprio_prio(parent_css, dev);
+
+		ret = netprio_set_prio(css, dev, prio);
+		if (ret)
+			break;
 	}
 	rtnl_unlock();
-	put_prioidx(cs->prioidx);
-	kfree(cs);
+	return ret;
 }
 
-static u64 read_prioidx(struct cgroup *cgrp, struct cftype *cft)
+static void cgrp_css_free(struct cgroup_subsys_state *css)
 {
-	return (u64)cgrp_netprio_state(cgrp)->prioidx;
+	kfree(css);
 }
 
-static int read_priomap(struct cgroup *cont, struct cftype *cft,
-			struct cgroup_map_cb *cb)
+static u64 read_prioidx(struct cgroup_subsys_state *css, struct cftype *cft)
+{
+	return css->cgroup->id;
+}
+
+static int read_priomap(struct seq_file *sf, void *v)
 {
 	struct net_device *dev;
-	u32 prioidx = cgrp_netprio_state(cont)->prioidx;
-	u32 priority;
-	struct netprio_map *map;
 
 	rcu_read_lock();
-	for_each_netdev_rcu(&init_net, dev) {
-		map = rcu_dereference(dev->priomap);
-		priority = (map && prioidx < map->priomap_len) ? map->priomap[prioidx] : 0;
-		cb->fill(cb, dev->name, priority);
-	}
+	for_each_netdev_rcu(&init_net, dev)
+		seq_printf(sf, "%s %u\n", dev->name,
+			   netprio_prio(seq_css(sf), dev));
 	rcu_read_unlock();
 	return 0;
 }
 
-static int write_priomap(struct cgroup *cgrp, struct cftype *cft,
-			 const char *buffer)
+static ssize_t write_priomap(struct kernfs_open_file *of,
+			     char *buf, size_t nbytes, loff_t off)
 {
-	char *devname = kstrdup(buffer, GFP_KERNEL);
-	int ret = -EINVAL;
-	u32 prioidx = cgrp_netprio_state(cgrp)->prioidx;
-	unsigned long priority;
-	char *priostr;
+	char devname[IFNAMSIZ + 1];
 	struct net_device *dev;
-	struct netprio_map *map;
+	u32 prio;
+	int ret;
 
-	if (!devname)
-		return -ENOMEM;
-
-	/*
-	 * Minimally sized valid priomap string
-	 */
-	if (strlen(devname) < 3)
-		goto out_free_devname;
-
-	priostr = strstr(devname, " ");
-	if (!priostr)
-		goto out_free_devname;
-
-	/*
-	 *Separate the devname from the associated priority
-	 *and advance the priostr pointer to the priority value
-	 */
-	*priostr = '\0';
-	priostr++;
-
-	/*
-	 * If the priostr points to NULL, we're at the end of the passed
-	 * in string, and its not a valid write
-	 */
-	if (*priostr == '\0')
-		goto out_free_devname;
-
-	ret = kstrtoul(priostr, 10, &priority);
-	if (ret < 0)
-		goto out_free_devname;
-
-	ret = -ENODEV;
+	if (sscanf(buf, "%"__stringify(IFNAMSIZ)"s %u", devname, &prio) != 2)
+		return -EINVAL;
 
 	dev = dev_get_by_name(&init_net, devname);
 	if (!dev)
-		goto out_free_devname;
+		return -ENODEV;
 
-	ret = write_update_netdev_table(dev);
-	if (ret < 0)
-		goto out_put_dev;
+	cgroup_sk_alloc_disable();
 
-	rcu_read_lock();
-	map = rcu_dereference(dev->priomap);
-	if (map)
-		map->priomap[prioidx] = priority;
-	rcu_read_unlock();
+	rtnl_lock();
 
-out_put_dev:
+	ret = netprio_set_prio(of_css(of), dev, prio);
+
+	rtnl_unlock();
 	dev_put(dev);
-
-out_free_devname:
-	kfree(devname);
-	return ret;
+	return ret ?: nbytes;
 }
 
-void net_prio_attach(struct cgroup *cgrp, struct cgroup_taskset *tset)
+static int update_netprio(const void *v, struct file *file, unsigned n)
+{
+	int err;
+	struct socket *sock = sock_from_file(file, &err);
+	if (sock) {
+		spin_lock(&cgroup_sk_update_lock);
+		sock_cgroup_set_prioidx(&sock->sk->sk_cgrp_data,
+					(unsigned long)v);
+		spin_unlock(&cgroup_sk_update_lock);
+	}
+	return 0;
+}
+
+static void net_prio_attach(struct cgroup_taskset *tset)
 {
 	struct task_struct *p;
-	char *tmp = kzalloc(sizeof(char) * PATH_MAX, GFP_KERNEL);
+	struct cgroup_subsys_state *css;
 
-	if (!tmp) {
-		pr_warn("Unable to attach cgrp due to alloc failure!\n");
-		return;
-	}
-
-	cgroup_taskset_for_each(p, cgrp, tset) {
-		unsigned int fd;
-		struct fdtable *fdt;
-		struct files_struct *files;
+	cgroup_taskset_for_each(p, css, tset) {
+		void *v = (void *)(unsigned long)css->cgroup->id;
 
 		task_lock(p);
-		files = p->files;
-		if (!files) {
-			task_unlock(p);
-			continue;
-		}
-
-		rcu_read_lock();
-		fdt = files_fdtable(files);
-		for (fd = 0; fd < fdt->max_fds; fd++) {
-			char *path;
-			struct file *file;
-			struct socket *sock;
-			unsigned long s;
-			int rv, err = 0;
-
-			file = fcheck_files(files, fd);
-			if (!file)
-				continue;
-
-			path = d_path(&file->f_path, tmp, PAGE_SIZE);
-			rv = sscanf(path, "socket:[%lu]", &s);
-			if (rv <= 0)
-				continue;
-
-			sock = sock_from_file(file, &err);
-			if (!err)
-				sock_update_netprioidx(sock->sk, p);
-		}
-		rcu_read_unlock();
+		iterate_fd(p->files, 0, update_netprio, v);
 		task_unlock(p);
 	}
-	kfree(tmp);
 }
 
 static struct cftype ss_files[] = {
@@ -331,28 +253,24 @@ static struct cftype ss_files[] = {
 	},
 	{
 		.name = "ifpriomap",
-		.read_map = read_priomap,
-		.write_string = write_priomap,
+		.seq_show = read_priomap,
+		.write = write_priomap,
 	},
 	{ }	/* terminate */
 };
 
-struct cgroup_subsys net_prio_subsys = {
-	.name		= "net_prio",
-	.create		= cgrp_create,
-	.destroy	= cgrp_destroy,
+struct cgroup_subsys net_prio_cgrp_subsys = {
+	.css_alloc	= cgrp_css_alloc,
+	.css_online	= cgrp_css_online,
+	.css_free	= cgrp_css_free,
 	.attach		= net_prio_attach,
-#ifdef CONFIG_NETPRIO_CGROUP
-	.subsys_id	= net_prio_subsys_id,
-#endif
-	.base_cftypes	= ss_files,
-	.module		= THIS_MODULE
+	.legacy_cftypes	= ss_files,
 };
 
 static int netprio_device_event(struct notifier_block *unused,
 				unsigned long event, void *ptr)
 {
-	struct net_device *dev = ptr;
+	struct net_device *dev = netdev_notifier_info_to_dev(ptr);
 	struct netprio_map *old;
 
 	/*
@@ -377,46 +295,9 @@ static struct notifier_block netprio_device_notifier = {
 
 static int __init init_cgroup_netprio(void)
 {
-	int ret;
-
-	ret = cgroup_load_subsys(&net_prio_subsys);
-	if (ret)
-		goto out;
-#ifndef CONFIG_NETPRIO_CGROUP
-	smp_wmb();
-	net_prio_subsys_id = net_prio_subsys.subsys_id;
-#endif
-
 	register_netdevice_notifier(&netprio_device_notifier);
-
-out:
-	return ret;
+	return 0;
 }
 
-static void __exit exit_cgroup_netprio(void)
-{
-	struct netprio_map *old;
-	struct net_device *dev;
-
-	unregister_netdevice_notifier(&netprio_device_notifier);
-
-	cgroup_unload_subsys(&net_prio_subsys);
-
-#ifndef CONFIG_NETPRIO_CGROUP
-	net_prio_subsys_id = -1;
-	synchronize_rcu();
-#endif
-
-	rtnl_lock();
-	for_each_netdev(&init_net, dev) {
-		old = rtnl_dereference(dev->priomap);
-		RCU_INIT_POINTER(dev->priomap, NULL);
-		if (old)
-			kfree_rcu(old, rcu);
-	}
-	rtnl_unlock();
-}
-
-module_init(init_cgroup_netprio);
-module_exit(exit_cgroup_netprio);
+subsys_initcall(init_cgroup_netprio);
 MODULE_LICENSE("GPL v2");

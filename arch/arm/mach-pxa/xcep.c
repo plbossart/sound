@@ -28,7 +28,7 @@
 #include <asm/mach/map.h>
 
 #include <mach/hardware.h>
-#include <mach/pxa25x.h>
+#include "pxa25x.h"
 #include <mach/smemc.h>
 
 #include "generic.h"
@@ -185,7 +185,7 @@ MACHINE_START(XCEP, "Iskratel XCEP")
 	.nr_irqs	= PXA_NR_IRQS,
 	.init_irq	= pxa25x_init_irq,
 	.handle_irq	= pxa25x_handle_irq,
-	.timer		= &pxa_timer,
+	.init_time	= pxa_timer_init,
 	.restart	= pxa_restart,
 MACHINE_END
 

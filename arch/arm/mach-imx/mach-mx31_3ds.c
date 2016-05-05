@@ -30,19 +30,20 @@
 
 #include <media/soc_camera.h>
 
-#include <mach/hardware.h>
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
 #include <asm/mach/time.h>
 #include <asm/memory.h>
 #include <asm/mach/map.h>
 #include <asm/memblock.h>
-#include <mach/common.h>
-#include <mach/iomux-mx3.h>
-#include <mach/3ds_debugboard.h>
-#include <mach/ulpi.h>
 
+#include "3ds_debugboard.h"
+#include "common.h"
 #include "devices-imx31.h"
+#include "ehci.h"
+#include "hardware.h"
+#include "iomux-mx3.h"
+#include "ulpi.h"
 
 static int mx31_3ds_pins[] = {
 	/* UART1 */
@@ -306,16 +307,16 @@ static int mx31_3ds_sdhc1_init(struct device *dev,
 	ret = gpio_request_array(mx31_3ds_sdhc1_gpios,
 				 ARRAY_SIZE(mx31_3ds_sdhc1_gpios));
 	if (ret) {
-		pr_warning("Unable to request the SD/MMC GPIOs.\n");
+		pr_warn("Unable to request the SD/MMC GPIOs.\n");
 		return ret;
 	}
 
 	ret = request_irq(gpio_to_irq(IOMUX_TO_GPIO(MX31_PIN_GPIO3_1)),
-			  detect_irq, IRQF_DISABLED |
+			  detect_irq,
 			  IRQF_TRIGGER_FALLING | IRQF_TRIGGER_RISING,
 			  "sdhc1-detect", data);
 	if (ret) {
-		pr_warning("Unable to request the SD/MMC card-detect IRQ.\n");
+		pr_warn("Unable to request the SD/MMC card-detect IRQ.\n");
 		goto gpio_free;
 	}
 
@@ -393,7 +394,7 @@ static struct regulator_init_data gpo_init = {
 };
 
 static struct regulator_consumer_supply vmmc2_consumers[] = {
-	REGULATOR_SUPPLY("vmmc", "mxc-mmc.0"),
+	REGULATOR_SUPPLY("vmmc", "imx31-mmc.0"),
 };
 
 static struct regulator_init_data vmmc2_init = {
@@ -762,10 +763,6 @@ static void __init mx31_3ds_timer_init(void)
 	mx31_clocks_init(26000000);
 }
 
-static struct sys_timer mx31_3ds_timer = {
-	.init	= mx31_3ds_timer_init,
-};
-
 static void __init mx31_3ds_reserve(void)
 {
 	/* reserve MX31_3DS_CAMERA_BUF_SIZE bytes for mx3-camera */
@@ -779,8 +776,7 @@ MACHINE_START(MX31_3DS, "Freescale MX31PDK (3DS)")
 	.map_io = mx31_map_io,
 	.init_early = imx31_init_early,
 	.init_irq = mx31_init_irq,
-	.handle_irq = imx31_handle_irq,
-	.timer = &mx31_3ds_timer,
+	.init_time	= mx31_3ds_timer_init,
 	.init_machine = mx31_3ds_init,
 	.reserve = mx31_3ds_reserve,
 	.restart	= mxc_restart,

@@ -127,7 +127,7 @@ static int full_duplex[MAX_UNITS];
 #define NATSEMI_RX_LIMIT	2046	/* maximum supported by hardware */
 
 /* These identify the driver base version and may not be removed. */
-static const char version[] __devinitconst =
+static const char version[] =
   KERN_INFO DRV_NAME " dp8381x driver, version "
       DRV_VERSION ", " DRV_RELDATE "\n"
   "  originally by Donald Becker <becker@scyld.com>\n"
@@ -242,12 +242,12 @@ static struct {
 	const char *name;
 	unsigned long flags;
 	unsigned int eeprom_size;
-} natsemi_pci_info[] __devinitdata = {
+} natsemi_pci_info[] = {
 	{ "Aculab E1/T1 PMXc cPCI carrier card", NATSEMI_FLAG_IGNORE_PHY, 128 },
 	{ "NatSemi DP8381[56]", 0, 24 },
 };
 
-static DEFINE_PCI_DEVICE_TABLE(natsemi_pci_tbl) = {
+static const struct pci_device_id natsemi_pci_tbl[] = {
 	{ PCI_VENDOR_ID_NS, 0x0020, 0x12d9,     0x000c,     0, 0, 0 },
 	{ PCI_VENDOR_ID_NS, 0x0020, PCI_ANY_ID, PCI_ANY_ID, 0, 0, 1 },
 	{ }	/* terminate list */
@@ -742,7 +742,7 @@ static void move_int_phy(struct net_device *dev, int addr)
 	udelay(1);
 }
 
-static void __devinit natsemi_init_media (struct net_device *dev)
+static void natsemi_init_media(struct net_device *dev)
 {
 	struct netdev_private *np = netdev_priv(dev);
 	u32 tmp;
@@ -797,8 +797,7 @@ static const struct net_device_ops natsemi_netdev_ops = {
 #endif
 };
 
-static int __devinit natsemi_probe1 (struct pci_dev *pdev,
-	const struct pci_device_id *ent)
+static int natsemi_probe1(struct pci_dev *pdev, const struct pci_device_id *ent)
 {
 	struct net_device *dev;
 	struct netdev_private *np;
@@ -862,9 +861,6 @@ static int __devinit natsemi_probe1 (struct pci_dev *pdev,
 		dev->dev_addr[i*2+1] = eedata >> 7;
 		prev_eedata = eedata;
 	}
-
-	/* Store MAC Address in perm_addr */
-	memcpy(dev->perm_addr, dev->dev_addr, ETH_ALEN);
 
 	np = netdev_priv(dev);
 	np->ioaddr = ioaddr;
@@ -931,7 +927,7 @@ static int __devinit natsemi_probe1 (struct pci_dev *pdev,
 	dev->netdev_ops = &natsemi_netdev_ops;
 	dev->watchdog_timeo = TX_TIMEOUT;
 
-	SET_ETHTOOL_OPS(dev, &ethtool_ops);
+	dev->ethtool_ops = &ethtool_ops;
 
 	if (mtu)
 		dev->mtu = mtu;
@@ -947,8 +943,8 @@ static int __devinit natsemi_probe1 (struct pci_dev *pdev,
 	i = register_netdev(dev);
 	if (i)
 		goto err_register_netdev;
-
-	if (NATSEMI_CREATE_FILE(pdev, dspcfg_workaround))
+	i = NATSEMI_CREATE_FILE(pdev, dspcfg_workaround);
+	if (i)
 		goto err_create_file;
 
 	if (netif_msg_drv(np)) {
@@ -974,7 +970,6 @@ static int __devinit natsemi_probe1 (struct pci_dev *pdev,
 
  err_ioremap:
 	pci_release_regions(pdev);
-	pci_set_drvdata(pdev, NULL);
 
  err_pci_request_regions:
 	free_netdev(dev);
@@ -1942,6 +1937,12 @@ static void refill_rx(struct net_device *dev)
 				break; /* Better luck next round. */
 			np->rx_dma[entry] = pci_map_single(np->pci_dev,
 				skb->data, buflen, PCI_DMA_FROMDEVICE);
+			if (pci_dma_mapping_error(np->pci_dev,
+						  np->rx_dma[entry])) {
+				dev_kfree_skb_any(skb);
+				np->rx_skbuff[entry] = NULL;
+				break; /* Better luck next round. */
+			}
 			np->rx_ring[entry].addr = cpu_to_le32(np->rx_dma[entry]);
 		}
 		np->rx_ring[entry].cmd_status = cpu_to_le32(np->rx_buf_sz);
@@ -2098,6 +2099,12 @@ static netdev_tx_t start_tx(struct sk_buff *skb, struct net_device *dev)
 	np->tx_skbuff[entry] = skb;
 	np->tx_dma[entry] = pci_map_single(np->pci_dev,
 				skb->data,skb->len, PCI_DMA_TODEVICE);
+	if (pci_dma_mapping_error(np->pci_dev, np->tx_dma[entry])) {
+		np->tx_skbuff[entry] = NULL;
+		dev_kfree_skb_irq(skb);
+		dev->stats.tx_dropped++;
+		return NETDEV_TX_OK;
+	}
 
 	np->tx_ring[entry].addr = cpu_to_le32(np->tx_dma[entry]);
 
@@ -3214,7 +3221,7 @@ static int netdev_close(struct net_device *dev)
 }
 
 
-static void __devexit natsemi_remove1 (struct pci_dev *pdev)
+static void natsemi_remove1(struct pci_dev *pdev)
 {
 	struct net_device *dev = pci_get_drvdata(pdev);
 	void __iomem * ioaddr = ns_ioaddr(dev);
@@ -3224,7 +3231,6 @@ static void __devexit natsemi_remove1 (struct pci_dev *pdev)
 	pci_release_regions (pdev);
 	iounmap(ioaddr);
 	free_netdev (dev);
-	pci_set_drvdata(pdev, NULL);
 }
 
 #ifdef CONFIG_PM
@@ -3353,7 +3359,7 @@ static struct pci_driver natsemi_driver = {
 	.name		= DRV_NAME,
 	.id_table	= natsemi_pci_tbl,
 	.probe		= natsemi_probe1,
-	.remove		= __devexit_p(natsemi_remove1),
+	.remove		= natsemi_remove1,
 #ifdef CONFIG_PM
 	.suspend	= natsemi_suspend,
 	.resume		= natsemi_resume,

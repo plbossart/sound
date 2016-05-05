@@ -226,7 +226,7 @@ static void process_ce(struct mem_ctl_info *mci, struct e7xxx_error_info *info)
 static void process_ce_no_info(struct mem_ctl_info *mci)
 {
 	edac_dbg(3, "\n");
-	edac_mc_handle_error(HW_EVENT_ERR_UNCORRECTED, mci, 1, 0, 0, 0, -1, -1, -1,
+	edac_mc_handle_error(HW_EVENT_ERR_CORRECTED, mci, 1, 0, 0, 0, -1, -1, -1,
 			     "e7xxx CE log register overflow", "");
 }
 
@@ -528,8 +528,7 @@ fail0:
 }
 
 /* returns count (>= 0), or negative on error */
-static int __devinit e7xxx_init_one(struct pci_dev *pdev,
-				const struct pci_device_id *ent)
+static int e7xxx_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 {
 	edac_dbg(0, "\n");
 
@@ -538,7 +537,7 @@ static int __devinit e7xxx_init_one(struct pci_dev *pdev,
 		-EIO : e7xxx_probe1(pdev, ent->driver_data);
 }
 
-static void __devexit e7xxx_remove_one(struct pci_dev *pdev)
+static void e7xxx_remove_one(struct pci_dev *pdev)
 {
 	struct mem_ctl_info *mci;
 	struct e7xxx_pvt *pvt;
@@ -556,7 +555,7 @@ static void __devexit e7xxx_remove_one(struct pci_dev *pdev)
 	edac_mc_free(mci);
 }
 
-static DEFINE_PCI_DEVICE_TABLE(e7xxx_pci_tbl) = {
+static const struct pci_device_id e7xxx_pci_tbl[] = {
 	{
 	 PCI_VEND_DEV(INTEL, 7205_0), PCI_ANY_ID, PCI_ANY_ID, 0, 0,
 	 E7205},
@@ -579,7 +578,7 @@ MODULE_DEVICE_TABLE(pci, e7xxx_pci_tbl);
 static struct pci_driver e7xxx_driver = {
 	.name = EDAC_MOD_STR,
 	.probe = e7xxx_init_one,
-	.remove = __devexit_p(e7xxx_remove_one),
+	.remove = e7xxx_remove_one,
 	.id_table = e7xxx_pci_tbl,
 };
 

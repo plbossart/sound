@@ -41,6 +41,7 @@
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
 #include <sound/soc.h>
+#include <sound/dmaengine_pcm.h>
 
 #include "tegra20_i2s.h"
 
@@ -73,7 +74,7 @@ static int tegra20_i2s_set_fmt(struct snd_soc_dai *dai,
 				unsigned int fmt)
 {
 	struct tegra20_i2s *i2s = snd_soc_dai_get_drvdata(dai);
-	unsigned int mask, val;
+	unsigned int mask = 0, val = 0;
 
 	switch (fmt & SND_SOC_DAIFMT_INV_MASK) {
 	case SND_SOC_DAIFMT_NB_NF:
@@ -82,10 +83,10 @@ static int tegra20_i2s_set_fmt(struct snd_soc_dai *dai,
 		return -EINVAL;
 	}
 
-	mask = TEGRA20_I2S_CTRL_MASTER_ENABLE;
+	mask |= TEGRA20_I2S_CTRL_MASTER_ENABLE;
 	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
 	case SND_SOC_DAIFMT_CBS_CFS:
-		val = TEGRA20_I2S_CTRL_MASTER_ENABLE;
+		val |= TEGRA20_I2S_CTRL_MASTER_ENABLE;
 		break;
 	case SND_SOC_DAIFMT_CBM_CFM:
 		break;
@@ -276,6 +277,10 @@ static const struct snd_soc_dai_driver tegra20_i2s_dai_template = {
 	.symmetric_rates = 1,
 };
 
+static const struct snd_soc_component_driver tegra20_i2s_component = {
+	.name		= DRV_NAME,
+};
+
 static bool tegra20_i2s_wr_rd_reg(struct device *dev, unsigned int reg)
 {
 	switch (reg) {
@@ -292,7 +297,7 @@ static bool tegra20_i2s_wr_rd_reg(struct device *dev, unsigned int reg)
 		return true;
 	default:
 		return false;
-	};
+	}
 }
 
 static bool tegra20_i2s_volatile_reg(struct device *dev, unsigned int reg)
@@ -305,7 +310,7 @@ static bool tegra20_i2s_volatile_reg(struct device *dev, unsigned int reg)
 		return true;
 	default:
 		return false;
-	};
+	}
 }
 
 static bool tegra20_i2s_precious_reg(struct device *dev, unsigned int reg)
@@ -316,7 +321,7 @@ static bool tegra20_i2s_precious_reg(struct device *dev, unsigned int reg)
 		return true;
 	default:
 		return false;
-	};
+	}
 }
 
 static const struct regmap_config tegra20_i2s_regmap_config = {
@@ -328,15 +333,13 @@ static const struct regmap_config tegra20_i2s_regmap_config = {
 	.readable_reg = tegra20_i2s_wr_rd_reg,
 	.volatile_reg = tegra20_i2s_volatile_reg,
 	.precious_reg = tegra20_i2s_precious_reg,
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_FLAT,
 };
 
-static __devinit int tegra20_i2s_platform_probe(struct platform_device *pdev)
+static int tegra20_i2s_platform_probe(struct platform_device *pdev)
 {
 	struct tegra20_i2s *i2s;
-	struct resource *mem, *memregion, *dmareq;
-	u32 of_dma[2];
-	u32 dma_ch;
+	struct resource *mem;
 	void __iomem *regs;
 	int ret;
 
@@ -359,38 +362,9 @@ static __devinit int tegra20_i2s_platform_probe(struct platform_device *pdev)
 	}
 
 	mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (!mem) {
-		dev_err(&pdev->dev, "No memory resource\n");
-		ret = -ENODEV;
-		goto err_clk_put;
-	}
-
-	dmareq = platform_get_resource(pdev, IORESOURCE_DMA, 0);
-	if (!dmareq) {
-		if (of_property_read_u32_array(pdev->dev.of_node,
-					"nvidia,dma-request-selector",
-					of_dma, 2) < 0) {
-			dev_err(&pdev->dev, "No DMA resource\n");
-			ret = -ENODEV;
-			goto err_clk_put;
-		}
-		dma_ch = of_dma[1];
-	} else {
-		dma_ch = dmareq->start;
-	}
-
-	memregion = devm_request_mem_region(&pdev->dev, mem->start,
-					    resource_size(mem), DRV_NAME);
-	if (!memregion) {
-		dev_err(&pdev->dev, "Memory region already claimed\n");
-		ret = -EBUSY;
-		goto err_clk_put;
-	}
-
-	regs = devm_ioremap(&pdev->dev, mem->start, resource_size(mem));
-	if (!regs) {
-		dev_err(&pdev->dev, "ioremap failed\n");
-		ret = -ENOMEM;
+	regs = devm_ioremap_resource(&pdev->dev, mem);
+	if (IS_ERR(regs)) {
+		ret = PTR_ERR(regs);
 		goto err_clk_put;
 	}
 
@@ -403,14 +377,12 @@ static __devinit int tegra20_i2s_platform_probe(struct platform_device *pdev)
 	}
 
 	i2s->capture_dma_data.addr = mem->start + TEGRA20_I2S_FIFO2;
-	i2s->capture_dma_data.wrap = 4;
-	i2s->capture_dma_data.width = 32;
-	i2s->capture_dma_data.req_sel = dma_ch;
+	i2s->capture_dma_data.addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES;
+	i2s->capture_dma_data.maxburst = 4;
 
 	i2s->playback_dma_data.addr = mem->start + TEGRA20_I2S_FIFO1;
-	i2s->playback_dma_data.wrap = 4;
-	i2s->playback_dma_data.width = 32;
-	i2s->playback_dma_data.req_sel = dma_ch;
+	i2s->playback_dma_data.addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES;
+	i2s->playback_dma_data.maxburst = 4;
 
 	pm_runtime_enable(&pdev->dev);
 	if (!pm_runtime_enabled(&pdev->dev)) {
@@ -419,7 +391,8 @@ static __devinit int tegra20_i2s_platform_probe(struct platform_device *pdev)
 			goto err_pm_disable;
 	}
 
-	ret = snd_soc_register_dai(&pdev->dev, &i2s->dai);
+	ret = snd_soc_register_component(&pdev->dev, &tegra20_i2s_component,
+					 &i2s->dai, 1);
 	if (ret) {
 		dev_err(&pdev->dev, "Could not register DAI: %d\n", ret);
 		ret = -ENOMEM;
@@ -429,13 +402,13 @@ static __devinit int tegra20_i2s_platform_probe(struct platform_device *pdev)
 	ret = tegra_pcm_platform_register(&pdev->dev);
 	if (ret) {
 		dev_err(&pdev->dev, "Could not register PCM: %d\n", ret);
-		goto err_unregister_dai;
+		goto err_unregister_component;
 	}
 
 	return 0;
 
-err_unregister_dai:
-	snd_soc_unregister_dai(&pdev->dev);
+err_unregister_component:
+	snd_soc_unregister_component(&pdev->dev);
 err_suspend:
 	if (!pm_runtime_status_suspended(&pdev->dev))
 		tegra20_i2s_runtime_suspend(&pdev->dev);
@@ -447,7 +420,7 @@ err:
 	return ret;
 }
 
-static int __devexit tegra20_i2s_platform_remove(struct platform_device *pdev)
+static int tegra20_i2s_platform_remove(struct platform_device *pdev)
 {
 	struct tegra20_i2s *i2s = dev_get_drvdata(&pdev->dev);
 
@@ -456,19 +429,19 @@ static int __devexit tegra20_i2s_platform_remove(struct platform_device *pdev)
 		tegra20_i2s_runtime_suspend(&pdev->dev);
 
 	tegra_pcm_platform_unregister(&pdev->dev);
-	snd_soc_unregister_dai(&pdev->dev);
+	snd_soc_unregister_component(&pdev->dev);
 
 	clk_put(i2s->clk_i2s);
 
 	return 0;
 }
 
-static const struct of_device_id tegra20_i2s_of_match[] __devinitconst = {
+static const struct of_device_id tegra20_i2s_of_match[] = {
 	{ .compatible = "nvidia,tegra20-i2s", },
 	{},
 };
 
-static const struct dev_pm_ops tegra20_i2s_pm_ops __devinitconst = {
+static const struct dev_pm_ops tegra20_i2s_pm_ops = {
 	SET_RUNTIME_PM_OPS(tegra20_i2s_runtime_suspend,
 			   tegra20_i2s_runtime_resume, NULL)
 };
@@ -476,12 +449,11 @@ static const struct dev_pm_ops tegra20_i2s_pm_ops __devinitconst = {
 static struct platform_driver tegra20_i2s_driver = {
 	.driver = {
 		.name = DRV_NAME,
-		.owner = THIS_MODULE,
 		.of_match_table = tegra20_i2s_of_match,
 		.pm = &tegra20_i2s_pm_ops,
 	},
 	.probe = tegra20_i2s_platform_probe,
-	.remove = __devexit_p(tegra20_i2s_platform_remove),
+	.remove = tegra20_i2s_platform_remove,
 };
 module_platform_driver(tegra20_i2s_driver);
 

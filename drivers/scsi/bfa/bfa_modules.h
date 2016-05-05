@@ -1,9 +1,10 @@
 /*
- * Copyright (c) 2005-2010 Brocade Communications Systems, Inc.
+ * Copyright (c) 2005-2014 Brocade Communications Systems, Inc.
+ * Copyright (c) 2014- QLogic Corporation.
  * All rights reserved
- * www.brocade.com
+ * www.qlogic.com
  *
- * Linux driver for Brocade Fibre Channel Host Bus Adapter.
+ * Linux driver for QLogic BR-series Fibre Channel Host Bus Adapter.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License (GPL) Version 2 as
@@ -45,6 +46,7 @@ struct bfa_modules_s {
 	struct bfa_diag_s	diag_mod;	/*  diagnostics module	*/
 	struct bfa_phy_s	phy;		/*  phy module		*/
 	struct bfa_dconf_mod_s	dconf_mod;	/*  DCONF common module	*/
+	struct bfa_fru_s	fru;		/*  fru module		*/
 };
 
 /*
@@ -121,6 +123,7 @@ struct bfa_s {
 	bfa_boolean_t		fcs;		/*  FCS is attached to BFA */
 	struct bfa_msix_s	msix;
 	int			bfa_aen_seq;
+	bfa_boolean_t		intr_enabled;	/*  Status of interrupts */
 };
 
 extern bfa_boolean_t bfa_auto_recover;

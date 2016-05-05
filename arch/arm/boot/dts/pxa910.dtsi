@@ -7,7 +7,8 @@
  *  publishhed by the Free Software Foundation.
  */
 
-/include/ "skeleton.dtsi"
+#include "skeleton.dtsi"
+#include <dt-bindings/clock/marvell,pxa910.h>
 
 / {
 	aliases {
@@ -24,6 +25,11 @@
 		compatible = "simple-bus";
 		interrupt-parent = <&intc>;
 		ranges;
+
+		L2: l2-cache {
+			compatible = "marvell,tauros2-cache";
+			marvell,tauros2-cache-features = <0x3>;
+		};
 
 		axi@d4200000 {	/* AXI */
 			compatible = "mrvl,axi-bus", "simple-bus";
@@ -66,6 +72,8 @@
 				compatible = "mrvl,mmp-uart";
 				reg = <0xd4017000 0x1000>;
 				interrupts = <27>;
+				clocks = <&soc_clocks PXA910_CLK_UART0>;
+				resets = <&soc_clocks PXA910_CLK_UART0>;
 				status = "disabled";
 			};
 
@@ -73,6 +81,8 @@
 				compatible = "mrvl,mmp-uart";
 				reg = <0xd4018000 0x1000>;
 				interrupts = <28>;
+				clocks = <&soc_clocks PXA910_CLK_UART1>;
+				resets = <&soc_clocks PXA910_CLK_UART1>;
 				status = "disabled";
 			};
 
@@ -80,11 +90,13 @@
 				compatible = "mrvl,mmp-uart";
 				reg = <0xd4036000 0x1000>;
 				interrupts = <59>;
+				clocks = <&soc_clocks PXA910_CLK_UART2>;
+				resets = <&soc_clocks PXA910_CLK_UART2>;
 				status = "disabled";
 			};
 
 			gpio@d4019000 {
-				compatible = "mrvl,mmp-gpio";
+				compatible = "marvell,mmp-gpio";
 				#address-cells = <1>;
 				#size-cells = <1>;
 				reg = <0xd4019000 0x1000>;
@@ -92,6 +104,8 @@
 				#gpio-cells = <2>;
 				interrupts = <49>;
 				interrupt-names = "gpio_mux";
+				clocks = <&soc_clocks PXA910_CLK_GPIO>;
+				resets = <&soc_clocks PXA910_CLK_GPIO>;
 				interrupt-controller;
 				#interrupt-cells = <1>;
 				ranges;
@@ -115,16 +129,24 @@
 
 			twsi1: i2c@d4011000 {
 				compatible = "mrvl,mmp-twsi";
+				#address-cells = <1>;
+				#size-cells = <0>;
 				reg = <0xd4011000 0x1000>;
 				interrupts = <7>;
+				clocks = <&soc_clocks PXA910_CLK_TWSI0>;
+				resets = <&soc_clocks PXA910_CLK_TWSI0>;
 				mrvl,i2c-fast-mode;
 				status = "disabled";
 			};
 
 			twsi2: i2c@d4037000 {
 				compatible = "mrvl,mmp-twsi";
+				#address-cells = <1>;
+				#size-cells = <0>;
 				reg = <0xd4037000 0x1000>;
 				interrupts = <54>;
+				clocks = <&soc_clocks PXA910_CLK_TWSI1>;
+				resets = <&soc_clocks PXA910_CLK_TWSI1>;
 				status = "disabled";
 			};
 
@@ -133,8 +155,21 @@
 				reg = <0xd4010000 0x1000>;
 				interrupts = <5 6>;
 				interrupt-names = "rtc 1Hz", "rtc alarm";
+				clocks = <&soc_clocks PXA910_CLK_RTC>;
+				resets = <&soc_clocks PXA910_CLK_RTC>;
 				status = "disabled";
 			};
+		};
+
+		soc_clocks: clocks{
+			compatible = "marvell,pxa910-clock";
+			reg = <0xd4050000 0x1000>,
+			      <0xd4282800 0x400>,
+			      <0xd4015000 0x1000>,
+			      <0xd403b000 0x1000>;
+			reg-names = "mpmu", "apmu", "apbc", "apbcp";
+			#clock-cells = <1>;
+			#reset-cells = <1>;
 		};
 	};
 };

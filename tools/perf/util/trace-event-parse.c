@@ -28,25 +28,6 @@
 #include "util.h"
 #include "trace-event.h"
 
-int header_page_size_size;
-int header_page_ts_size;
-int header_page_data_offset;
-
-bool latency_format;
-
-struct pevent *read_trace_init(int file_bigendian, int host_bigendian)
-{
-	struct pevent *pevent = pevent_alloc();
-
-	if (pevent != NULL) {
-		pevent_set_flag(pevent, PEVENT_NSEC_OUTPUT);
-		pevent_set_file_bigendian(pevent, file_bigendian);
-		pevent_set_host_bigendian(pevent, host_bigendian);
-	}
-
-	return pevent;
-}
-
 static int get_common_field(struct scripting_context *context,
 			    int *offset, int *size, const char *type)
 {
@@ -126,61 +107,16 @@ raw_field_value(struct event_format *event, const char *name, void *data)
 	return val;
 }
 
-void *raw_field_ptr(struct event_format *event, const char *name, void *data)
+unsigned long long read_size(struct event_format *event, void *ptr, int size)
 {
-	struct format_field *field;
-
-	field = pevent_find_any_field(event, name);
-	if (!field)
-		return NULL;
-
-	if (field->flags & FIELD_IS_DYNAMIC) {
-		int offset;
-
-		offset = *(int *)(data + field->offset);
-		offset &= 0xffff;
-
-		return data + offset;
-	}
-
-	return data + field->offset;
+	return pevent_read_number(event->pevent, ptr, size);
 }
 
-int trace_parse_common_type(struct pevent *pevent, void *data)
+void event_format__fprintf(struct event_format *event,
+			   int cpu, void *data, int size, FILE *fp)
 {
-	struct pevent_record record;
-
-	record.data = data;
-	return pevent_data_type(pevent, &record);
-}
-
-int trace_parse_common_pid(struct pevent *pevent, void *data)
-{
-	struct pevent_record record;
-
-	record.data = data;
-	return pevent_data_pid(pevent, &record);
-}
-
-unsigned long long read_size(struct pevent *pevent, void *ptr, int size)
-{
-	return pevent_read_number(pevent, ptr, size);
-}
-
-void print_trace_event(struct pevent *pevent, int cpu, void *data, int size)
-{
-	struct event_format *event;
 	struct pevent_record record;
 	struct trace_seq s;
-	int type;
-
-	type = trace_parse_common_type(pevent, data);
-
-	event = pevent_find_event(pevent, type);
-	if (!event) {
-		warning("ug! no event found for type %d", type);
-		return;
-	}
 
 	memset(&record, 0, sizeof(record));
 	record.cpu = cpu;
@@ -189,74 +125,25 @@ void print_trace_event(struct pevent *pevent, int cpu, void *data, int size)
 
 	trace_seq_init(&s);
 	pevent_event_info(&s, event, &record);
-	trace_seq_do_printf(&s);
+	trace_seq_do_fprintf(&s, fp);
+	trace_seq_destroy(&s);
 }
 
-void print_event(struct pevent *pevent, int cpu, void *data, int size,
-		 unsigned long long nsecs, char *comm)
+void event_format__print(struct event_format *event,
+			 int cpu, void *data, int size)
 {
-	struct pevent_record record;
-	struct trace_seq s;
-	int pid;
-
-	pevent->latency_format = latency_format;
-
-	record.ts = nsecs;
-	record.cpu = cpu;
-	record.size = size;
-	record.data = data;
-	pid = pevent_data_pid(pevent, &record);
-
-	if (!pevent_pid_is_registered(pevent, pid))
-		pevent_register_comm(pevent, comm, pid);
-
-	trace_seq_init(&s);
-	pevent_print_event(pevent, &s, &record);
-	trace_seq_do_printf(&s);
-	printf("\n");
-}
-
-void parse_proc_kallsyms(struct pevent *pevent,
-			 char *file, unsigned int size __unused)
-{
-	unsigned long long addr;
-	char *func;
-	char *line;
-	char *next = NULL;
-	char *addr_str;
-	char *mod;
-	char ch;
-
-	line = strtok_r(file, "\n", &next);
-	while (line) {
-		mod = NULL;
-		sscanf(line, "%as %c %as\t[%as",
-		       (float *)(void *)&addr_str, /* workaround gcc warning */
-		       &ch, (float *)(void *)&func, (float *)(void *)&mod);
-		addr = strtoull(addr_str, NULL, 16);
-		free(addr_str);
-
-		/* truncate the extra ']' */
-		if (mod)
-			mod[strlen(mod) - 1] = 0;
-
-		pevent_register_function(pevent, func, addr, mod);
-		free(func);
-		free(mod);
-
-		line = strtok_r(NULL, "\n", &next);
-	}
+	return event_format__fprintf(event, cpu, data, size, stdout);
 }
 
 void parse_ftrace_printk(struct pevent *pevent,
-			 char *file, unsigned int size __unused)
+			 char *file, unsigned int size __maybe_unused)
 {
 	unsigned long long addr;
 	char *printk;
 	char *line;
 	char *next = NULL;
 	char *addr_str;
-	char *fmt;
+	char *fmt = NULL;
 
 	line = strtok_r(file, "\n", &next);
 	while (line) {
@@ -289,7 +176,7 @@ struct event_format *trace_find_next_event(struct pevent *pevent,
 {
 	static int idx;
 
-	if (!pevent->events)
+	if (!pevent || !pevent->events)
 		return NULL;
 
 	if (!event) {
@@ -322,7 +209,7 @@ static const struct flag flags[] = {
 	{ "NET_TX_SOFTIRQ", 2 },
 	{ "NET_RX_SOFTIRQ", 3 },
 	{ "BLOCK_SOFTIRQ", 4 },
-	{ "BLOCK_IOPOLL_SOFTIRQ", 5 },
+	{ "IRQ_POLL_SOFTIRQ", 5 },
 	{ "TASKLET_SOFTIRQ", 6 },
 	{ "SCHED_SOFTIRQ", 7 },
 	{ "HRTIMER_SOFTIRQ", 8 },

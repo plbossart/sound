@@ -94,6 +94,7 @@
 #define H_SG_LIST	-72
 #define H_OP_MODE	-73
 #define H_COP_HW	-74
+#define H_STATE		-75
 #define H_UNSUPPORTED_FLAG_START	-256
 #define H_UNSUPPORTED_FLAG_END		-511
 #define H_MULTI_THREADS_ACTIVE	-9005
@@ -151,11 +152,6 @@
 #define H_VASI_SUSPENDED        4
 #define H_VASI_RESUMED          5
 #define H_VASI_COMPLETED        6
-
-/* DABRX flags */
-#define H_DABRX_HYPERVISOR	(1UL<<(63-61))
-#define H_DABRX_KERNEL		(1UL<<(63-62))
-#define H_DABRX_USER		(1UL<<(63-63))
 
 /* Each control block has to be on a 4K boundary */
 #define H_CB_ALIGNMENT          4096
@@ -263,16 +259,52 @@
 #define H_DEL_CONN		0x288
 #define H_JOIN			0x298
 #define H_VASI_STATE            0x2A4
+#define H_VIOCTL		0x2A8
 #define H_ENABLE_CRQ		0x2B0
 #define H_GET_EM_PARMS		0x2B8
 #define H_SET_MPP		0x2D0
 #define H_GET_MPP		0x2D4
+#define H_REG_SUB_CRQ		0x2DC
 #define H_HOME_NODE_ASSOCIATIVITY 0x2EC
+#define H_FREE_SUB_CRQ		0x2E0
+#define H_SEND_SUB_CRQ		0x2E4
+#define H_SEND_SUB_CRQ_INDIRECT	0x2E8
 #define H_BEST_ENERGY		0x2F4
+#define H_XIRR_X		0x2FC
 #define H_RANDOM		0x300
 #define H_COP			0x304
 #define H_GET_MPP_X		0x314
-#define MAX_HCALL_OPCODE	H_GET_MPP_X
+#define H_SET_MODE		0x31C
+#define MAX_HCALL_OPCODE	H_SET_MODE
+
+/* H_VIOCTL functions */
+#define H_GET_VIOA_DUMP_SIZE	0x01
+#define H_GET_VIOA_DUMP		0x02
+#define H_GET_ILLAN_NUM_VLAN_IDS 0x03
+#define H_GET_ILLAN_VLAN_ID_LIST 0x04
+#define H_GET_ILLAN_SWITCH_ID	0x05
+#define H_DISABLE_MIGRATION	0x06
+#define H_ENABLE_MIGRATION	0x07
+#define H_GET_PARTNER_INFO	0x08
+#define H_GET_PARTNER_WWPN_LIST	0x09
+#define H_DISABLE_ALL_VIO_INTS	0x0A
+#define H_DISABLE_VIO_INTERRUPT	0x0B
+#define H_ENABLE_VIO_INTERRUPT	0x0C
+
+
+/* Platform specific hcalls, used by KVM */
+#define H_RTAS			0xf000
+
+/* "Platform specific hcalls", provided by PHYP */
+#define H_GET_24X7_CATALOG_PAGE	0xF078
+#define H_GET_24X7_DATA		0xF07C
+#define H_GET_PERF_COUNTER_INFO	0xF080
+
+/* Values for 2nd argument to H_SET_MODE */
+#define H_SET_MODE_RESOURCE_SET_CIABR		1
+#define H_SET_MODE_RESOURCE_SET_DAWR		2
+#define H_SET_MODE_RESOURCE_ADDR_TRANS_MODE	3
+#define H_SET_MODE_RESOURCE_LE			4
 
 #ifndef __ASSEMBLY__
 
@@ -360,6 +392,26 @@ struct hvcall_mpp_x_data {
 
 int h_get_mpp_x(struct hvcall_mpp_x_data *mpp_x_data);
 
+static inline unsigned int get_longbusy_msecs(int longbusy_rc)
+{
+	switch (longbusy_rc) {
+	case H_LONG_BUSY_ORDER_1_MSEC:
+		return 1;
+	case H_LONG_BUSY_ORDER_10_MSEC:
+		return 10;
+	case H_LONG_BUSY_ORDER_100_MSEC:
+		return 100;
+	case H_LONG_BUSY_ORDER_1_SEC:
+		return 1000;
+	case H_LONG_BUSY_ORDER_10_SEC:
+		return 10000;
+	case H_LONG_BUSY_ORDER_100_SEC:
+		return 100000;
+	default:
+		return 1;
+	}
+}
+
 #ifdef CONFIG_PPC_PSERIES
 extern int CMO_PrPSP;
 extern int CMO_SecPSP;
@@ -379,6 +431,17 @@ static inline unsigned long cmo_get_page_size(void)
 {
 	return CMO_PageSize;
 }
+
+extern long pSeries_enable_reloc_on_exc(void);
+extern long pSeries_disable_reloc_on_exc(void);
+
+extern long pseries_big_endian_exceptions(void);
+
+#else
+
+#define pSeries_enable_reloc_on_exc()  do {} while (0)
+#define pSeries_disable_reloc_on_exc() do {} while (0)
+
 #endif /* CONFIG_PPC_PSERIES */
 
 #endif /* __ASSEMBLY__ */

@@ -1,11 +1,11 @@
 /*
- *	HP WatchDog Driver
+ *	HPE WatchDog Driver
  *	based on
  *
  *	SoftDog	0.05:	A Software Watchdog Device
  *
- *	(c) Copyright 2007 Hewlett-Packard Development Company, L.P.
- *	Thomas Mingarelli <thomas.mingarelli@hp.com>
+ *	(c) Copyright 2015 Hewlett Packard Enterprise Development LP
+ *	Thomas Mingarelli <thomas.mingarelli@hpe.com>
  *
  *	This program is free software; you can redistribute it and/or
  *	modify it under the terms of the GNU General Public License
@@ -17,7 +17,6 @@
 
 #include <linux/device.h>
 #include <linux/fs.h>
-#include <linux/init.h>
 #include <linux/io.h>
 #include <linux/bitops.h>
 #include <linux/kernel.h>
@@ -38,8 +37,9 @@
 #include <asm/cacheflush.h>
 #endif /* CONFIG_HPWDT_NMI_DECODING */
 #include <asm/nmi.h>
+#include <asm/frame.h>
 
-#define HPWDT_VERSION			"1.3.0"
+#define HPWDT_VERSION			"1.3.3"
 #define SECS_TO_TICKS(secs)		((secs) * 1000 / 128)
 #define TICKS_TO_SECS(ticks)		((ticks) * 128 / 1000)
 #define HPWDT_MAX_TIMER			TICKS_TO_SECS(65535)
@@ -55,7 +55,7 @@ static void __iomem *pci_mem_addr;		/* the PCI-memory address */
 static unsigned long __iomem *hpwdt_timer_reg;
 static unsigned long __iomem *hpwdt_timer_con;
 
-static DEFINE_PCI_DEVICE_TABLE(hpwdt_devices) = {
+static const struct pci_device_id hpwdt_devices[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_COMPAQ, 0xB203) },	/* iLO2 */
 	{ PCI_DEVICE(PCI_VENDOR_ID_HP, 0x3306) },	/* iLO3 */
 	{0},			/* terminate list */
@@ -148,6 +148,7 @@ struct cmn_registers {
 static unsigned int hpwdt_nmi_decoding;
 static unsigned int allow_kdump = 1;
 static unsigned int is_icru;
+static unsigned int is_uefi;
 static DEFINE_SPINLOCK(rom_lock);
 static void *cru_rom_addr;
 static struct cmn_registers cmn_regs;
@@ -161,7 +162,8 @@ extern asmlinkage void asminline_call(struct cmn_registers *pi86Regs,
 #define HPWDT_ARCH	32
 
 asm(".text                          \n\t"
-    ".align 4                       \n"
+    ".align 4                       \n\t"
+    ".globl asminline_call	    \n"
     "asminline_call:                \n\t"
     "pushl       %ebp               \n\t"
     "movl        %esp, %ebp         \n\t"
@@ -212,7 +214,7 @@ asm(".text                          \n\t"
  *	0        :  SUCCESS
  *	<0       :  FAILURE
  */
-static int __devinit cru_detect(unsigned long map_entry,
+static int cru_detect(unsigned long map_entry,
 	unsigned long map_offset)
 {
 	void *bios32_map;
@@ -268,7 +270,7 @@ static int __devinit cru_detect(unsigned long map_entry,
 /*
  *	bios_checksum
  */
-static int __devinit bios_checksum(const char __iomem *ptr, int len)
+static int bios_checksum(const char __iomem *ptr, int len)
 {
 	char sum = 0;
 	int i;
@@ -293,7 +295,7 @@ static int __devinit bios_checksum(const char __iomem *ptr, int len)
  *	0        :  SUCCESS
  *	<0       :  FAILURE
  */
-static int __devinit bios32_present(const char __iomem *p)
+static int bios32_present(const char __iomem *p)
 {
 	struct bios32_service_dir *bios_32_ptr;
 	int length;
@@ -323,7 +325,7 @@ static int __devinit bios32_present(const char __iomem *p)
 	return -ENODEV;
 }
 
-static int __devinit detect_cru_service(void)
+static int detect_cru_service(void)
 {
 	char __iomem *p, *q;
 	int rc = -1;
@@ -351,10 +353,11 @@ static int __devinit detect_cru_service(void)
 #define HPWDT_ARCH	64
 
 asm(".text                      \n\t"
-    ".align 4                   \n"
+    ".align 4                   \n\t"
+    ".globl asminline_call	\n\t"
+    ".type asminline_call, @function \n\t"
     "asminline_call:            \n\t"
-    "pushq      %rbp            \n\t"
-    "movq       %rsp, %rbp      \n\t"
+    FRAME_BEGIN
     "pushq      %rax            \n\t"
     "pushq      %rbx            \n\t"
     "pushq      %rdx            \n\t"
@@ -384,7 +387,7 @@ asm(".text                      \n\t"
     "popq       %rdx            \n\t"
     "popq       %rbx            \n\t"
     "popq       %rax            \n\t"
-    "leave                      \n\t"
+    FRAME_END
     "ret                        \n\t"
     ".previous");
 
@@ -395,7 +398,7 @@ asm(".text                      \n\t"
  *	This function checks whether or not a SMBIOS/DMI record is
  *	the 64bit CRU info or not
  */
-static void __devinit dmi_find_cru(const struct dmi_header *dm, void *dummy)
+static void dmi_find_cru(const struct dmi_header *dm, void *dummy)
 {
 	struct smbios_cru64_info *smbios_cru64_ptr;
 	unsigned long cru_physical_address;
@@ -414,7 +417,7 @@ static void __devinit dmi_find_cru(const struct dmi_header *dm, void *dummy)
 	}
 }
 
-static int __devinit detect_cru_service(void)
+static int detect_cru_service(void)
 {
 	cru_rom_addr = NULL;
 
@@ -481,10 +484,10 @@ static int hpwdt_pretimeout(unsigned int ulReason, struct pt_regs *regs)
 	static int die_nmi_called;
 
 	if (!hpwdt_nmi_decoding)
-		goto out;
+		return NMI_DONE;
 
 	spin_lock_irqsave(&rom_lock, rom_pl);
-	if (!die_nmi_called && !is_icru)
+	if (!die_nmi_called && !is_icru && !is_uefi)
 		asminline_call(&cmn_regs, cru_rom_addr);
 	die_nmi_called = 1;
 	spin_unlock_irqrestore(&rom_lock, rom_pl);
@@ -492,17 +495,21 @@ static int hpwdt_pretimeout(unsigned int ulReason, struct pt_regs *regs)
 	if (allow_kdump)
 		hpwdt_stop();
 
-	if (!is_icru) {
+	if (!is_icru && !is_uefi) {
 		if (cmn_regs.u1.ral == 0) {
-			panic("An NMI occurred, "
-				"but unable to determine source.\n");
+			nmi_panic(regs, "An NMI occurred, but unable to determine source.\n");
+			return NMI_HANDLED;
 		}
 	}
-	panic("An NMI occurred, please see the Integrated "
-		"Management Log for details.\n");
+	nmi_panic(regs, "An NMI occurred. Depending on your system the reason "
+		"for the NMI is logged in any one of the following "
+		"resources:\n"
+		"1. Integrated Management Log (IML)\n"
+		"2. OA Syslog\n"
+		"3. OA Forward Progress Log\n"
+		"4. iLO Event Log");
 
-out:
-	return NMI_DONE;
+	return NMI_HANDLED;
 }
 #endif /* CONFIG_HPWDT_NMI_DECODING */
 
@@ -573,7 +580,7 @@ static const struct watchdog_info ident = {
 	.options = WDIOF_SETTIMEOUT |
 		   WDIOF_KEEPALIVEPING |
 		   WDIOF_MAGICCLOSE,
-	.identity = "HP iLO2+ HW Watchdog Timer",
+	.identity = "HPE iLO2+ HW Watchdog Timer",
 };
 
 static long hpwdt_ioctl(struct file *file, unsigned int cmd,
@@ -581,7 +588,7 @@ static long hpwdt_ioctl(struct file *file, unsigned int cmd,
 {
 	void __user *argp = (void __user *)arg;
 	int __user *p = argp;
-	int new_margin;
+	int new_margin, options;
 	int ret = -ENOTTY;
 
 	switch (cmd) {
@@ -599,6 +606,20 @@ static long hpwdt_ioctl(struct file *file, unsigned int cmd,
 	case WDIOC_KEEPALIVE:
 		hpwdt_ping();
 		ret = 0;
+		break;
+
+	case WDIOC_SETOPTIONS:
+		ret = get_user(options, p);
+		if (ret)
+			break;
+
+		if (options & WDIOS_DISABLECARD)
+			hpwdt_stop();
+
+		if (options & WDIOS_ENABLECARD) {
+			hpwdt_start();
+			hpwdt_ping();
+		}
 		break;
 
 	case WDIOC_SETTIMEOUT:
@@ -647,7 +668,7 @@ static struct miscdevice hpwdt_miscdev = {
 
 #ifdef CONFIG_HPWDT_NMI_DECODING
 #ifdef CONFIG_X86_LOCAL_APIC
-static void __devinit hpwdt_check_nmi_decoding(struct pci_dev *dev)
+static void hpwdt_check_nmi_decoding(struct pci_dev *dev)
 {
 	/*
 	 * If nmi_watchdog is turned off then we can turn on
@@ -656,7 +677,7 @@ static void __devinit hpwdt_check_nmi_decoding(struct pci_dev *dev)
 	hpwdt_nmi_decoding = 1;
 }
 #else
-static void __devinit hpwdt_check_nmi_decoding(struct pci_dev *dev)
+static void hpwdt_check_nmi_decoding(struct pci_dev *dev)
 {
 	dev_warn(&dev->dev, "NMI decoding is disabled. "
 		"Your kernel does not support a NMI Watchdog.\n");
@@ -671,7 +692,7 @@ static void __devinit hpwdt_check_nmi_decoding(struct pci_dev *dev)
  *	This check is independent of architecture and needs to be made for
  *	any ProLiant system.
  */
-static void __devinit dmi_find_icru(const struct dmi_header *dm, void *dummy)
+static void dmi_find_icru(const struct dmi_header *dm, void *dummy)
 {
 	struct smbios_proliant_info *smbios_proliant_ptr;
 
@@ -679,10 +700,12 @@ static void __devinit dmi_find_icru(const struct dmi_header *dm, void *dummy)
 		smbios_proliant_ptr = (struct smbios_proliant_info *) dm;
 		if (smbios_proliant_ptr->misc_features & 0x01)
 			is_icru = 1;
+		if (smbios_proliant_ptr->misc_features & 0x408)
+			is_uefi = 1;
 	}
 }
 
-static int __devinit hpwdt_init_nmi_decoding(struct pci_dev *dev)
+static int hpwdt_init_nmi_decoding(struct pci_dev *dev)
 {
 	int retval;
 
@@ -697,7 +720,7 @@ static int __devinit hpwdt_init_nmi_decoding(struct pci_dev *dev)
 	 * the old cru detect code.
 	 */
 	dmi_walk(dmi_find_icru, NULL);
-	if (!is_icru) {
+	if (!is_icru && !is_uefi) {
 
 		/*
 		* We need to map the ROM to get the CRU service.
@@ -735,8 +758,8 @@ static int __devinit hpwdt_init_nmi_decoding(struct pci_dev *dev)
 		goto error2;
 
 	dev_info(&dev->dev,
-			"HP Watchdog Timer Driver: NMI decoding initialized"
-			", allow kernel dump: %s (default = 0/OFF)\n",
+			"HPE Watchdog Timer Driver: NMI decoding initialized"
+			", allow kernel dump: %s (default = 1/ON)\n",
 			(allow_kdump == 0) ? "OFF" : "ON");
 	return 0;
 
@@ -762,11 +785,11 @@ static void hpwdt_exit_nmi_decoding(void)
 		iounmap(cru_rom_addr);
 }
 #else /* !CONFIG_HPWDT_NMI_DECODING */
-static void __devinit hpwdt_check_nmi_decoding(struct pci_dev *dev)
+static void hpwdt_check_nmi_decoding(struct pci_dev *dev)
 {
 }
 
-static int __devinit hpwdt_init_nmi_decoding(struct pci_dev *dev)
+static int hpwdt_init_nmi_decoding(struct pci_dev *dev)
 {
 	return 0;
 }
@@ -776,7 +799,7 @@ static void hpwdt_exit_nmi_decoding(void)
 }
 #endif /* CONFIG_HPWDT_NMI_DECODING */
 
-static int __devinit hpwdt_init_one(struct pci_dev *dev,
+static int hpwdt_init_one(struct pci_dev *dev,
 					const struct pci_device_id *ent)
 {
 	int retval;
@@ -797,6 +820,12 @@ static int __devinit hpwdt_init_one(struct pci_dev *dev,
 		return -ENODEV;
 	}
 
+	/*
+	 * Ignore all auxilary iLO devices with the following PCI ID
+	 */
+	if (dev->subsystem_device == 0x1979)
+		return -ENODEV;
+
 	if (pci_enable_device(dev)) {
 		dev_warn(&dev->dev,
 			"Not possible to enable PCI Device: 0x%x:0x%x.\n",
@@ -813,6 +842,9 @@ static int __devinit hpwdt_init_one(struct pci_dev *dev,
 	}
 	hpwdt_timer_reg = pci_mem_addr + 0x70;
 	hpwdt_timer_con = pci_mem_addr + 0x72;
+
+	/* Make sure that timer is disabled until /dev/watchdog is opened */
+	hpwdt_stop();
 
 	/* Make sure that we have a valid soft_margin */
 	if (hpwdt_change_timer(soft_margin))
@@ -831,7 +863,7 @@ static int __devinit hpwdt_init_one(struct pci_dev *dev,
 		goto error_misc_register;
 	}
 
-	dev_info(&dev->dev, "HP Watchdog Timer Driver: %s"
+	dev_info(&dev->dev, "HPE Watchdog Timer Driver: %s"
 			", timer margin: %d seconds (nowayout=%d).\n",
 			HPWDT_VERSION, soft_margin, nowayout);
 	return 0;
@@ -845,7 +877,7 @@ error_pci_iomap:
 	return retval;
 }
 
-static void __devexit hpwdt_exit(struct pci_dev *dev)
+static void hpwdt_exit(struct pci_dev *dev)
 {
 	if (!nowayout)
 		hpwdt_stop();
@@ -860,14 +892,13 @@ static struct pci_driver hpwdt_driver = {
 	.name = "hpwdt",
 	.id_table = hpwdt_devices,
 	.probe = hpwdt_init_one,
-	.remove = __devexit_p(hpwdt_exit),
+	.remove = hpwdt_exit,
 };
 
 MODULE_AUTHOR("Tom Mingarelli");
 MODULE_DESCRIPTION("hp watchdog driver");
 MODULE_LICENSE("GPL");
 MODULE_VERSION(HPWDT_VERSION);
-MODULE_ALIAS_MISCDEV(WATCHDOG_MINOR);
 
 module_param(soft_margin, int, 0);
 MODULE_PARM_DESC(soft_margin, "Watchdog timeout in seconds");

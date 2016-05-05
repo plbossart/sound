@@ -36,7 +36,7 @@ static int bmp085_i2c_detect(struct i2c_client *client,
 	return bmp085_detect(&client->dev);
 }
 
-static int __devinit bmp085_i2c_probe(struct i2c_client *client,
+static int bmp085_i2c_probe(struct i2c_client *client,
 				      const struct i2c_device_id *id)
 {
 	int err;
@@ -49,19 +49,13 @@ static int __devinit bmp085_i2c_probe(struct i2c_client *client,
 		return err;
 	}
 
-	return bmp085_probe(&client->dev, regmap);
+	return bmp085_probe(&client->dev, regmap, client->irq);
 }
 
 static int bmp085_i2c_remove(struct i2c_client *client)
 {
 	return bmp085_remove(&client->dev);
 }
-
-static const struct of_device_id bmp085_of_match[] = {
-	{ .compatible = "bosch,bmp085", },
-	{ },
-};
-MODULE_DEVICE_TABLE(of, bmp085_of_match);
 
 static const struct i2c_device_id bmp085_id[] = {
 	{ BMP085_NAME, 0 },
@@ -72,13 +66,11 @@ MODULE_DEVICE_TABLE(i2c, bmp085_id);
 
 static struct i2c_driver bmp085_i2c_driver = {
 	.driver = {
-		.owner	= THIS_MODULE,
 		.name	= BMP085_NAME,
-		.of_match_table = bmp085_of_match
 	},
 	.id_table	= bmp085_id,
 	.probe		= bmp085_i2c_probe,
-	.remove		= __devexit_p(bmp085_i2c_remove),
+	.remove		= bmp085_i2c_remove,
 
 	.detect		= bmp085_i2c_detect,
 	.address_list	= normal_i2c

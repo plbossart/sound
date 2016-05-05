@@ -136,7 +136,7 @@ void decode_address(char *buf, unsigned long address)
 				struct file *file = vma->vm_file;
 
 				if (file) {
-					char *d_name = d_path(&file->f_path, _tmpbuf,
+					char *d_name = file_path(file, _tmpbuf,
 						      sizeof(_tmpbuf));
 					if (!IS_ERR(d_name))
 						name = d_name;
@@ -853,6 +853,8 @@ void show_regs(struct pt_regs *fp)
 	unsigned char in_atomic = (bfin_read_IPEND() & 0x10) || in_atomic();
 
 	pr_notice("\n");
+	show_regs_print_info(KERN_NOTICE);
+
 	if (CPUID != bfin_cpuid())
 		pr_notice("Compiled for cpu family 0x%04x (Rev %d), "
 			"but running on:0x%04x (Rev %d)\n",

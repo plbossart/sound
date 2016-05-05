@@ -134,25 +134,14 @@ static void __user *get_sigframe(struct k_sigaction *ka,
 }
 
 asmlinkage long
-score_sigaltstack(struct pt_regs *regs)
-{
-	const stack_t __user *uss = (const stack_t __user *) regs->regs[4];
-	stack_t __user *uoss = (stack_t __user *) regs->regs[5];
-	unsigned long usp = regs->regs[0];
-
-	return do_sigaltstack(uss, uoss, usp);
-}
-
-asmlinkage long
 score_rt_sigreturn(struct pt_regs *regs)
 {
 	struct rt_sigframe __user *frame;
 	sigset_t set;
-	stack_t st;
 	int sig;
 
 	/* Always make any pending restarted system calls return -EINTR */
-	current_thread_info()->restart_block.fn = do_no_restart_syscall;
+	current->restart_block.fn = do_no_restart_syscall;
 
 	frame = (struct rt_sigframe __user *) regs->regs[0];
 	if (!access_ok(VERIFY_READ, frame, sizeof(*frame)))
@@ -168,12 +157,9 @@ score_rt_sigreturn(struct pt_regs *regs)
 	else if (sig)
 		force_sig(sig, current);
 
-	if (__copy_from_user(&st, &frame->rs_uc.uc_stack, sizeof(st)))
+	if (restore_altstack(&frame->rs_uc.uc_stack))
 		goto badframe;
-
-	/* It is more difficult to avoid calling this function than to
-	   call it and ignore errors.  */
-	do_sigaltstack((stack_t __user *)&st, NULL, regs->regs[0]);
+	regs->is_syscall = 0;
 
 	__asm__ __volatile__(
 		"mv\tr0, %0\n\t"
@@ -187,15 +173,15 @@ badframe:
 	return 0;
 }
 
-static int setup_rt_frame(struct k_sigaction *ka, struct pt_regs *regs,
-		int signr, sigset_t *set, siginfo_t *info)
+static int setup_rt_frame(struct ksignal *ksig, struct pt_regs *regs,
+			  sigset_t *set)
 {
 	struct rt_sigframe __user *frame;
 	int err = 0;
 
-	frame = get_sigframe(ka, regs, sizeof(*frame));
+	frame = get_sigframe(&ksig->ka, regs, sizeof(*frame));
 	if (!access_ok(VERIFY_WRITE, frame, sizeof(*frame)))
-		goto give_sigsegv;
+		return -EFAULT;
 
 	/*
 	 * Set up the return code ...
@@ -208,39 +194,31 @@ static int setup_rt_frame(struct k_sigaction *ka, struct pt_regs *regs,
 	err |= __put_user(0x80008002, frame->rs_code + 1);
 	flush_cache_sigtramp((unsigned long) frame->rs_code);
 
-	err |= copy_siginfo_to_user(&frame->rs_info, info);
+	err |= copy_siginfo_to_user(&frame->rs_info, &ksig->info);
 	err |= __put_user(0, &frame->rs_uc.uc_flags);
 	err |= __put_user(NULL, &frame->rs_uc.uc_link);
-	err |= __put_user((void __user *)current->sas_ss_sp,
-				&frame->rs_uc.uc_stack.ss_sp);
-	err |= __put_user(sas_ss_flags(regs->regs[0]),
-				&frame->rs_uc.uc_stack.ss_flags);
-	err |= __put_user(current->sas_ss_size,
-				&frame->rs_uc.uc_stack.ss_size);
+	err |= __save_altstack(&frame->rs_uc.uc_stack, regs->regs[0]);
 	err |= setup_sigcontext(regs, &frame->rs_uc.uc_mcontext);
 	err |= __copy_to_user(&frame->rs_uc.uc_sigmask, set, sizeof(*set));
 
 	if (err)
-		goto give_sigsegv;
+		return -EFAULT;
 
 	regs->regs[0] = (unsigned long) frame;
 	regs->regs[3] = (unsigned long) frame->rs_code;
-	regs->regs[4] = signr;
+	regs->regs[4] = ksig->sig;
 	regs->regs[5] = (unsigned long) &frame->rs_info;
 	regs->regs[6] = (unsigned long) &frame->rs_uc;
-	regs->regs[29] = (unsigned long) ka->sa.sa_handler;
-	regs->cp0_epc = (unsigned long) ka->sa.sa_handler;
+	regs->regs[29] = (unsigned long) ksig->ka.sa.sa_handler;
+	regs->cp0_epc = (unsigned long) ksig->ka.sa.sa_handler;
 
 	return 0;
-
-give_sigsegv:
-	force_sigsegv(signr, current);
-	return -EFAULT;
 }
 
-static void handle_signal(unsigned long sig, siginfo_t *info,
-	struct k_sigaction *ka, struct pt_regs *regs)
+static void handle_signal(struct ksignal *ksig, struct pt_regs *regs)
 {
+	int ret;
+
 	if (regs->is_syscall) {
 		switch (regs->regs[4]) {
 		case ERESTART_RESTARTBLOCK:
@@ -248,7 +226,7 @@ static void handle_signal(unsigned long sig, siginfo_t *info,
 			regs->regs[4] = EINTR;
 			break;
 		case ERESTARTSYS:
-			if (!(ka->sa.sa_flags & SA_RESTART)) {
+			if (!(ksig->ka.sa.sa_flags & SA_RESTART)) {
 				regs->regs[4] = EINTR;
 				break;
 			}
@@ -264,17 +242,14 @@ static void handle_signal(unsigned long sig, siginfo_t *info,
 	/*
 	 * Set up the stack frame
 	 */
-	if (setup_rt_frame(ka, regs, sig, sigmask_to_save(), info) < 0)
-		return;
+	ret = setup_rt_frame(ksig, regs, sigmask_to_save());
 
-	signal_delivered(sig, info, ka, regs, 0);
+	signal_setup_done(ret, ksig, 0);
 }
 
 static void do_signal(struct pt_regs *regs)
 {
-	struct k_sigaction ka;
-	siginfo_t info;
-	int signr;
+	struct ksignal ksig;
 
 	/*
 	 * We want the common case to go fast, which is why we may in certain
@@ -284,10 +259,9 @@ static void do_signal(struct pt_regs *regs)
 	if (!user_mode(regs))
 		return;
 
-	signr = get_signal_to_deliver(&info, &ka, regs, NULL);
-	if (signr > 0) {
+	if (get_signal(&ksig)) {
 		/* Actually deliver the signal.  */
-		handle_signal(signr, &info, &ka, regs);
+		handle_signal(&ksig, regs);
 		return;
 	}
 

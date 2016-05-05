@@ -21,7 +21,6 @@ struct mc13xxx_regulator {
 	int vsel_reg;
 	int vsel_shift;
 	int vsel_mask;
-	int hi_bit;
 };
 
 struct mc13xxx_regulator_priv {
@@ -34,7 +33,6 @@ struct mc13xxx_regulator_priv {
 
 extern int mc13xxx_fixed_regulator_set_voltage(struct regulator_dev *rdev,
 		int min_uV, int max_uV, unsigned *selector);
-extern int mc13xxx_fixed_regulator_get_voltage(struct regulator_dev *rdev);
 
 #ifdef CONFIG_OF
 extern int mc13xxx_get_num_regulators_dt(struct platform_device *pdev);

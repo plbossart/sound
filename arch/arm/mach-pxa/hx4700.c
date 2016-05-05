@@ -28,6 +28,7 @@
 #include <linux/mfd/asic3.h>
 #include <linux/mtd/physmap.h>
 #include <linux/pda_power.h>
+#include <linux/pwm.h>
 #include <linux/pwm_backlight.h>
 #include <linux/regulator/driver.h>
 #include <linux/regulator/gpio-regulator.h>
@@ -43,9 +44,9 @@
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
 
-#include <mach/pxa27x.h>
+#include "pxa27x.h"
 #include <mach/hx4700.h>
-#include <mach/irda.h>
+#include <linux/platform_data/irda-pxaficp.h>
 
 #include <sound/ak4641.h>
 #include <video/platform_lcd.h>
@@ -556,10 +557,9 @@ static struct platform_device hx4700_lcd = {
  */
 
 static struct platform_pwm_backlight_data backlight_data = {
-	.pwm_id         = 1,
 	.max_brightness = 200,
 	.dft_brightness = 100,
-	.pwm_period_ns  = 30923,
+	.enable_gpio    = -1,
 };
 
 static struct platform_device backlight = {
@@ -569,6 +569,11 @@ static struct platform_device backlight = {
 		.parent        = &pxa27x_device_pwm1.dev,
 		.platform_data = &backlight_data,
 	},
+};
+
+static struct pwm_lookup hx4700_pwm_lookup[] = {
+	PWM_LOOKUP("pxa27x-pwm.1", 0, "pwm-backlight", NULL,
+		   30923, PWM_POLARITY_NORMAL),
 };
 
 /*
@@ -623,7 +628,6 @@ static struct spi_board_info tsc2046_board_info[] __initdata = {
 
 static struct pxa2xx_spi_master pxa_ssp2_master_info = {
 	.num_chipselect = 1,
-	.clock_enable   = CKEN_SSP2,
 	.enable_dma     = 1,
 };
 
@@ -872,6 +876,7 @@ static void __init hx4700_init(void)
 	pxa_set_stuart_info(NULL);
 
 	platform_add_devices(devices, ARRAY_SIZE(devices));
+	pwm_add_table(hx4700_pwm_lookup, ARRAY_SIZE(hx4700_pwm_lookup));
 
 	pxa_set_ficp_info(&ficp_info);
 	pxa27x_set_i2c_power_info(NULL);
@@ -885,6 +890,8 @@ static void __init hx4700_init(void)
 	mdelay(10);
 	gpio_set_value(GPIO71_HX4700_ASIC3_nRESET, 1);
 	mdelay(10);
+
+	regulator_has_full_constraints();
 }
 
 MACHINE_START(H4700, "HP iPAQ HX4700")
@@ -894,6 +901,6 @@ MACHINE_START(H4700, "HP iPAQ HX4700")
 	.init_irq     = pxa27x_init_irq,
 	.handle_irq     = pxa27x_handle_irq,
 	.init_machine = hx4700_init,
-	.timer        = &pxa_timer,
+	.init_time	= pxa_timer_init,
 	.restart	= pxa_restart,
 MACHINE_END

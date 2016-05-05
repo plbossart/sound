@@ -41,8 +41,7 @@
  * If we are asked to block we wait on all the oldest fence of all
  * rings. We just wait for any of those fence to complete.
  */
-#include "drmP.h"
-#include "drm.h"
+#include <drm/drmP.h>
 #include "radeon.h"
 
 static void radeon_sa_bo_remove_locked(struct radeon_sa_bo *sa_bo);
@@ -50,7 +49,7 @@ static void radeon_sa_bo_try_free(struct radeon_sa_manager *sa_manager);
 
 int radeon_sa_bo_manager_init(struct radeon_device *rdev,
 			      struct radeon_sa_manager *sa_manager,
-			      unsigned size, u32 domain)
+			      unsigned size, u32 align, u32 domain, u32 flags)
 {
 	int i, r;
 
@@ -58,14 +57,15 @@ int radeon_sa_bo_manager_init(struct radeon_device *rdev,
 	sa_manager->bo = NULL;
 	sa_manager->size = size;
 	sa_manager->domain = domain;
+	sa_manager->align = align;
 	sa_manager->hole = &sa_manager->olist;
 	INIT_LIST_HEAD(&sa_manager->olist);
 	for (i = 0; i < RADEON_NUM_RINGS; ++i) {
 		INIT_LIST_HEAD(&sa_manager->flist[i]);
 	}
 
-	r = radeon_bo_create(rdev, size, RADEON_GPU_PAGE_SIZE, true,
-			     RADEON_GEM_DOMAIN_CPU, NULL, &sa_manager->bo);
+	r = radeon_bo_create(rdev, size, align, true,
+			     domain, flags, NULL, NULL, &sa_manager->bo);
 	if (r) {
 		dev_err(rdev->dev, "(%d) failed to allocate bo for manager\n", r);
 		return r;
@@ -312,13 +312,13 @@ static bool radeon_sa_bo_next_hole(struct radeon_sa_manager *sa_manager,
 int radeon_sa_bo_new(struct radeon_device *rdev,
 		     struct radeon_sa_manager *sa_manager,
 		     struct radeon_sa_bo **sa_bo,
-		     unsigned size, unsigned align, bool block)
+		     unsigned size, unsigned align)
 {
 	struct radeon_fence *fences[RADEON_NUM_RINGS];
 	unsigned tries[RADEON_NUM_RINGS];
-	int i, r = -ENOMEM;
+	int i, r;
 
-	BUG_ON(align > RADEON_GPU_PAGE_SIZE);
+	BUG_ON(align > sa_manager->align);
 	BUG_ON(size > sa_manager->size);
 
 	*sa_bo = kmalloc(sizeof(struct radeon_sa_bo), GFP_KERNEL);
@@ -331,7 +331,7 @@ int radeon_sa_bo_new(struct radeon_device *rdev,
 	INIT_LIST_HEAD(&(*sa_bo)->flist);
 
 	spin_lock(&sa_manager->wq.lock);
-	while(1) {
+	do {
 		for (i = 0; i < RADEON_NUM_RINGS; ++i) {
 			fences[i] = NULL;
 			tries[i] = 0;
@@ -349,12 +349,13 @@ int radeon_sa_bo_new(struct radeon_device *rdev,
 			/* see if we can skip over some allocations */
 		} while (radeon_sa_bo_next_hole(sa_manager, fences, tries));
 
-		if (!block) {
-			break;
-		}
+		for (i = 0; i < RADEON_NUM_RINGS; ++i)
+			radeon_fence_ref(fences[i]);
 
 		spin_unlock(&sa_manager->wq.lock);
 		r = radeon_fence_wait_any(rdev, fences, false);
+		for (i = 0; i < RADEON_NUM_RINGS; ++i)
+			radeon_fence_unref(&fences[i]);
 		spin_lock(&sa_manager->wq.lock);
 		/* if we have nothing to wait for block */
 		if (r == -ENOENT) {
@@ -363,12 +364,9 @@ int radeon_sa_bo_new(struct radeon_device *rdev,
 				radeon_sa_event(sa_manager, size, align)
 			);
 		}
-		if (r) {
-			goto out_err;
-		}
-	};
 
-out_err:
+	} while (!r);
+
 	spin_unlock(&sa_manager->wq.lock);
 	kfree(*sa_bo);
 	*sa_bo = NULL;
@@ -406,13 +404,15 @@ void radeon_sa_bo_dump_debug_info(struct radeon_sa_manager *sa_manager,
 
 	spin_lock(&sa_manager->wq.lock);
 	list_for_each_entry(i, &sa_manager->olist, olist) {
+		uint64_t soffset = i->soffset + sa_manager->gpu_addr;
+		uint64_t eoffset = i->eoffset + sa_manager->gpu_addr;
 		if (&i->olist == sa_manager->hole) {
 			seq_printf(m, ">");
 		} else {
 			seq_printf(m, " ");
 		}
-		seq_printf(m, "[0x%08x 0x%08x] size %8d",
-			   i->soffset, i->eoffset, i->eoffset - i->soffset);
+		seq_printf(m, "[0x%010llx 0x%010llx] size %8lld",
+			   soffset, eoffset, eoffset - soffset);
 		if (i->fence) {
 			seq_printf(m, " protected by 0x%016llx on ring %d",
 				   i->fence->seq, i->fence->ring);

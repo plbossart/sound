@@ -206,7 +206,7 @@ static void receive_rcom_status(struct dlm_ls *ls, struct dlm_rcom *rc_in)
 
 	rs = (struct rcom_status *)rc_in->rc_buf;
 
-	if (!(rs->rs_flags & DLM_RSF_NEED_SLOTS)) {
+	if (!(le32_to_cpu(rs->rs_flags) & DLM_RSF_NEED_SLOTS)) {
 		status = dlm_recover_status(ls);
 		goto do_create;
 	}
@@ -581,7 +581,7 @@ void dlm_receive_rcom(struct dlm_ls *ls, struct dlm_rcom *rc, int nodeid)
 
 	spin_lock(&ls->ls_recover_lock);
 	status = ls->ls_recover_status;
-	stop = test_bit(LSFL_RECOVERY_STOP, &ls->ls_flags);
+	stop = test_bit(LSFL_RECOVER_STOP, &ls->ls_flags);
 	seq = ls->ls_recover_seq;
 	spin_unlock(&ls->ls_recover_lock);
 

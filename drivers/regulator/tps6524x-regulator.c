@@ -502,15 +502,13 @@ static int set_current_limit(struct regulator_dev *rdev, int min_uA,
 	if (info->n_ilimsels == 1)
 		return -EINVAL;
 
-	for (i = 0; i < info->n_ilimsels; i++)
+	for (i = info->n_ilimsels - 1; i >= 0; i--) {
 		if (min_uA <= info->ilimsels[i] &&
 		    max_uA >= info->ilimsels[i])
-			break;
+			return write_field(hw, &info->ilimsel, i);
+	}
 
-	if (i >= info->n_ilimsels)
-		return -EINVAL;
-
-	return write_field(hw, &info->ilimsel, i);
+	return -EINVAL;
 }
 
 static int get_current_limit(struct regulator_dev *rdev)
@@ -574,46 +572,30 @@ static struct regulator_ops regulator_ops = {
 	.get_voltage_sel	= get_voltage_sel,
 	.set_voltage_sel	= set_voltage_sel,
 	.list_voltage		= regulator_list_voltage_table,
+	.map_voltage		= regulator_map_voltage_ascend,
 	.set_current_limit	= set_current_limit,
 	.get_current_limit	= get_current_limit,
 };
 
-static int pmic_remove(struct spi_device *spi)
-{
-	struct tps6524x *hw = spi_get_drvdata(spi);
-	int i;
-
-	if (!hw)
-		return 0;
-	for (i = 0; i < N_REGULATORS; i++) {
-		if (hw->rdev[i])
-			regulator_unregister(hw->rdev[i]);
-		hw->rdev[i] = NULL;
-	}
-	spi_set_drvdata(spi, NULL);
-	return 0;
-}
-
-static int __devinit pmic_probe(struct spi_device *spi)
+static int pmic_probe(struct spi_device *spi)
 {
 	struct tps6524x *hw;
 	struct device *dev = &spi->dev;
 	const struct supply_info *info = supply_info;
 	struct regulator_init_data *init_data;
 	struct regulator_config config = { };
-	int ret = 0, i;
+	int i;
 
-	init_data = dev->platform_data;
+	init_data = dev_get_platdata(dev);
 	if (!init_data) {
 		dev_err(dev, "could not find regulator platform data\n");
 		return -EINVAL;
 	}
 
 	hw = devm_kzalloc(&spi->dev, sizeof(struct tps6524x), GFP_KERNEL);
-	if (!hw) {
-		dev_err(dev, "cannot allocate regulator private data\n");
+	if (!hw)
 		return -ENOMEM;
-	}
+
 	spi_set_drvdata(spi, hw);
 
 	memset(hw, 0, sizeof(struct tps6524x));
@@ -634,27 +616,19 @@ static int __devinit pmic_probe(struct spi_device *spi)
 		config.init_data = init_data;
 		config.driver_data = hw;
 
-		hw->rdev[i] = regulator_register(&hw->desc[i], &config);
-		if (IS_ERR(hw->rdev[i])) {
-			ret = PTR_ERR(hw->rdev[i]);
-			hw->rdev[i] = NULL;
-			goto fail;
-		}
+		hw->rdev[i] = devm_regulator_register(dev, &hw->desc[i],
+						      &config);
+		if (IS_ERR(hw->rdev[i]))
+			return PTR_ERR(hw->rdev[i]);
 	}
 
 	return 0;
-
-fail:
-	pmic_remove(spi);
-	return ret;
 }
 
 static struct spi_driver pmic_driver = {
 	.probe		= pmic_probe,
-	.remove		= __devexit_p(pmic_remove),
 	.driver		= {
 		.name	= "tps6524x",
-		.owner	= THIS_MODULE,
 	},
 };
 

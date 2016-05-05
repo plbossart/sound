@@ -8,26 +8,35 @@
 
 #include <linux/platform_device.h>
 #include <linux/io.h>
-#include <linux/clk.h>
-#include <linux/mfd/db8500-prcmu.h>
-#include <linux/clksrc-dbx500-prcmu.h>
+#include <linux/mfd/dbx500-prcmu.h>
 #include <linux/sys_soc.h>
 #include <linux/err.h>
 #include <linux/slab.h>
 #include <linux/stat.h>
 #include <linux/of.h>
 #include <linux/of_irq.h>
+#include <linux/of_address.h>
+#include <linux/irq.h>
+#include <linux/irqchip.h>
+#include <linux/irqchip/arm-gic.h>
+#include <linux/platform_data/clk-ux500.h>
+#include <linux/platform_data/arm-ux500-pm.h>
 
-#include <asm/hardware/gic.h>
 #include <asm/mach/map.h>
 
-#include <mach/hardware.h>
-#include <mach/setup.h>
-#include <mach/devices.h>
+#include "setup.h"
 
-#include "clock.h"
+#include "board-mop500.h"
+#include "db8500-regs.h"
+#include "id.h"
 
-void __iomem *_PRCMU_BASE;
+void ux500_restart(enum reboot_mode mode, const char *cmd)
+{
+	local_irq_disable();
+	local_fiq_disable();
+
+	prcmu_system_reset(0);
+}
 
 /*
  * FIXME: Should we set up the GPIO domain here?
@@ -41,42 +50,32 @@ void __iomem *_PRCMU_BASE;
  * This feels fragile because it depends on the gpio device getting probed
  * _before_ any device uses the gpio interrupts.
 */
-static const struct of_device_id ux500_dt_irq_match[] = {
-	{ .compatible = "arm,cortex-a9-gic", .data = gic_of_init, },
-	{},
-};
-
 void __init ux500_init_irq(void)
 {
-	void __iomem *dist_base;
-	void __iomem *cpu_base;
+	struct device_node *np;
+	struct resource r;
 
-	if (cpu_is_u8500_family()) {
-		dist_base = __io_address(U8500_GIC_DIST_BASE);
-		cpu_base = __io_address(U8500_GIC_CPU_BASE);
-	} else
-		ux500_unknown_soc();
-
-#ifdef CONFIG_OF
-	if (of_have_populated_dt())
-		of_irq_init(ux500_dt_irq_match);
-	else
-#endif
-		gic_init(0, 29, dist_base, cpu_base);
+	irqchip_init();
+	np = of_find_compatible_node(NULL, NULL, "stericsson,db8500-prcmu");
+	of_address_to_resource(np, 0, &r);
+	of_node_put(np);
+	if (!r.start) {
+		pr_err("could not find PRCMU base resource\n");
+		return;
+	}
+	prcmu_early_init(r.start, r.end-r.start);
+	ux500_pm_init(r.start, r.end-r.start);
 
 	/*
 	 * Init clocks here so that they are available for system timer
 	 * initialization.
 	 */
 	if (cpu_is_u8500_family())
-		db8500_prcmu_early_init();
-	clk_init();
-}
-
-void __init ux500_init_late(void)
-{
-	clk_debugfs_init();
-	clk_init_smp_twd_cpufreq();
+		u8500_clk_init();
+	else if (cpu_is_u9540())
+		u9540_clk_init();
+	else if (cpu_is_u8540())
+		u8540_clk_init();
 }
 
 static const char * __init ux500_get_machine(void)
@@ -121,7 +120,7 @@ static void __init soc_info_populate(struct soc_device_attribute *soc_dev_attr,
 	soc_dev_attr->revision = ux500_get_revision();
 }
 
-struct device_attribute ux500_soc_attr =
+static const struct device_attribute ux500_soc_attr =
 	__ATTR(process,  S_IRUGO, ux500_get_process,  NULL);
 
 struct device * __init ux500_soc_device_init(const char *soc_id)
@@ -137,14 +136,13 @@ struct device * __init ux500_soc_device_init(const char *soc_id)
 	soc_info_populate(soc_dev_attr, soc_id);
 
 	soc_dev = soc_device_register(soc_dev_attr);
-	if (IS_ERR_OR_NULL(soc_dev)) {
+	if (IS_ERR(soc_dev)) {
 	        kfree(soc_dev_attr);
 		return NULL;
 	}
 
 	parent = soc_device_to_device(soc_dev);
-	if (!IS_ERR_OR_NULL(parent))
-		device_create_file(parent, &ux500_soc_attr);
+	device_create_file(parent, &ux500_soc_attr);
 
 	return parent;
 }

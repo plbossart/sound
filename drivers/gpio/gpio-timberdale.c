@@ -53,7 +53,7 @@ struct timbgpio {
 static int timbgpio_update_bit(struct gpio_chip *gpio, unsigned index,
 	unsigned offset, bool enabled)
 {
-	struct timbgpio *tgpio = container_of(gpio, struct timbgpio, gpio);
+	struct timbgpio *tgpio = gpiochip_get_data(gpio);
 	u32 reg;
 
 	spin_lock(&tgpio->lock);
@@ -77,7 +77,7 @@ static int timbgpio_gpio_direction_input(struct gpio_chip *gpio, unsigned nr)
 
 static int timbgpio_gpio_get(struct gpio_chip *gpio, unsigned nr)
 {
-	struct timbgpio *tgpio = container_of(gpio, struct timbgpio, gpio);
+	struct timbgpio *tgpio = gpiochip_get_data(gpio);
 	u32 value;
 
 	value = ioread32(tgpio->membase + TGPIOVAL);
@@ -98,7 +98,7 @@ static void timbgpio_gpio_set(struct gpio_chip *gpio,
 
 static int timbgpio_to_irq(struct gpio_chip *gpio, unsigned offset)
 {
-	struct timbgpio *tgpio = container_of(gpio, struct timbgpio, gpio);
+	struct timbgpio *tgpio = gpiochip_get_data(gpio);
 
 	if (tgpio->irq_base <= 0)
 		return -EINVAL;
@@ -116,7 +116,7 @@ static void timbgpio_irq_disable(struct irq_data *d)
 	unsigned long flags;
 
 	spin_lock_irqsave(&tgpio->lock, flags);
-	tgpio->last_ier &= ~(1 << offset);
+	tgpio->last_ier &= ~(1UL << offset);
 	iowrite32(tgpio->last_ier, tgpio->membase + TGPIO_IER);
 	spin_unlock_irqrestore(&tgpio->lock, flags);
 }
@@ -128,7 +128,7 @@ static void timbgpio_irq_enable(struct irq_data *d)
 	unsigned long flags;
 
 	spin_lock_irqsave(&tgpio->lock, flags);
-	tgpio->last_ier |= 1 << offset;
+	tgpio->last_ier |= 1UL << offset;
 	iowrite32(tgpio->last_ier, tgpio->membase + TGPIO_IER);
 	spin_unlock_irqrestore(&tgpio->lock, flags);
 }
@@ -167,8 +167,7 @@ static int timbgpio_irq_type(struct irq_data *d, unsigned trigger)
 		if (ver < 3) {
 			ret = -EINVAL;
 			goto out;
-		}
-		else {
+		} else {
 			flr |= 1 << offset;
 			bflr |= 1 << offset;
 		}
@@ -193,13 +192,14 @@ out:
 	return ret;
 }
 
-static void timbgpio_irq(unsigned int irq, struct irq_desc *desc)
+static void timbgpio_irq(struct irq_desc *desc)
 {
-	struct timbgpio *tgpio = irq_get_handler_data(irq);
+	struct timbgpio *tgpio = irq_desc_get_handler_data(desc);
+	struct irq_data *data = irq_desc_get_irq_data(desc);
 	unsigned long ipr;
 	int offset;
 
-	desc->irq_data.chip->irq_ack(irq_get_irq_data(irq));
+	data->chip->irq_ack(data);
 	ipr = ioread32(tgpio->membase + TGPIO_IPR);
 	iowrite32(ipr, tgpio->membase + TGPIO_ICR);
 
@@ -222,52 +222,40 @@ static struct irq_chip timbgpio_irqchip = {
 	.irq_set_type	= timbgpio_irq_type,
 };
 
-static int __devinit timbgpio_probe(struct platform_device *pdev)
+static int timbgpio_probe(struct platform_device *pdev)
 {
 	int err, i;
+	struct device *dev = &pdev->dev;
 	struct gpio_chip *gc;
 	struct timbgpio *tgpio;
 	struct resource *iomem;
-	struct timbgpio_platform_data *pdata = pdev->dev.platform_data;
+	struct timbgpio_platform_data *pdata = dev_get_platdata(&pdev->dev);
 	int irq = platform_get_irq(pdev, 0);
 
 	if (!pdata || pdata->nr_pins > 32) {
-		err = -EINVAL;
-		goto err_mem;
+		dev_err(dev, "Invalid platform data\n");
+		return -EINVAL;
 	}
 
-	iomem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (!iomem) {
-		err = -EINVAL;
-		goto err_mem;
-	}
-
-	tgpio = kzalloc(sizeof(*tgpio), GFP_KERNEL);
+	tgpio = devm_kzalloc(dev, sizeof(struct timbgpio), GFP_KERNEL);
 	if (!tgpio) {
-		err = -EINVAL;
-		goto err_mem;
+		dev_err(dev, "Memory alloc failed\n");
+		return -EINVAL;
 	}
 	tgpio->irq_base = pdata->irq_base;
 
 	spin_lock_init(&tgpio->lock);
 
-	if (!request_mem_region(iomem->start, resource_size(iomem),
-		DRIVER_NAME)) {
-		err = -EBUSY;
-		goto err_request;
-	}
-
-	tgpio->membase = ioremap(iomem->start, resource_size(iomem));
-	if (!tgpio->membase) {
-		err = -ENOMEM;
-		goto err_ioremap;
-	}
+	iomem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	tgpio->membase = devm_ioremap_resource(dev, iomem);
+	if (IS_ERR(tgpio->membase))
+		return PTR_ERR(tgpio->membase);
 
 	gc = &tgpio->gpio;
 
 	gc->label = dev_name(&pdev->dev);
 	gc->owner = THIS_MODULE;
-	gc->dev = &pdev->dev;
+	gc->parent = &pdev->dev;
 	gc->direction_input = timbgpio_gpio_direction_input;
 	gc->get = timbgpio_gpio_get;
 	gc->direction_output = timbgpio_gpio_direction_output;
@@ -276,11 +264,11 @@ static int __devinit timbgpio_probe(struct platform_device *pdev)
 	gc->dbg_show = NULL;
 	gc->base = pdata->gpio_base;
 	gc->ngpio = pdata->nr_pins;
-	gc->can_sleep = 0;
+	gc->can_sleep = false;
 
-	err = gpiochip_add(gc);
+	err = devm_gpiochip_add_data(&pdev->dev, gc, tgpio);
 	if (err)
-		goto err_chipadd;
+		return err;
 
 	platform_set_drvdata(pdev, tgpio);
 
@@ -291,37 +279,21 @@ static int __devinit timbgpio_probe(struct platform_device *pdev)
 		return 0;
 
 	for (i = 0; i < pdata->nr_pins; i++) {
-		irq_set_chip_and_handler_name(tgpio->irq_base + i,
-			&timbgpio_irqchip, handle_simple_irq, "mux");
+		irq_set_chip_and_handler(tgpio->irq_base + i,
+			&timbgpio_irqchip, handle_simple_irq);
 		irq_set_chip_data(tgpio->irq_base + i, tgpio);
-#ifdef CONFIG_ARM
-		set_irq_flags(tgpio->irq_base + i, IRQF_VALID | IRQF_PROBE);
-#endif
+		irq_clear_status_flags(tgpio->irq_base + i, IRQ_NOREQUEST | IRQ_NOPROBE);
 	}
 
-	irq_set_handler_data(irq, tgpio);
-	irq_set_chained_handler(irq, timbgpio_irq);
+	irq_set_chained_handler_and_data(irq, timbgpio_irq, tgpio);
 
 	return 0;
-
-err_chipadd:
-	iounmap(tgpio->membase);
-err_ioremap:
-	release_mem_region(iomem->start, resource_size(iomem));
-err_request:
-	kfree(tgpio);
-err_mem:
-	printk(KERN_ERR DRIVER_NAME": Failed to register GPIOs: %d\n", err);
-
-	return err;
 }
 
-static int __devexit timbgpio_remove(struct platform_device *pdev)
+static int timbgpio_remove(struct platform_device *pdev)
 {
-	int err;
-	struct timbgpio_platform_data *pdata = pdev->dev.platform_data;
+	struct timbgpio_platform_data *pdata = dev_get_platdata(&pdev->dev);
 	struct timbgpio *tgpio = platform_get_drvdata(pdev);
-	struct resource *iomem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	int irq = platform_get_irq(pdev, 0);
 
 	if (irq >= 0 && tgpio->irq_base > 0) {
@@ -335,23 +307,12 @@ static int __devexit timbgpio_remove(struct platform_device *pdev)
 		irq_set_handler_data(irq, NULL);
 	}
 
-	err = gpiochip_remove(&tgpio->gpio);
-	if (err)
-		printk(KERN_ERR DRIVER_NAME": failed to remove gpio_chip\n");
-
-	iounmap(tgpio->membase);
-	release_mem_region(iomem->start, resource_size(iomem));
-	kfree(tgpio);
-
-	platform_set_drvdata(pdev, NULL);
-
 	return 0;
 }
 
 static struct platform_driver timbgpio_platform_driver = {
 	.driver = {
 		.name	= DRIVER_NAME,
-		.owner	= THIS_MODULE,
 	},
 	.probe		= timbgpio_probe,
 	.remove		= timbgpio_remove,

@@ -12,9 +12,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the
- * Free Software Foundation, Inc.,
- * 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+ * along with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 
 #define pr_fmt(fmt) "hci: %s: " fmt, __func__
@@ -28,10 +26,31 @@
 
 #include "hci.h"
 
-static void nfc_hci_execute_cb(struct nfc_hci_dev *hdev, int err,
-			       struct sk_buff *skb, void *cb_data)
+#define MAX_FWI 4949
+
+static int nfc_hci_execute_cmd_async(struct nfc_hci_dev *hdev, u8 pipe, u8 cmd,
+			       const u8 *param, size_t param_len,
+			       data_exchange_cb_t cb, void *cb_context)
 {
-	struct hcp_exec_waiter *hcp_ew = (struct hcp_exec_waiter *)cb_data;
+	pr_debug("exec cmd async through pipe=%d, cmd=%d, plen=%zd\n", pipe,
+		 cmd, param_len);
+
+	/* TODO: Define hci cmd execution delay. Should it be the same
+	 * for all commands?
+	 */
+	return nfc_hci_hcp_message_tx(hdev, pipe, NFC_HCI_HCP_COMMAND, cmd,
+				      param, param_len, cb, cb_context, MAX_FWI);
+}
+
+/*
+ * HCI command execution completion callback.
+ * err will be a standard linux error (may be converted from HCI response)
+ * skb contains the response data and must be disposed, or may be NULL if
+ * an error occured
+ */
+static void nfc_hci_execute_cb(void *context, struct sk_buff *skb, int err)
+{
+	struct hcp_exec_waiter *hcp_ew = (struct hcp_exec_waiter *)context;
 
 	pr_debug("HCI Cmd completed with result=%d\n", err);
 
@@ -55,7 +74,8 @@ static int nfc_hci_execute_cmd(struct nfc_hci_dev *hdev, u8 pipe, u8 cmd,
 	hcp_ew.exec_complete = false;
 	hcp_ew.result_skb = NULL;
 
-	pr_debug("through pipe=%d, cmd=%d, plen=%zd\n", pipe, cmd, param_len);
+	pr_debug("exec cmd sync through pipe=%d, cmd=%d, plen=%zd\n", pipe,
+		 cmd, param_len);
 
 	/* TODO: Define hci cmd execution delay. Should it be the same
 	 * for all commands?
@@ -64,7 +84,7 @@ static int nfc_hci_execute_cmd(struct nfc_hci_dev *hdev, u8 pipe, u8 cmd,
 						    NFC_HCI_HCP_COMMAND, cmd,
 						    param, param_len,
 						    nfc_hci_execute_cb, &hcp_ew,
-						    3000);
+						    MAX_FWI);
 	if (hcp_ew.exec_result < 0)
 		return hcp_ew.exec_result;
 
@@ -96,23 +116,6 @@ int nfc_hci_send_event(struct nfc_hci_dev *hdev, u8 gate, u8 event,
 }
 EXPORT_SYMBOL(nfc_hci_send_event);
 
-int nfc_hci_send_response(struct nfc_hci_dev *hdev, u8 gate, u8 response,
-			  const u8 *param, size_t param_len)
-{
-	u8 pipe;
-
-	pr_debug("\n");
-
-	pipe = hdev->gate2pipe[gate];
-	if (pipe == NFC_HCI_INVALID_PIPE)
-		return -EADDRNOTAVAIL;
-
-	return nfc_hci_hcp_message_tx(hdev, pipe, NFC_HCI_HCP_RESPONSE,
-				      response, param, param_len, NULL, NULL,
-				      0);
-}
-EXPORT_SYMBOL(nfc_hci_send_response);
-
 /*
  * Execute an hci command sent to gate.
  * skb will contain response data if success. skb can be NULL if you are not
@@ -132,6 +135,23 @@ int nfc_hci_send_cmd(struct nfc_hci_dev *hdev, u8 gate, u8 cmd,
 	return nfc_hci_execute_cmd(hdev, pipe, cmd, param, param_len, skb);
 }
 EXPORT_SYMBOL(nfc_hci_send_cmd);
+
+int nfc_hci_send_cmd_async(struct nfc_hci_dev *hdev, u8 gate, u8 cmd,
+			   const u8 *param, size_t param_len,
+			   data_exchange_cb_t cb, void *cb_context)
+{
+	u8 pipe;
+
+	pr_debug("\n");
+
+	pipe = hdev->gate2pipe[gate];
+	if (pipe == NFC_HCI_INVALID_PIPE)
+		return -EADDRNOTAVAIL;
+
+	return nfc_hci_execute_cmd_async(hdev, pipe, cmd, param, param_len,
+					 cb, cb_context);
+}
+EXPORT_SYMBOL(nfc_hci_send_cmd_async);
 
 int nfc_hci_set_param(struct nfc_hci_dev *hdev, u8 gate, u8 idx,
 		      const u8 *param, size_t param_len)
@@ -220,16 +240,16 @@ static u8 nfc_hci_create_pipe(struct nfc_hci_dev *hdev, u8 dest_host,
 	*result = nfc_hci_execute_cmd(hdev, NFC_HCI_ADMIN_PIPE,
 				      NFC_HCI_ADM_CREATE_PIPE,
 				      (u8 *) &params, sizeof(params), &skb);
-	if (*result == 0) {
-		resp = (struct hci_create_pipe_resp *)skb->data;
-		pipe = resp->pipe;
-		kfree_skb(skb);
-
-		pr_debug("pipe created=%d\n", pipe);
-
-		return pipe;
-	} else
+	if (*result < 0)
 		return NFC_HCI_INVALID_PIPE;
+
+	resp = (struct hci_create_pipe_resp *)skb->data;
+	pipe = resp->pipe;
+	kfree_skb(skb);
+
+	pr_debug("pipe created=%d\n", pipe);
+
+	return pipe;
 }
 
 static int nfc_hci_delete_pipe(struct nfc_hci_dev *hdev, u8 pipe)
@@ -242,19 +262,20 @@ static int nfc_hci_delete_pipe(struct nfc_hci_dev *hdev, u8 pipe)
 
 static int nfc_hci_clear_all_pipes(struct nfc_hci_dev *hdev)
 {
-	int r;
-
 	u8 param[2];
+	size_t param_len = 2;
 
 	/* TODO: Find out what the identity reference data is
 	 * and fill param with it. HCI spec 6.1.3.5 */
 
 	pr_debug("\n");
 
-	r = nfc_hci_execute_cmd(hdev, NFC_HCI_ADMIN_PIPE,
-				NFC_HCI_ADM_CLEAR_ALL_PIPE, param, 2, NULL);
+	if (test_bit(NFC_HCI_QUIRK_SHORT_CLEAR, &hdev->quirks))
+		param_len = 0;
 
-	return 0;
+	return nfc_hci_execute_cmd(hdev, NFC_HCI_ADMIN_PIPE,
+				   NFC_HCI_ADM_CLEAR_ALL_PIPE, param, param_len,
+				   NULL);
 }
 
 int nfc_hci_disconnect_gate(struct nfc_hci_dev *hdev, u8 gate)
@@ -293,7 +314,7 @@ int nfc_hci_disconnect_all_gates(struct nfc_hci_dev *hdev)
 	if (r < 0)
 		return r;
 
-	memset(hdev->gate2pipe, NFC_HCI_INVALID_PIPE, sizeof(hdev->gate2pipe));
+	nfc_hci_reset_pipes(hdev);
 
 	return 0;
 }
@@ -307,11 +328,14 @@ int nfc_hci_connect_gate(struct nfc_hci_dev *hdev, u8 dest_host, u8 dest_gate,
 
 	pr_debug("\n");
 
+	if (pipe == NFC_HCI_DO_NOT_CREATE_PIPE)
+		return 0;
+
 	if (hdev->gate2pipe[dest_gate] != NFC_HCI_INVALID_PIPE)
 		return -EADDRINUSE;
 
 	if (pipe != NFC_HCI_INVALID_PIPE)
-		goto pipe_is_open;
+		goto open_pipe;
 
 	switch (dest_gate) {
 	case NFC_HCI_LINK_MGMT_GATE:
@@ -328,6 +352,7 @@ int nfc_hci_connect_gate(struct nfc_hci_dev *hdev, u8 dest_host, u8 dest_gate,
 		break;
 	}
 
+open_pipe:
 	r = nfc_hci_open_pipe(hdev, pipe);
 	if (r < 0) {
 		if (pipe_created)
@@ -338,7 +363,8 @@ int nfc_hci_connect_gate(struct nfc_hci_dev *hdev, u8 dest_host, u8 dest_gate,
 		return r;
 	}
 
-pipe_is_open:
+	hdev->pipes[pipe].gate = dest_gate;
+	hdev->pipes[pipe].dest_host = dest_host;
 	hdev->gate2pipe[dest_gate] = pipe;
 
 	return 0;

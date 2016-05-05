@@ -21,8 +21,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * along with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 
 #include "asix.h"
@@ -35,6 +34,7 @@ struct ax88172a_private {
 	u16 phy_addr;
 	u16 oldmode;
 	int use_embdphy;
+	struct asix_rx_fixup_info rx_fixup_info;
 };
 
 /* MDIO read and write wrappers for phylib */
@@ -98,7 +98,7 @@ static void ax88172a_status(struct usbnet *dev, struct urb *urb)
 static int ax88172a_init_mdio(struct usbnet *dev)
 {
 	struct ax88172a_private *priv = dev->driver_priv;
-	int ret, i;
+	int ret;
 
 	priv->mdio = mdiobus_alloc();
 	if (!priv->mdio) {
@@ -114,26 +114,15 @@ static int ax88172a_init_mdio(struct usbnet *dev)
 	snprintf(priv->mdio->id, MII_BUS_ID_SIZE, "usb-%03d:%03d",
 		 dev->udev->bus->busnum, dev->udev->devnum);
 
-	priv->mdio->irq = kzalloc(sizeof(int) * PHY_MAX_ADDR, GFP_KERNEL);
-	if (!priv->mdio->irq) {
-		netdev_err(dev->net, "Could not allocate mdio->irq\n");
-		ret = -ENOMEM;
-		goto mfree;
-	}
-	for (i = 0; i < PHY_MAX_ADDR; i++)
-		priv->mdio->irq[i] = PHY_POLL;
-
 	ret = mdiobus_register(priv->mdio);
 	if (ret) {
 		netdev_err(dev->net, "Could not register MDIO bus\n");
-		goto ifree;
+		goto mfree;
 	}
 
 	netdev_info(dev->net, "registered mdio bus %s\n", priv->mdio->id);
 	return 0;
 
-ifree:
-	kfree(priv->mdio->irq);
 mfree:
 	mdiobus_free(priv->mdio);
 	return ret;
@@ -145,7 +134,6 @@ static void ax88172a_remove_mdio(struct usbnet *dev)
 
 	netdev_info(dev->net, "deregistering mdio bus %s\n", priv->mdio->id);
 	mdiobus_unregister(priv->mdio);
-	kfree(priv->mdio->irq);
 	mdiobus_free(priv->mdio);
 }
 
@@ -161,7 +149,8 @@ static const struct net_device_ops ax88172a_netdev_ops = {
 	.ndo_set_rx_mode        = asix_set_multicast,
 };
 
-int ax88172a_get_settings(struct net_device *net, struct ethtool_cmd *cmd)
+static int ax88172a_get_settings(struct net_device *net,
+				 struct ethtool_cmd *cmd)
 {
 	if (!net->phydev)
 		return -ENODEV;
@@ -169,7 +158,8 @@ int ax88172a_get_settings(struct net_device *net, struct ethtool_cmd *cmd)
 	return phy_ethtool_gset(net->phydev, cmd);
 }
 
-int ax88172a_set_settings(struct net_device *net, struct ethtool_cmd *cmd)
+static int ax88172a_set_settings(struct net_device *net,
+				 struct ethtool_cmd *cmd)
 {
 	if (!net->phydev)
 		return -ENODEV;
@@ -177,7 +167,7 @@ int ax88172a_set_settings(struct net_device *net, struct ethtool_cmd *cmd)
 	return phy_ethtool_sset(net->phydev, cmd);
 }
 
-int ax88172a_nway_reset(struct net_device *net)
+static int ax88172a_nway_reset(struct net_device *net)
 {
 	if (!net->phydev)
 		return -ENODEV;
@@ -235,10 +225,9 @@ static int ax88172a_bind(struct usbnet *dev, struct usb_interface *intf)
 	usbnet_get_endpoints(dev, intf);
 
 	priv = kzalloc(sizeof(*priv), GFP_KERNEL);
-	if (!priv) {
-		netdev_err(dev->net, "Could not allocate memory for private data\n");
+	if (!priv)
 		return -ENOMEM;
-	}
+
 	dev->driver_priv = priv;
 
 	/* Get the MAC address */
@@ -377,7 +366,7 @@ static int ax88172a_reset(struct usbnet *dev)
 
 	priv->phydev = phy_connect(dev->net, priv->phy_name,
 				   &ax88172a_adjust_link,
-				   0, PHY_INTERFACE_MODE_MII);
+				   PHY_INTERFACE_MODE_MII);
 	if (IS_ERR(priv->phydev)) {
 		netdev_err(dev->net, "Could not connect to PHY device %s\n",
 			   priv->phy_name);
@@ -400,6 +389,14 @@ out:
 
 }
 
+static int ax88172a_rx_fixup(struct usbnet *dev, struct sk_buff *skb)
+{
+	struct ax88172a_private *dp = dev->driver_priv;
+	struct asix_rx_fixup_info *rx = &dp->rx_fixup_info;
+
+	return asix_rx_fixup_internal(dev, skb, rx);
+}
+
 const struct driver_info ax88172a_info = {
 	.description = "ASIX AX88172A USB 2.0 Ethernet",
 	.bind = ax88172a_bind,
@@ -409,6 +406,6 @@ const struct driver_info ax88172a_info = {
 	.status = ax88172a_status,
 	.flags = FLAG_ETHER | FLAG_FRAMING_AX | FLAG_LINK_INTR |
 		 FLAG_MULTI_PACKET,
-	.rx_fixup = asix_rx_fixup,
+	.rx_fixup = ax88172a_rx_fixup,
 	.tx_fixup = asix_tx_fixup,
 };

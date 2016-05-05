@@ -61,7 +61,7 @@
 #define STMMAC_CSR_I_16		0xE	/* clk_csr_i/16 */
 #define STMMAC_CSR_I_18		0xF	/* clk_csr_i/18 */
 
-/* AXI DMA Burst length suported */
+/* AXI DMA Burst length supported */
 #define DMA_AXI_BLEN_4		(1 << 1)
 #define DMA_AXI_BLEN_8		(1 << 2)
 #define DMA_AXI_BLEN_16		(1 << 3)
@@ -76,26 +76,44 @@
 /* Platfrom data for platform device structure's platform_data field */
 
 struct stmmac_mdio_bus_data {
-	int bus_id;
 	int (*phy_reset)(void *priv);
 	unsigned int phy_mask;
 	int *irqs;
 	int probed_phy_irq;
+#ifdef CONFIG_OF
+	int reset_gpio, active_low;
+	u32 delays[3];
+#endif
 };
 
 struct stmmac_dma_cfg {
 	int pbl;
 	int fixed_burst;
 	int mixed_burst;
-	int burst_len;
+	bool aal;
+};
+
+#define AXI_BLEN	7
+struct stmmac_axi {
+	bool axi_lpi_en;
+	bool axi_xit_frm;
+	u32 axi_wr_osr_lmt;
+	u32 axi_rd_osr_lmt;
+	bool axi_kbbe;
+	bool axi_axi_all;
+	u32 axi_blen[AXI_BLEN];
+	bool axi_fb;
+	bool axi_mb;
+	bool axi_rb;
 };
 
 struct plat_stmmacenet_data {
-	char *phy_bus_name;
 	int bus_id;
 	int phy_addr;
 	int interface;
 	struct stmmac_mdio_bus_data *mdio_bus_data;
+	struct device_node *phy_node;
+	struct device_node *mdio_node;
 	struct stmmac_dma_cfg *dma_cfg;
 	int clk_csr;
 	int has_gmac;
@@ -105,12 +123,19 @@ struct plat_stmmacenet_data {
 	int bugged_jumbo;
 	int pmt;
 	int force_sf_dma_mode;
+	int force_thresh_dma_mode;
+	int riwt_off;
+	int max_speed;
+	int maxmtu;
+	int multicast_filter_bins;
+	int unicast_filter_entries;
+	int tx_fifo_size;
+	int rx_fifo_size;
 	void (*fix_mac_speed)(void *priv, unsigned int speed);
 	void (*bus_setup)(void __iomem *ioaddr);
-	int (*init)(struct platform_device *pdev);
-	void (*exit)(struct platform_device *pdev);
-	void *custom_cfg;
-	void *custom_data;
+	int (*init)(struct platform_device *pdev, void *priv);
+	void (*exit)(struct platform_device *pdev, void *priv);
 	void *bsp_priv;
+	struct stmmac_axi *axi;
 };
 #endif

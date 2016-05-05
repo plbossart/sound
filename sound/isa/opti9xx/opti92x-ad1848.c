@@ -29,7 +29,7 @@
 #include <linux/delay.h>
 #include <linux/pnp.h>
 #include <linux/module.h>
-#include <asm/io.h>
+#include <linux/io.h>
 #include <asm/dma.h>
 #include <sound/core.h>
 #include <sound/tlv.h>
@@ -39,6 +39,7 @@
 #ifndef OPTi93X
 #include <sound/opl4.h>
 #endif
+#define SNDRV_LEGACY_FIND_FREE_IOPORT
 #define SNDRV_LEGACY_FIND_FREE_IRQ
 #define SNDRV_LEGACY_FIND_FREE_DMA
 #include <sound/initval.h>
@@ -172,11 +173,7 @@ MODULE_DEVICE_TABLE(pnp_card, snd_opti9xx_pnpids);
 
 #endif	/* CONFIG_PNP */
 
-#ifdef OPTi93X
-#define DEV_NAME "opti93x"
-#else
-#define DEV_NAME "opti92x"
-#endif
+#define DEV_NAME KBUILD_MODNAME
 
 static char * snd_opti9xx_names[] = {
 	"unknown",
@@ -185,21 +182,8 @@ static char * snd_opti9xx_names[] = {
 	"82C930",	"82C931",	"82C933"
 };
 
-
-static long __devinit snd_legacy_find_free_ioport(long *port_table, long size)
-{
-	while (*port_table != -1) {
-		if (request_region(*port_table, size, "ALSA test")) {
-			release_region(*port_table, size);
-			return *port_table;
-		}
-		port_table++;
-	}
-	return -1;
-}
-
-static int __devinit snd_opti9xx_init(struct snd_opti9xx *chip,
-				      unsigned short hardware)
+static int snd_opti9xx_init(struct snd_opti9xx *chip,
+			    unsigned short hardware)
 {
 	static int opti9xx_mc_size[] = {7, 7, 10, 10, 2, 2, 2};
 
@@ -605,7 +589,7 @@ WSS_DOUBLE_TLV("Aux Playback Volume", 0,
 		db_scale_4bit_12db_max),
 };
 
-static int __devinit snd_opti93x_mixer(struct snd_wss *chip)
+static int snd_opti93x_mixer(struct snd_wss *chip)
 {
 	struct snd_card *card;
 	unsigned int idx;
@@ -678,7 +662,7 @@ static irqreturn_t snd_opti93x_interrupt(int irq, void *dev_id)
 
 #endif /* OPTi93X */
 
-static int __devinit snd_opti9xx_read_check(struct snd_opti9xx *chip)
+static int snd_opti9xx_read_check(struct snd_opti9xx *chip)
 {
 	unsigned char value;
 #ifdef OPTi93X
@@ -719,8 +703,8 @@ static int __devinit snd_opti9xx_read_check(struct snd_opti9xx *chip)
 	return -ENODEV;
 }
 
-static int __devinit snd_card_opti9xx_detect(struct snd_card *card,
-					     struct snd_opti9xx *chip)
+static int snd_card_opti9xx_detect(struct snd_card *card,
+				   struct snd_opti9xx *chip)
 {
 	int i, err;
 
@@ -744,9 +728,9 @@ static int __devinit snd_card_opti9xx_detect(struct snd_card *card,
 }
 
 #ifdef CONFIG_PNP
-static int __devinit snd_card_opti9xx_pnp(struct snd_opti9xx *chip,
-					  struct pnp_card_link *card,
-					  const struct pnp_card_device_id *pid)
+static int snd_card_opti9xx_pnp(struct snd_opti9xx *chip,
+				struct pnp_card_link *card,
+				const struct pnp_card_device_id *pid)
 {
 	struct pnp_dev *pdev;
 	int err;
@@ -829,17 +813,13 @@ static void snd_card_opti9xx_free(struct snd_card *card)
 	}
 }
 
-static int __devinit snd_opti9xx_probe(struct snd_card *card)
+static int snd_opti9xx_probe(struct snd_card *card)
 {
 	static long possible_ports[] = {0x530, 0xe80, 0xf40, 0x604, -1};
 	int error;
 	int xdma2;
 	struct snd_opti9xx *chip = card->private_data;
 	struct snd_wss *codec;
-#ifdef CS4231
-	struct snd_timer *timer;
-#endif
-	struct snd_pcm *pcm;
 	struct snd_rawmidi *rmidi;
 	struct snd_hwdep *synth;
 
@@ -871,7 +851,7 @@ static int __devinit snd_opti9xx_probe(struct snd_card *card)
 	if (error < 0)
 		return error;
 	chip->codec = codec;
-	error = snd_wss_pcm(codec, 0, &pcm);
+	error = snd_wss_pcm(codec, 0);
 	if (error < 0)
 		return error;
 	error = snd_wss_mixer(codec);
@@ -883,7 +863,7 @@ static int __devinit snd_opti9xx_probe(struct snd_card *card)
 		return error;
 #endif
 #ifdef CS4231
-	error = snd_wss_timer(codec, 0, &timer);
+	error = snd_wss_timer(codec, 0);
 	if (error < 0)
 		return error;
 #endif
@@ -900,11 +880,12 @@ static int __devinit snd_opti9xx_probe(struct snd_card *card)
 	sprintf(card->shortname, "OPTi %s", card->driver);
 #if defined(CS4231) || defined(OPTi93X)
 	sprintf(card->longname, "%s, %s at 0x%lx, irq %d, dma %d&%d",
-		card->shortname, pcm->name,
+		card->shortname, codec->pcm->name,
 		chip->wss_base + 4, irq, dma1, xdma2);
 #else
 	sprintf(card->longname, "%s, %s at 0x%lx, irq %d, dma %d",
-		card->shortname, pcm->name, chip->wss_base + 4, irq, dma1);
+		card->shortname, codec->pcm->name, chip->wss_base + 4, irq,
+		dma1);
 #endif	/* CS4231 || OPTi93X */
 
 	if (mpu_port <= 0 || mpu_port == SNDRV_AUTO_PORT)
@@ -950,13 +931,13 @@ static int __devinit snd_opti9xx_probe(struct snd_card *card)
 	return snd_card_register(card);
 }
 
-static int snd_opti9xx_card_new(struct snd_card **cardp)
+static int snd_opti9xx_card_new(struct device *pdev, struct snd_card **cardp)
 {
 	struct snd_card *card;
 	int err;
 
-	err = snd_card_create(index, id, THIS_MODULE,
-			      sizeof(struct snd_opti9xx), &card);
+	err = snd_card_new(pdev, index, id, THIS_MODULE,
+			   sizeof(struct snd_opti9xx), &card);
 	if (err < 0)
 		return err;
 	card->private_free = snd_card_opti9xx_free;
@@ -964,8 +945,8 @@ static int snd_opti9xx_card_new(struct snd_card **cardp)
 	return 0;
 }
 
-static int __devinit snd_opti9xx_isa_match(struct device *devptr,
-					   unsigned int dev)
+static int snd_opti9xx_isa_match(struct device *devptr,
+				 unsigned int dev)
 {
 #ifdef CONFIG_PNP
 	if (snd_opti9xx_pnp_is_probed)
@@ -976,8 +957,8 @@ static int __devinit snd_opti9xx_isa_match(struct device *devptr,
 	return 1;
 }
 
-static int __devinit snd_opti9xx_isa_probe(struct device *devptr,
-					   unsigned int dev)
+static int snd_opti9xx_isa_probe(struct device *devptr,
+				 unsigned int dev)
 {
 	struct snd_card *card;
 	int error;
@@ -1026,7 +1007,7 @@ static int __devinit snd_opti9xx_isa_probe(struct device *devptr,
 	}
 #endif
 
-	error = snd_opti9xx_card_new(&card);
+	error = snd_opti9xx_card_new(devptr, &card);
 	if (error < 0)
 		return error;
 
@@ -1034,7 +1015,6 @@ static int __devinit snd_opti9xx_isa_probe(struct device *devptr,
 		snd_card_free(card);
 		return error;
 	}
-	snd_card_set_dev(card, devptr);
 	if ((error = snd_opti9xx_probe(card)) < 0) {
 		snd_card_free(card);
 		return error;
@@ -1043,11 +1023,10 @@ static int __devinit snd_opti9xx_isa_probe(struct device *devptr,
 	return 0;
 }
 
-static int __devexit snd_opti9xx_isa_remove(struct device *devptr,
-					    unsigned int dev)
+static int snd_opti9xx_isa_remove(struct device *devptr,
+				  unsigned int dev)
 {
 	snd_card_free(dev_get_drvdata(devptr));
-	dev_set_drvdata(devptr, NULL);
 	return 0;
 }
 
@@ -1095,7 +1074,7 @@ static int snd_opti9xx_isa_resume(struct device *dev, unsigned int n)
 static struct isa_driver snd_opti9xx_driver = {
 	.match		= snd_opti9xx_isa_match,
 	.probe		= snd_opti9xx_isa_probe,
-	.remove		= __devexit_p(snd_opti9xx_isa_remove),
+	.remove		= snd_opti9xx_isa_remove,
 #ifdef CONFIG_PM
 	.suspend	= snd_opti9xx_isa_suspend,
 	.resume		= snd_opti9xx_isa_resume,
@@ -1106,8 +1085,8 @@ static struct isa_driver snd_opti9xx_driver = {
 };
 
 #ifdef CONFIG_PNP
-static int __devinit snd_opti9xx_pnp_probe(struct pnp_card_link *pcard,
-					   const struct pnp_card_device_id *pid)
+static int snd_opti9xx_pnp_probe(struct pnp_card_link *pcard,
+				 const struct pnp_card_device_id *pid)
 {
 	struct snd_card *card;
 	int error, hw;
@@ -1117,7 +1096,7 @@ static int __devinit snd_opti9xx_pnp_probe(struct pnp_card_link *pcard,
 		return -EBUSY;
 	if (! isapnp)
 		return -ENODEV;
-	error = snd_opti9xx_card_new(&card);
+	error = snd_opti9xx_card_new(&pcard->card->dev, &card);
 	if (error < 0)
 		return error;
 	chip = card->private_data;
@@ -1148,7 +1127,6 @@ static int __devinit snd_opti9xx_pnp_probe(struct pnp_card_link *pcard,
 		snd_card_free(card);
 		return error;
 	}
-	snd_card_set_dev(card, &pcard->card->dev);
 	if ((error = snd_opti9xx_probe(card)) < 0) {
 		snd_card_free(card);
 		return error;
@@ -1158,7 +1136,7 @@ static int __devinit snd_opti9xx_pnp_probe(struct pnp_card_link *pcard,
 	return 0;
 }
 
-static void __devexit snd_opti9xx_pnp_remove(struct pnp_card_link * pcard)
+static void snd_opti9xx_pnp_remove(struct pnp_card_link *pcard)
 {
 	snd_card_free(pnp_get_card_drvdata(pcard));
 	pnp_set_card_drvdata(pcard, NULL);
@@ -1180,10 +1158,10 @@ static int snd_opti9xx_pnp_resume(struct pnp_card_link *pcard)
 
 static struct pnp_card_driver opti9xx_pnpc_driver = {
 	.flags		= PNP_DRIVER_RES_DISABLE,
-	.name		= "opti9xx",
+	.name		= DEV_NAME,
 	.id_table	= snd_opti9xx_pnpids,
 	.probe		= snd_opti9xx_pnp_probe,
-	.remove		= __devexit_p(snd_opti9xx_pnp_remove),
+	.remove		= snd_opti9xx_pnp_remove,
 #ifdef CONFIG_PM
 	.suspend	= snd_opti9xx_pnp_suspend,
 	.resume		= snd_opti9xx_pnp_resume,

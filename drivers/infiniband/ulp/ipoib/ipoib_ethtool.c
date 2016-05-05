@@ -39,7 +39,20 @@
 static void ipoib_get_drvinfo(struct net_device *netdev,
 			      struct ethtool_drvinfo *drvinfo)
 {
-	strncpy(drvinfo->driver, "ipoib", sizeof(drvinfo->driver) - 1);
+	struct ipoib_dev_priv *priv = netdev_priv(netdev);
+
+	snprintf(drvinfo->fw_version, sizeof(drvinfo->fw_version),
+		 "%d.%d.%d", (int)(priv->ca->attrs.fw_ver >> 32),
+		 (int)(priv->ca->attrs.fw_ver >> 16) & 0xffff,
+		 (int)priv->ca->attrs.fw_ver & 0xffff);
+
+	strlcpy(drvinfo->bus_info, dev_name(priv->ca->dma_device),
+		sizeof(drvinfo->bus_info));
+
+	strlcpy(drvinfo->version, ipoib_driver_version,
+		sizeof(drvinfo->version));
+
+	strlcpy(drvinfo->driver, "ib_ipoib", sizeof(drvinfo->driver));
 }
 
 static int ipoib_get_coalesce(struct net_device *dev,
@@ -88,5 +101,5 @@ static const struct ethtool_ops ipoib_ethtool_ops = {
 
 void ipoib_set_ethtool_ops(struct net_device *dev)
 {
-	SET_ETHTOOL_OPS(dev, &ipoib_ethtool_ops);
+	dev->ethtool_ops = &ipoib_ethtool_ops;
 }

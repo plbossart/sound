@@ -1,21 +1,49 @@
+#include <linux/seq_file.h>
+#include <linux/cpumask.h>
 #include <linux/kernel.h>
 #include <linux/string.h>
-#include <linux/cpumask.h>
 #include <linux/errno.h>
 #include <linux/msi.h>
+#include <linux/irq.h>
+#include <linux/pci.h>
+#include <linux/irqdomain.h>
 
 #include <asm/hw_irq.h>
 #include <asm/irq_remapping.h>
+#include <asm/processor.h>
+#include <asm/x86_init.h>
+#include <asm/apic.h>
+#include <asm/hpet.h>
 
 #include "irq_remapping.h"
 
 int irq_remapping_enabled;
-
-int disable_irq_remap;
+int irq_remap_broken;
 int disable_sourceid_checking;
 int no_x2apic_optout;
 
+int disable_irq_post = 0;
+
+static int disable_irq_remap;
 static struct irq_remap_ops *remap_ops;
+
+static void irq_remapping_disable_io_apic(void)
+{
+	/*
+	 * With interrupt-remapping, for now we will use virtual wire A
+	 * mode, as virtual wire B is little complex (need to configure
+	 * both IOAPIC RTE as well as interrupt-remapping table entry).
+	 * As this gets called during crash dump, keep this simple for
+	 * now.
+	 */
+	if (cpu_has_apic || apic_from_smp_config())
+		disconnect_bsp_APIC(0);
+}
+
+static void __init irq_remapping_modify_x86_ops(void)
+{
+	x86_io_apic_ops.disable		= irq_remapping_disable_io_apic;
+}
 
 static __init int setup_nointremap(char *str)
 {
@@ -30,14 +58,18 @@ static __init int setup_irqremap(char *str)
 		return -EINVAL;
 
 	while (*str) {
-		if (!strncmp(str, "on", 2))
+		if (!strncmp(str, "on", 2)) {
 			disable_irq_remap = 0;
-		else if (!strncmp(str, "off", 3))
+			disable_irq_post = 0;
+		} else if (!strncmp(str, "off", 3)) {
 			disable_irq_remap = 1;
-		else if (!strncmp(str, "nosid", 5))
+			disable_irq_post = 1;
+		} else if (!strncmp(str, "nosid", 5))
 			disable_sourceid_checking = 1;
 		else if (!strncmp(str, "no_x2apic_optout", 16))
 			no_x2apic_optout = 1;
+		else if (!strncmp(str, "nopost", 6))
+			disable_irq_post = 1;
 
 		str += strcspn(str, ",");
 		while (*str == ',')
@@ -48,123 +80,118 @@ static __init int setup_irqremap(char *str)
 }
 early_param("intremap", setup_irqremap);
 
-void __init setup_irq_remapping_ops(void)
+void set_irq_remapping_broken(void)
 {
-	remap_ops = &intel_irq_remap_ops;
+	irq_remap_broken = 1;
 }
 
-int irq_remapping_supported(void)
+bool irq_remapping_cap(enum irq_remap_cap cap)
 {
-	if (disable_irq_remap)
-		return 0;
+	if (!remap_ops || disable_irq_post)
+		return false;
 
-	if (!remap_ops || !remap_ops->supported)
-		return 0;
-
-	return remap_ops->supported();
+	return (remap_ops->capability & (1 << cap));
 }
+EXPORT_SYMBOL_GPL(irq_remapping_cap);
 
 int __init irq_remapping_prepare(void)
 {
-	if (!remap_ops || !remap_ops->prepare)
-		return -ENODEV;
+	if (disable_irq_remap)
+		return -ENOSYS;
 
-	return remap_ops->prepare();
+	if (intel_irq_remap_ops.prepare() == 0)
+		remap_ops = &intel_irq_remap_ops;
+	else if (IS_ENABLED(CONFIG_AMD_IOMMU) &&
+		 amd_iommu_irq_ops.prepare() == 0)
+		remap_ops = &amd_iommu_irq_ops;
+	else
+		return -ENOSYS;
+
+	return 0;
 }
 
 int __init irq_remapping_enable(void)
 {
-	if (!remap_ops || !remap_ops->enable)
+	int ret;
+
+	if (!remap_ops->enable)
 		return -ENODEV;
 
-	return remap_ops->enable();
+	ret = remap_ops->enable();
+
+	if (irq_remapping_enabled)
+		irq_remapping_modify_x86_ops();
+
+	return ret;
 }
 
 void irq_remapping_disable(void)
 {
-	if (!remap_ops || !remap_ops->disable)
-		return;
-
-	remap_ops->disable();
+	if (irq_remapping_enabled && remap_ops->disable)
+		remap_ops->disable();
 }
 
 int irq_remapping_reenable(int mode)
 {
-	if (!remap_ops || !remap_ops->reenable)
-		return 0;
+	if (irq_remapping_enabled && remap_ops->reenable)
+		return remap_ops->reenable(mode);
 
-	return remap_ops->reenable(mode);
+	return 0;
 }
 
 int __init irq_remap_enable_fault_handling(void)
 {
-	if (!remap_ops || !remap_ops->enable_faulting)
+	if (!irq_remapping_enabled)
+		return 0;
+
+	if (!remap_ops->enable_faulting)
 		return -ENODEV;
 
 	return remap_ops->enable_faulting();
 }
 
-int setup_ioapic_remapped_entry(int irq,
-				struct IO_APIC_route_entry *entry,
-				unsigned int destination, int vector,
-				struct io_apic_irq_attr *attr)
+void panic_if_irq_remap(const char *msg)
 {
-	if (!remap_ops || !remap_ops->setup_ioapic_entry)
-		return -ENODEV;
-
-	return remap_ops->setup_ioapic_entry(irq, entry, destination,
-					     vector, attr);
+	if (irq_remapping_enabled)
+		panic(msg);
 }
 
-int set_remapped_irq_affinity(struct irq_data *data, const struct cpumask *mask,
-			      bool force)
+void ir_ack_apic_edge(struct irq_data *data)
 {
-	if (!config_enabled(CONFIG_SMP) || !remap_ops ||
-	    !remap_ops->set_affinity)
-		return 0;
-
-	return remap_ops->set_affinity(data, mask, force);
+	ack_APIC_irq();
 }
 
-void free_remapped_irq(int irq)
+/**
+ * irq_remapping_get_ir_irq_domain - Get the irqdomain associated with the IOMMU
+ *				     device serving request @info
+ * @info: interrupt allocation information, used to identify the IOMMU device
+ *
+ * It's used to get parent irqdomain for HPET and IOAPIC irqdomains.
+ * Returns pointer to IRQ domain, or NULL on failure.
+ */
+struct irq_domain *
+irq_remapping_get_ir_irq_domain(struct irq_alloc_info *info)
 {
-	if (!remap_ops || !remap_ops->free_irq)
-		return;
+	if (!remap_ops || !remap_ops->get_ir_irq_domain)
+		return NULL;
 
-	remap_ops->free_irq(irq);
+	return remap_ops->get_ir_irq_domain(info);
 }
 
-void compose_remapped_msi_msg(struct pci_dev *pdev,
-			      unsigned int irq, unsigned int dest,
-			      struct msi_msg *msg, u8 hpet_id)
+/**
+ * irq_remapping_get_irq_domain - Get the irqdomain serving the request @info
+ * @info: interrupt allocation information, used to identify the IOMMU device
+ *
+ * There will be one PCI MSI/MSIX irqdomain associated with each interrupt
+ * remapping device, so this interface is used to retrieve the PCI MSI/MSIX
+ * irqdomain serving request @info.
+ * Returns pointer to IRQ domain, or NULL on failure.
+ */
+struct irq_domain *
+irq_remapping_get_irq_domain(struct irq_alloc_info *info)
 {
-	if (!remap_ops || !remap_ops->compose_msi_msg)
-		return;
+	if (!remap_ops || !remap_ops->get_irq_domain)
+		return NULL;
 
-	remap_ops->compose_msi_msg(pdev, irq, dest, msg, hpet_id);
-}
-
-int msi_alloc_remapped_irq(struct pci_dev *pdev, int irq, int nvec)
-{
-	if (!remap_ops || !remap_ops->msi_alloc_irq)
-		return -ENODEV;
-
-	return remap_ops->msi_alloc_irq(pdev, irq, nvec);
-}
-
-int msi_setup_remapped_irq(struct pci_dev *pdev, unsigned int irq,
-			   int index, int sub_handle)
-{
-	if (!remap_ops || !remap_ops->msi_setup_irq)
-		return -ENODEV;
-
-	return remap_ops->msi_setup_irq(pdev, irq, index, sub_handle);
-}
-
-int setup_hpet_msi_remapped(unsigned int irq, unsigned int id)
-{
-	if (!remap_ops || !remap_ops->setup_hpet_msi)
-		return -ENODEV;
-
-	return remap_ops->setup_hpet_msi(irq, id);
+	return remap_ops->get_irq_domain(info);
 }

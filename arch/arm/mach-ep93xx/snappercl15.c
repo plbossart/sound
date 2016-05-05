@@ -28,10 +28,9 @@
 #include <linux/mtd/nand.h>
 
 #include <mach/hardware.h>
-#include <mach/fb.h>
+#include <linux/platform_data/video-ep93xx.h>
 #include <mach/gpio-ep93xx.h>
 
-#include <asm/hardware/vic.h>
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
 
@@ -50,7 +49,7 @@
 static void snappercl15_nand_cmd_ctrl(struct mtd_info *mtd, int cmd,
 				      unsigned int ctrl)
 {
-	struct nand_chip *chip = mtd->priv;
+	struct nand_chip *chip = mtd_to_nand(mtd);
 	static u16 nand_state = SNAPPERCL15_NAND_WPN;
 	u16 set;
 
@@ -77,7 +76,7 @@ static void snappercl15_nand_cmd_ctrl(struct mtd_info *mtd, int cmd,
 
 static int snappercl15_nand_dev_ready(struct mtd_info *mtd)
 {
-	struct nand_chip *chip = mtd->priv;
+	struct nand_chip *chip = mtd_to_nand(mtd);
 
 	return !!(__raw_readw(NAND_CTRL_ADDR(chip)) & SNAPPERCL15_NAND_RDY);
 }
@@ -145,8 +144,6 @@ static struct i2c_board_info __initdata snappercl15_i2c_data[] = {
 };
 
 static struct ep93xxfb_mach_info __initdata snappercl15_fb_info = {
-	.num_modes		= EP93XXFB_USE_MODEDB,
-	.bpp			= 16,
 };
 
 static struct platform_device snappercl15_audio_device = {
@@ -176,8 +173,7 @@ MACHINE_START(SNAPPER_CL15, "Bluewater Systems Snapper CL15")
 	.atag_offset	= 0x100,
 	.map_io		= ep93xx_map_io,
 	.init_irq	= ep93xx_init_irq,
-	.handle_irq	= vic_handle_irq,
-	.timer 		= &ep93xx_timer,
+	.init_time	= ep93xx_timer_init,
 	.init_machine	= snappercl15_init_machine,
 	.init_late	= ep93xx_init_late,
 	.restart	= ep93xx_restart,

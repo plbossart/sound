@@ -699,7 +699,7 @@ int nes_arp_table(struct nes_device *nesdev, u32 ip_addr, u8 *mac_addr, u32 acti
 
 		arp_index = 0;
 		err = nes_alloc_resource(nesadapter, nesadapter->allocated_arps,
-				nesadapter->arp_table_size, (u32 *)&arp_index, &nesadapter->next_arp_index);
+				nesadapter->arp_table_size, (u32 *)&arp_index, &nesadapter->next_arp_index, NES_RESOURCE_ARP);
 		if (err) {
 			nes_debug(NES_DBG_NETDEV, "nes_alloc_resource returned error = %u\n", err);
 			return err;
@@ -727,7 +727,7 @@ int nes_arp_table(struct nes_device *nesdev, u32 ip_addr, u8 *mac_addr, u32 acti
 	if (action == NES_ARP_DELETE) {
 		nes_debug(NES_DBG_NETDEV, "DELETE, arp_index=%d\n", arp_index);
 		nesadapter->arp_table[arp_index].ip_addr = 0;
-		memset(nesadapter->arp_table[arp_index].mac_addr, 0x00, ETH_ALEN);
+		eth_zero_addr(nesadapter->arp_table[arp_index].mac_addr);
 		nes_free_resource(nesadapter, nesadapter->allocated_arps, arp_index);
 		return arp_index;
 	}

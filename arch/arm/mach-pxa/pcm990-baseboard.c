@@ -24,18 +24,20 @@
 #include <linux/platform_device.h>
 #include <linux/i2c.h>
 #include <linux/i2c/pxa-i2c.h>
+#include <linux/pwm.h>
 #include <linux/pwm_backlight.h>
 
+#include <media/i2c/mt9v022.h>
 #include <media/soc_camera.h>
 
-#include <mach/camera.h>
+#include <linux/platform_data/media/camera-pxa.h>
 #include <asm/mach/map.h>
-#include <mach/pxa27x.h>
+#include "pxa27x.h"
 #include <mach/audio.h>
-#include <mach/mmc.h>
-#include <mach/ohci.h>
-#include <mach/pcm990_baseboard.h>
-#include <mach/pxafb.h>
+#include <linux/platform_data/mmc-pxamci.h>
+#include <linux/platform_data/usb-ohci-pxa27x.h>
+#include "pcm990_baseboard.h"
+#include <linux/platform_data/video-pxafb.h>
 
 #include "devices.h"
 #include "generic.h"
@@ -147,11 +149,15 @@ static struct pxafb_mach_info pcm990_fbinfo __initdata = {
 };
 #endif
 
+static struct pwm_lookup pcm990_pwm_lookup[] = {
+	PWM_LOOKUP("pxa27x-pwm.0", 0, "pwm-backlight.0", NULL, 78770,
+		   PWM_POLARITY_NORMAL),
+};
+
 static struct platform_pwm_backlight_data pcm990_backlight_data = {
-	.pwm_id		= 0,
 	.max_brightness	= 1023,
 	.dft_brightness	= 1023,
-	.pwm_period_ns	= 78770,
+	.enable_gpio	= -1,
 };
 
 static struct platform_device pcm990_backlight_device = {
@@ -282,8 +288,9 @@ static struct irq_chip pcm990_irq_chip = {
 	.irq_unmask	= pcm990_unmask_irq,
 };
 
-static void pcm990_irq_handler(unsigned int irq, struct irq_desc *desc)
+static void pcm990_irq_handler(struct irq_desc *desc)
 {
+	unsigned int irq;
 	unsigned long pending;
 
 	pending = ~pcm990_cpld_readb(PCM990_CTRL_INTSETCLR);
@@ -309,7 +316,7 @@ static void __init pcm990_init_irq(void)
 	for (irq = PCM027_IRQ(0); irq <= PCM027_IRQ(3); irq++) {
 		irq_set_chip_and_handler(irq, &pcm990_irq_chip,
 					 handle_level_irq);
-		set_irq_flags(irq, IRQF_VALID | IRQF_PROBE);
+		irq_clear_status_flags(irq, IRQ_NOREQUEST | IRQ_NOPROBE);
 	}
 
 	/* disable all Interrupts */
@@ -325,7 +332,7 @@ static int pcm990_mci_init(struct device *dev, irq_handler_t mci_detect_int,
 {
 	int err;
 
-	err = request_irq(PCM027_MMCDET_IRQ, mci_detect_int, IRQF_DISABLED,
+	err = request_irq(PCM027_MMCDET_IRQ, mci_detect_int, 0,
 			     "MMC card detect", data);
 	if (err)
 		printk(KERN_ERR "pcm990_mci_init: MMC/SD: can't request MMC "
@@ -334,7 +341,7 @@ static int pcm990_mci_init(struct device *dev, irq_handler_t mci_detect_int,
 	return err;
 }
 
-static void pcm990_mci_setpower(struct device *dev, unsigned int vdd)
+static int pcm990_mci_setpower(struct device *dev, unsigned int vdd)
 {
 	struct pxamci_platform_data *p_d = dev->platform_data;
 	u8 val;
@@ -347,6 +354,7 @@ static void pcm990_mci_setpower(struct device *dev, unsigned int vdd)
 		val &= ~PCM990_CTRL_MMC2PWR;
 
 	pcm990_cpld_writeb(PCM990_CTRL_MMC2PWR, PCM990_CTRL_REG5);
+	return 0;
 }
 
 static void pcm990_mci_exit(struct device *dev, void *data)
@@ -406,7 +414,7 @@ struct pxacamera_platform_data pcm990_pxacamera_platform_data = {
 	.mclk_10khz = 1000,
 };
 
-#include <linux/i2c/pca953x.h>
+#include <linux/platform_data/pca953x.h>
 
 static struct pca953x_platform_data pca9536_data = {
 	.gpio_base	= PXA_NR_BUILTIN_GPIO,
@@ -468,6 +476,10 @@ static struct i2c_board_info __initdata pcm990_i2c_devices[] = {
 	},
 };
 
+static struct mt9v022_platform_data mt9v022_pdata = {
+	.y_skip_top = 1,
+};
+
 static struct i2c_board_info pcm990_camera_i2c[] = {
 	{
 		I2C_BOARD_INFO("mt9v022", 0x48),
@@ -480,6 +492,7 @@ static struct soc_camera_link iclink[] = {
 	{
 		.bus_id			= 0, /* Must match with the camera ID */
 		.board_info		= &pcm990_camera_i2c[0],
+		.priv			= &mt9v022_pdata,
 		.i2c_adapter_id		= 0,
 		.query_bus_param	= pcm990_camera_query_bus_param,
 		.set_bus_param		= pcm990_camera_set_bus_param,
@@ -533,6 +546,7 @@ void __init pcm990_baseboard_init(void)
 #ifndef CONFIG_PCM990_DISPLAY_NONE
 	pxa_set_fb_info(NULL, &pcm990_fbinfo);
 #endif
+	pwm_add_table(pcm990_pwm_lookup, ARRAY_SIZE(pcm990_pwm_lookup));
 	platform_device_register(&pcm990_backlight_device);
 
 	/* MMC */

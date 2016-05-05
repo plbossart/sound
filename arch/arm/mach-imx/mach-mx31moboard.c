@@ -42,14 +42,15 @@
 #include <asm/mach/time.h>
 #include <asm/mach/map.h>
 #include <asm/memblock.h>
-#include <mach/board-mx31moboard.h>
-#include <mach/common.h>
-#include <mach/hardware.h>
-#include <mach/iomux-mx3.h>
-#include <mach/ulpi.h>
-#include <mach/ssi.h>
+#include <linux/platform_data/asoc-imx-ssi.h>
 
+#include "board-mx31moboard.h"
+#include "common.h"
 #include "devices-imx31.h"
+#include "ehci.h"
+#include "hardware.h"
+#include "iomux-mx3.h"
+#include "ulpi.h"
 
 static unsigned int moboard_pins[] = {
 	/* UART0 */
@@ -128,27 +129,15 @@ static struct platform_device mx31moboard_flash = {
 	.num_resources = 1,
 };
 
-static int moboard_uart0_init(struct platform_device *pdev)
+static void __init moboard_uart0_init(void)
 {
-	int ret = gpio_request(IOMUX_TO_GPIO(MX31_PIN_CTS1), "uart0-cts-hack");
-	if (ret)
-		return ret;
-
-	ret = gpio_direction_output(IOMUX_TO_GPIO(MX31_PIN_CTS1), 0);
-	if (ret)
+	if (!gpio_request(IOMUX_TO_GPIO(MX31_PIN_CTS1), "uart0-cts-hack")) {
+		gpio_direction_output(IOMUX_TO_GPIO(MX31_PIN_CTS1), 0);
 		gpio_free(IOMUX_TO_GPIO(MX31_PIN_CTS1));
-
-	return ret;
-}
-
-static void moboard_uart0_exit(struct platform_device *pdev)
-{
-	gpio_free(IOMUX_TO_GPIO(MX31_PIN_CTS1));
+	}
 }
 
 static const struct imxuart_platform_data uart0_pdata __initconst = {
-	.init = moboard_uart0_init,
-	.exit = moboard_uart0_exit,
 };
 
 static const struct imxuart_platform_data uart4_pdata __initconst = {
@@ -175,11 +164,11 @@ static const struct spi_imx_master moboard_spi1_pdata __initconst = {
 
 static struct regulator_consumer_supply sdhc_consumers[] = {
 	{
-		.dev_name = "mxc-mmc.0",
+		.dev_name = "imx31-mmc.0",
 		.supply	= "sdhc0_vcc",
 	},
 	{
-		.dev_name = "mxc-mmc.1",
+		.dev_name = "imx31-mmc.1",
 		.supply	= "sdhc1_vcc",
 	},
 };
@@ -236,42 +225,43 @@ static struct mc13xxx_led_platform_data moboard_led[] = {
 	{
 		.id = MC13783_LED_R1,
 		.name = "coreboard-led-4:red",
-		.max_current = 2,
 	},
 	{
 		.id = MC13783_LED_G1,
 		.name = "coreboard-led-4:green",
-		.max_current = 2,
 	},
 	{
 		.id = MC13783_LED_B1,
 		.name = "coreboard-led-4:blue",
-		.max_current = 2,
 	},
 	{
 		.id = MC13783_LED_R2,
 		.name = "coreboard-led-5:red",
-		.max_current = 3,
 	},
 	{
 		.id = MC13783_LED_G2,
 		.name = "coreboard-led-5:green",
-		.max_current = 3,
 	},
 	{
 		.id = MC13783_LED_B2,
 		.name = "coreboard-led-5:blue",
-		.max_current = 3,
 	},
 };
 
 static struct mc13xxx_leds_platform_data moboard_leds = {
 	.num_leds = ARRAY_SIZE(moboard_led),
 	.led = moboard_led,
-	.flags = MC13783_LED_SLEWLIMTC,
-	.abmode = MC13783_LED_AB_DISABLED,
-	.tc1_period = MC13783_LED_PERIOD_10MS,
-	.tc2_period = MC13783_LED_PERIOD_10MS,
+	.led_control[0]	= MC13783_LED_C0_ENABLE | MC13783_LED_C0_ABMODE(0),
+	.led_control[1]	= MC13783_LED_C1_SLEWLIM,
+	.led_control[2]	= MC13783_LED_C2_SLEWLIM,
+	.led_control[3]	= MC13783_LED_C3_PERIOD(0) |
+			  MC13783_LED_C3_CURRENT_R1(2) |
+			  MC13783_LED_C3_CURRENT_G1(2) |
+			  MC13783_LED_C3_CURRENT_B1(2),
+	.led_control[4]	= MC13783_LED_C4_PERIOD(0) |
+			  MC13783_LED_C4_CURRENT_R2(3) |
+			  MC13783_LED_C4_CURRENT_G2(3) |
+			  MC13783_LED_C4_CURRENT_B2(3),
 };
 
 static struct mc13xxx_buttons_platform_data moboard_buttons = {
@@ -445,10 +435,8 @@ static int __init moboard_usbh2_init(void)
 		return -ENODEV;
 
 	pdev = imx31_add_mxc_ehci_hs(2, &usbh2_pdata);
-	if (IS_ERR(pdev))
-		return PTR_ERR(pdev);
 
-	return 0;
+	return PTR_ERR_OR_ZERO(pdev);
 }
 
 static const struct gpio_led mx31moboard_leds[] __initconst = {
@@ -521,7 +509,7 @@ static void mx31moboard_poweroff(void)
 
 	mxc_iomux_mode(MX31_PIN_WATCHDOG_RST__WATCHDOG_RST);
 
-	__raw_writew(1 << 6 | 1 << 2, MX31_IO_ADDRESS(MX31_WDOG_BASE_ADDR));
+	imx_writew(1 << 6 | 1 << 2, MX31_IO_ADDRESS(MX31_WDOG_BASE_ADDR));
 }
 
 static int mx31moboard_baseboard;
@@ -542,6 +530,7 @@ static void __init mx31moboard_init(void)
 
 	imx31_add_imx2_wdt();
 
+	moboard_uart0_init();
 	imx31_add_imx_uart0(&uart0_pdata);
 	imx31_add_imx_uart4(&uart4_pdata);
 
@@ -596,10 +585,6 @@ static void __init mx31moboard_timer_init(void)
 	mx31_clocks_init(26000000);
 }
 
-static struct sys_timer mx31moboard_timer = {
-	.init	= mx31moboard_timer_init,
-};
-
 static void __init mx31moboard_reserve(void)
 {
 	/* reserve 4 MiB for mx3-camera */
@@ -614,8 +599,7 @@ MACHINE_START(MX31MOBOARD, "EPFL Mobots mx31moboard")
 	.map_io = mx31_map_io,
 	.init_early = imx31_init_early,
 	.init_irq = mx31_init_irq,
-	.handle_irq = imx31_handle_irq,
-	.timer = &mx31moboard_timer,
+	.init_time	= mx31moboard_timer_init,
 	.init_machine = mx31moboard_init,
 	.restart	= mxc_restart,
 MACHINE_END

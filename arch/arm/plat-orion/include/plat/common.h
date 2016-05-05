@@ -10,25 +10,27 @@
 
 #ifndef __PLAT_COMMON_H
 #include <linux/mv643xx_eth.h>
+#include <linux/platform_data/usb-ehci-orion.h>
 
 struct dsa_platform_data;
+struct mv_sata_platform_data;
 
-void __init orion_uart0_init(unsigned int membase,
+void __init orion_uart0_init(void __iomem *membase,
 			     resource_size_t mapbase,
 			     unsigned int irq,
 			     struct clk *clk);
 
-void __init orion_uart1_init(unsigned int membase,
+void __init orion_uart1_init(void __iomem *membase,
 			     resource_size_t mapbase,
 			     unsigned int irq,
 			     struct clk *clk);
 
-void __init orion_uart2_init(unsigned int membase,
+void __init orion_uart2_init(void __iomem *membase,
 			     resource_size_t mapbase,
 			     unsigned int irq,
 			     struct clk *clk);
 
-void __init orion_uart3_init(unsigned int membase,
+void __init orion_uart3_init(void __iomem *membase,
 			     resource_size_t mapbase,
 			     unsigned int irq,
 			     struct clk *clk);
@@ -39,12 +41,14 @@ void __init orion_rtc_init(unsigned long mapbase,
 void __init orion_ge00_init(struct mv643xx_eth_platform_data *eth_data,
 			    unsigned long mapbase,
 			    unsigned long irq,
-			    unsigned long irq_err);
+			    unsigned long irq_err,
+			    unsigned int tx_csum_limit);
 
 void __init orion_ge01_init(struct mv643xx_eth_platform_data *eth_data,
 			    unsigned long mapbase,
 			    unsigned long irq,
-			    unsigned long irq_err);
+			    unsigned long irq_err,
+			    unsigned int tx_csum_limit);
 
 void __init orion_ge10_init(struct mv643xx_eth_platform_data *eth_data,
 			    unsigned long mapbase,
@@ -70,8 +74,6 @@ void __init orion_i2c_1_init(unsigned long mapbase,
 void __init orion_spi_init(unsigned long mapbase);
 
 void __init orion_spi_1_init(unsigned long mapbase);
-
-void __init orion_wdt_init(void);
 
 void __init orion_xor0_init(unsigned long mapbase_low,
 			    unsigned long mapbase_high,

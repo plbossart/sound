@@ -25,7 +25,7 @@
  * Define the default configuration for dual address memory-memory transfer.
  * The 0x400 value represents auto-request, external->external.
  */
-#define RS_DUAL	(DM_INC | SM_INC | 0x400 | TS_INDEX2VAL(XMIT_SZ_32BIT))
+#define RS_DUAL	(DM_INC | SM_INC | RS_AUTO | TS_INDEX2VAL(XMIT_SZ_32BIT))
 
 static unsigned long dma_find_base(unsigned int chan)
 {
@@ -335,7 +335,7 @@ static int dmae_irq_init(void)
 
 	for (n = 0; n < NR_DMAE; n++) {
 		int i = request_irq(get_dma_error_irq(n), dma_err,
-				    IRQF_SHARED, dmae_name[n], NULL);
+				    IRQF_SHARED, dmae_name[n], (void *)dmae_name[n]);
 		if (unlikely(i < 0)) {
 			printk(KERN_ERR "%s request_irq fail\n", dmae_name[n]);
 			return i;

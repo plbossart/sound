@@ -13,6 +13,8 @@
  *
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/mempool.h>
@@ -20,12 +22,17 @@
 #include <linux/virtio_ids.h>
 #include <linux/virtio_config.h>
 #include <linux/virtio_scsi.h>
+#include <linux/cpu.h>
+#include <linux/blkdev.h>
 #include <scsi/scsi_host.h>
 #include <scsi/scsi_device.h>
 #include <scsi/scsi_cmnd.h>
+#include <scsi/scsi_tcq.h>
+#include <linux/seqlock.h>
 
 #define VIRTIO_SCSI_MEMPOOL_SZ 64
 #define VIRTIO_SCSI_EVENT_LEN 8
+#define VIRTIO_SCSI_VQ_BASE 2
 
 /* Command queue element */
 struct virtio_scsi_cmd {
@@ -33,6 +40,7 @@ struct virtio_scsi_cmd {
 	struct completion *comp;
 	union {
 		struct virtio_scsi_cmd_req       cmd;
+		struct virtio_scsi_cmd_req_pi    cmd_pi;
 		struct virtio_scsi_ctrl_tmf_req  tmf;
 		struct virtio_scsi_ctrl_an_req   an;
 	} req;
@@ -57,27 +65,57 @@ struct virtio_scsi_vq {
 	struct virtqueue *vq;
 };
 
-/* Per-target queue state */
+/*
+ * Per-target queue state.
+ *
+ * This struct holds the data needed by the queue steering policy.  When a
+ * target is sent multiple requests, we need to drive them to the same queue so
+ * that FIFO processing order is kept.  However, if a target was idle, we can
+ * choose a queue arbitrarily.  In this case the queue is chosen according to
+ * the current VCPU, so the driver expects the number of request queues to be
+ * equal to the number of VCPUs.  This makes it easy and fast to select the
+ * queue, and also lets the driver optimize the IRQ affinity for the virtqueues
+ * (each virtqueue's affinity is set to the CPU that "owns" the queue).
+ *
+ * tgt_seq is held to serialize reading and writing req_vq.
+ *
+ * Decrements of reqs are never concurrent with writes of req_vq: before the
+ * decrement reqs will be != 0; after the decrement the virtqueue completion
+ * routine will not use the req_vq so it can be changed by a new request.
+ * Thus they can happen outside the tgt_seq, provided of course we make reqs
+ * an atomic_t.
+ */
 struct virtio_scsi_target_state {
-	/* Protects sg.  Lock hierarchy is tgt_lock -> vq_lock.  */
-	spinlock_t tgt_lock;
+	seqcount_t tgt_seq;
 
-	/* For sglist construction when adding commands to the virtqueue.  */
-	struct scatterlist sg[];
+	/* Count of outstanding requests. */
+	atomic_t reqs;
+
+	/* Currently active virtqueue for requests sent to this target. */
+	struct virtio_scsi_vq *req_vq;
 };
 
 /* Driver instance state */
 struct virtio_scsi {
 	struct virtio_device *vdev;
 
-	struct virtio_scsi_vq ctrl_vq;
-	struct virtio_scsi_vq event_vq;
-	struct virtio_scsi_vq req_vq;
-
 	/* Get some buffers ready for event vq */
 	struct virtio_scsi_event_node event_list[VIRTIO_SCSI_EVENT_LEN];
 
-	struct virtio_scsi_target_state *tgt[];
+	u32 num_queues;
+
+	/* If the affinity hint is set for virtqueues */
+	bool affinity_hint_set;
+
+	/* CPU hotplug notifier */
+	struct notifier_block nb;
+
+	/* Protected by event_vq lock */
+	bool stop_events;
+
+	struct virtio_scsi_vq ctrl_vq;
+	struct virtio_scsi_vq event_vq;
+	struct virtio_scsi_vq req_vqs[];
 };
 
 static struct kmem_cache *virtscsi_cmd_cache;
@@ -107,18 +145,20 @@ static void virtscsi_compute_resid(struct scsi_cmnd *sc, u32 resid)
  *
  * Called with vq_lock held.
  */
-static void virtscsi_complete_cmd(void *buf)
+static void virtscsi_complete_cmd(struct virtio_scsi *vscsi, void *buf)
 {
 	struct virtio_scsi_cmd *cmd = buf;
 	struct scsi_cmnd *sc = cmd->sc;
 	struct virtio_scsi_cmd_resp *resp = &cmd->resp.cmd;
+	struct virtio_scsi_target_state *tgt =
+				scsi_target(sc->device)->hostdata;
 
 	dev_dbg(&sc->device->sdev_gendev,
 		"cmd %p response %u status %#02x sense_len %u\n",
 		sc, resp->response, resp->status, resp->sense_len);
 
 	sc->result = resp->status;
-	virtscsi_compute_resid(sc, resp->resid);
+	virtscsi_compute_resid(sc, virtio32_to_cpu(vscsi->vdev, resp->resid));
 	switch (resp->response) {
 	case VIRTIO_SCSI_S_OK:
 		set_host_byte(sc, DID_OK);
@@ -156,80 +196,101 @@ static void virtscsi_complete_cmd(void *buf)
 		break;
 	}
 
-	WARN_ON(resp->sense_len > VIRTIO_SCSI_SENSE_SIZE);
+	WARN_ON(virtio32_to_cpu(vscsi->vdev, resp->sense_len) >
+		VIRTIO_SCSI_SENSE_SIZE);
 	if (sc->sense_buffer) {
 		memcpy(sc->sense_buffer, resp->sense,
-		       min_t(u32, resp->sense_len, VIRTIO_SCSI_SENSE_SIZE));
+		       min_t(u32,
+			     virtio32_to_cpu(vscsi->vdev, resp->sense_len),
+			     VIRTIO_SCSI_SENSE_SIZE));
 		if (resp->sense_len)
 			set_driver_byte(sc, DRIVER_SENSE);
 	}
 
-	mempool_free(cmd, virtscsi_cmd_pool);
 	sc->scsi_done(sc);
+
+	atomic_dec(&tgt->reqs);
 }
 
-static void virtscsi_vq_done(struct virtqueue *vq, void (*fn)(void *buf))
+static void virtscsi_vq_done(struct virtio_scsi *vscsi,
+			     struct virtio_scsi_vq *virtscsi_vq,
+			     void (*fn)(struct virtio_scsi *vscsi, void *buf))
 {
 	void *buf;
 	unsigned int len;
+	unsigned long flags;
+	struct virtqueue *vq = virtscsi_vq->vq;
 
+	spin_lock_irqsave(&virtscsi_vq->vq_lock, flags);
 	do {
 		virtqueue_disable_cb(vq);
 		while ((buf = virtqueue_get_buf(vq, &len)) != NULL)
-			fn(buf);
+			fn(vscsi, buf);
+
+		if (unlikely(virtqueue_is_broken(vq)))
+			break;
 	} while (!virtqueue_enable_cb(vq));
+	spin_unlock_irqrestore(&virtscsi_vq->vq_lock, flags);
 }
 
 static void virtscsi_req_done(struct virtqueue *vq)
 {
 	struct Scsi_Host *sh = virtio_scsi_host(vq->vdev);
 	struct virtio_scsi *vscsi = shost_priv(sh);
-	unsigned long flags;
+	int index = vq->index - VIRTIO_SCSI_VQ_BASE;
+	struct virtio_scsi_vq *req_vq = &vscsi->req_vqs[index];
 
-	spin_lock_irqsave(&vscsi->req_vq.vq_lock, flags);
-	virtscsi_vq_done(vq, virtscsi_complete_cmd);
-	spin_unlock_irqrestore(&vscsi->req_vq.vq_lock, flags);
+	virtscsi_vq_done(vscsi, req_vq, virtscsi_complete_cmd);
 };
 
-static void virtscsi_complete_free(void *buf)
+static void virtscsi_poll_requests(struct virtio_scsi *vscsi)
+{
+	int i, num_vqs;
+
+	num_vqs = vscsi->num_queues;
+	for (i = 0; i < num_vqs; i++)
+		virtscsi_vq_done(vscsi, &vscsi->req_vqs[i],
+				 virtscsi_complete_cmd);
+}
+
+static void virtscsi_complete_free(struct virtio_scsi *vscsi, void *buf)
 {
 	struct virtio_scsi_cmd *cmd = buf;
 
 	if (cmd->comp)
 		complete_all(cmd->comp);
-	else
-		mempool_free(cmd, virtscsi_cmd_pool);
 }
 
 static void virtscsi_ctrl_done(struct virtqueue *vq)
 {
 	struct Scsi_Host *sh = virtio_scsi_host(vq->vdev);
 	struct virtio_scsi *vscsi = shost_priv(sh);
-	unsigned long flags;
 
-	spin_lock_irqsave(&vscsi->ctrl_vq.vq_lock, flags);
-	virtscsi_vq_done(vq, virtscsi_complete_free);
-	spin_unlock_irqrestore(&vscsi->ctrl_vq.vq_lock, flags);
+	virtscsi_vq_done(vscsi, &vscsi->ctrl_vq, virtscsi_complete_free);
 };
+
+static void virtscsi_handle_event(struct work_struct *work);
 
 static int virtscsi_kick_event(struct virtio_scsi *vscsi,
 			       struct virtio_scsi_event_node *event_node)
 {
-	int ret;
+	int err;
 	struct scatterlist sg;
 	unsigned long flags;
 
-	sg_set_buf(&sg, &event_node->event, sizeof(struct virtio_scsi_event));
+	INIT_WORK(&event_node->work, virtscsi_handle_event);
+	sg_init_one(&sg, &event_node->event, sizeof(struct virtio_scsi_event));
 
 	spin_lock_irqsave(&vscsi->event_vq.vq_lock, flags);
 
-	ret = virtqueue_add_buf(vscsi->event_vq.vq, &sg, 0, 1, event_node, GFP_ATOMIC);
-	if (ret >= 0)
+	err = virtqueue_add_inbuf(vscsi->event_vq.vq, &sg, 1, event_node,
+				  GFP_ATOMIC);
+	if (!err)
 		virtqueue_kick(vscsi->event_vq.vq);
 
 	spin_unlock_irqrestore(&vscsi->event_vq.vq_lock, flags);
 
-	return ret;
+	return err;
 }
 
 static int virtscsi_kick_event_all(struct virtio_scsi *vscsi)
@@ -248,19 +309,24 @@ static void virtscsi_cancel_event_work(struct virtio_scsi *vscsi)
 {
 	int i;
 
+	/* Stop scheduling work before calling cancel_work_sync.  */
+	spin_lock_irq(&vscsi->event_vq.vq_lock);
+	vscsi->stop_events = true;
+	spin_unlock_irq(&vscsi->event_vq.vq_lock);
+
 	for (i = 0; i < VIRTIO_SCSI_EVENT_LEN; i++)
 		cancel_work_sync(&vscsi->event_list[i].work);
 }
 
 static void virtscsi_handle_transport_reset(struct virtio_scsi *vscsi,
-						struct virtio_scsi_event *event)
+					    struct virtio_scsi_event *event)
 {
 	struct scsi_device *sdev;
 	struct Scsi_Host *shost = virtio_scsi_host(vscsi->vdev);
 	unsigned int target = event->lun[1];
 	unsigned int lun = (event->lun[2] << 8) | event->lun[3];
 
-	switch (event->reason) {
+	switch (virtio32_to_cpu(vscsi->vdev, event->reason)) {
 	case VIRTIO_SCSI_EVT_RESET_RESCAN:
 		scsi_add_device(shost, 0, target, lun);
 		break;
@@ -279,6 +345,31 @@ static void virtscsi_handle_transport_reset(struct virtio_scsi *vscsi,
 	}
 }
 
+static void virtscsi_handle_param_change(struct virtio_scsi *vscsi,
+					 struct virtio_scsi_event *event)
+{
+	struct scsi_device *sdev;
+	struct Scsi_Host *shost = virtio_scsi_host(vscsi->vdev);
+	unsigned int target = event->lun[1];
+	unsigned int lun = (event->lun[2] << 8) | event->lun[3];
+	u8 asc = virtio32_to_cpu(vscsi->vdev, event->reason) & 255;
+	u8 ascq = virtio32_to_cpu(vscsi->vdev, event->reason) >> 8;
+
+	sdev = scsi_device_lookup(shost, 0, target, lun);
+	if (!sdev) {
+		pr_err("SCSI device %d 0 %d %d not found\n",
+			shost->host_no, target, lun);
+		return;
+	}
+
+	/* Handle "Parameters changed", "Mode parameters changed", and
+	   "Capacity data has changed".  */
+	if (asc == 0x2a && (ascq == 0x00 || ascq == 0x01 || ascq == 0x09))
+		scsi_rescan_device(&sdev->sdev_gendev);
+
+	scsi_device_put(sdev);
+}
+
 static void virtscsi_handle_event(struct work_struct *work)
 {
 	struct virtio_scsi_event_node *event_node =
@@ -286,16 +377,21 @@ static void virtscsi_handle_event(struct work_struct *work)
 	struct virtio_scsi *vscsi = event_node->vscsi;
 	struct virtio_scsi_event *event = &event_node->event;
 
-	if (event->event & VIRTIO_SCSI_T_EVENTS_MISSED) {
-		event->event &= ~VIRTIO_SCSI_T_EVENTS_MISSED;
+	if (event->event &
+	    cpu_to_virtio32(vscsi->vdev, VIRTIO_SCSI_T_EVENTS_MISSED)) {
+		event->event &= ~cpu_to_virtio32(vscsi->vdev,
+						   VIRTIO_SCSI_T_EVENTS_MISSED);
 		scsi_scan_host(virtio_scsi_host(vscsi->vdev));
 	}
 
-	switch (event->event) {
+	switch (virtio32_to_cpu(vscsi->vdev, event->event)) {
 	case VIRTIO_SCSI_T_NO_EVENT:
 		break;
 	case VIRTIO_SCSI_T_TRANSPORT_RESET:
 		virtscsi_handle_transport_reset(vscsi, event);
+		break;
+	case VIRTIO_SCSI_T_PARAM_CHANGE:
+		virtscsi_handle_param_change(vscsi, event);
 		break;
 	default:
 		pr_err("Unsupport virtio scsi event %x\n", event->event);
@@ -303,111 +399,142 @@ static void virtscsi_handle_event(struct work_struct *work)
 	virtscsi_kick_event(vscsi, event_node);
 }
 
-static void virtscsi_complete_event(void *buf)
+static void virtscsi_complete_event(struct virtio_scsi *vscsi, void *buf)
 {
 	struct virtio_scsi_event_node *event_node = buf;
 
-	INIT_WORK(&event_node->work, virtscsi_handle_event);
-	schedule_work(&event_node->work);
+	if (!vscsi->stop_events)
+		queue_work(system_freezable_wq, &event_node->work);
 }
 
 static void virtscsi_event_done(struct virtqueue *vq)
 {
 	struct Scsi_Host *sh = virtio_scsi_host(vq->vdev);
 	struct virtio_scsi *vscsi = shost_priv(sh);
-	unsigned long flags;
 
-	spin_lock_irqsave(&vscsi->event_vq.vq_lock, flags);
-	virtscsi_vq_done(vq, virtscsi_complete_event);
-	spin_unlock_irqrestore(&vscsi->event_vq.vq_lock, flags);
+	virtscsi_vq_done(vscsi, &vscsi->event_vq, virtscsi_complete_event);
 };
 
-static void virtscsi_map_sgl(struct scatterlist *sg, unsigned int *p_idx,
-			     struct scsi_data_buffer *sdb)
-{
-	struct sg_table *table = &sdb->table;
-	struct scatterlist *sg_elem;
-	unsigned int idx = *p_idx;
-	int i;
-
-	for_each_sg(table->sgl, sg_elem, table->nents, i)
-		sg_set_buf(&sg[idx++], sg_virt(sg_elem), sg_elem->length);
-
-	*p_idx = idx;
-}
-
 /**
- * virtscsi_map_cmd - map a scsi_cmd to a virtqueue scatterlist
- * @vscsi	: virtio_scsi state
+ * virtscsi_add_cmd - add a virtio_scsi_cmd to a virtqueue
+ * @vq		: the struct virtqueue we're talking about
  * @cmd		: command structure
- * @out_num	: number of read-only elements
- * @in_num	: number of write-only elements
  * @req_size	: size of the request buffer
  * @resp_size	: size of the response buffer
- *
- * Called with tgt_lock held.
  */
-static void virtscsi_map_cmd(struct virtio_scsi_target_state *tgt,
-			     struct virtio_scsi_cmd *cmd,
-			     unsigned *out_num, unsigned *in_num,
-			     size_t req_size, size_t resp_size)
+static int virtscsi_add_cmd(struct virtqueue *vq,
+			    struct virtio_scsi_cmd *cmd,
+			    size_t req_size, size_t resp_size)
 {
 	struct scsi_cmnd *sc = cmd->sc;
-	struct scatterlist *sg = tgt->sg;
-	unsigned int idx = 0;
+	struct scatterlist *sgs[6], req, resp;
+	struct sg_table *out, *in;
+	unsigned out_num = 0, in_num = 0;
+
+	out = in = NULL;
+
+	if (sc && sc->sc_data_direction != DMA_NONE) {
+		if (sc->sc_data_direction != DMA_FROM_DEVICE)
+			out = &scsi_out(sc)->table;
+		if (sc->sc_data_direction != DMA_TO_DEVICE)
+			in = &scsi_in(sc)->table;
+	}
 
 	/* Request header.  */
-	sg_set_buf(&sg[idx++], &cmd->req, req_size);
+	sg_init_one(&req, &cmd->req, req_size);
+	sgs[out_num++] = &req;
 
 	/* Data-out buffer.  */
-	if (sc && sc->sc_data_direction != DMA_FROM_DEVICE)
-		virtscsi_map_sgl(sg, &idx, scsi_out(sc));
-
-	*out_num = idx;
+	if (out) {
+		/* Place WRITE protection SGLs before Data OUT payload */
+		if (scsi_prot_sg_count(sc))
+			sgs[out_num++] = scsi_prot_sglist(sc);
+		sgs[out_num++] = out->sgl;
+	}
 
 	/* Response header.  */
-	sg_set_buf(&sg[idx++], &cmd->resp, resp_size);
+	sg_init_one(&resp, &cmd->resp, resp_size);
+	sgs[out_num + in_num++] = &resp;
 
 	/* Data-in buffer */
-	if (sc && sc->sc_data_direction != DMA_TO_DEVICE)
-		virtscsi_map_sgl(sg, &idx, scsi_in(sc));
+	if (in) {
+		/* Place READ protection SGLs before Data IN payload */
+		if (scsi_prot_sg_count(sc))
+			sgs[out_num + in_num++] = scsi_prot_sglist(sc);
+		sgs[out_num + in_num++] = in->sgl;
+	}
 
-	*in_num = idx - *out_num;
+	return virtqueue_add_sgs(vq, sgs, out_num, in_num, cmd, GFP_ATOMIC);
 }
 
-static int virtscsi_kick_cmd(struct virtio_scsi_target_state *tgt,
-			     struct virtio_scsi_vq *vq,
+static int virtscsi_kick_cmd(struct virtio_scsi_vq *vq,
 			     struct virtio_scsi_cmd *cmd,
-			     size_t req_size, size_t resp_size, gfp_t gfp)
+			     size_t req_size, size_t resp_size)
 {
-	unsigned int out_num, in_num;
 	unsigned long flags;
-	int ret;
+	int err;
+	bool needs_kick = false;
 
-	spin_lock_irqsave(&tgt->tgt_lock, flags);
-	virtscsi_map_cmd(tgt, cmd, &out_num, &in_num, req_size, resp_size);
-
-	spin_lock(&vq->vq_lock);
-	ret = virtqueue_add_buf(vq->vq, tgt->sg, out_num, in_num, cmd, gfp);
-	spin_unlock(&tgt->tgt_lock);
-	if (ret >= 0)
-		ret = virtqueue_kick_prepare(vq->vq);
+	spin_lock_irqsave(&vq->vq_lock, flags);
+	err = virtscsi_add_cmd(vq->vq, cmd, req_size, resp_size);
+	if (!err)
+		needs_kick = virtqueue_kick_prepare(vq->vq);
 
 	spin_unlock_irqrestore(&vq->vq_lock, flags);
 
-	if (ret > 0)
+	if (needs_kick)
 		virtqueue_notify(vq->vq);
-	return ret;
+	return err;
 }
 
-static int virtscsi_queuecommand(struct Scsi_Host *sh, struct scsi_cmnd *sc)
+static void virtio_scsi_init_hdr(struct virtio_device *vdev,
+				 struct virtio_scsi_cmd_req *cmd,
+				 struct scsi_cmnd *sc)
 {
-	struct virtio_scsi *vscsi = shost_priv(sh);
-	struct virtio_scsi_target_state *tgt = vscsi->tgt[sc->device->id];
-	struct virtio_scsi_cmd *cmd;
-	int ret;
+	cmd->lun[0] = 1;
+	cmd->lun[1] = sc->device->id;
+	cmd->lun[2] = (sc->device->lun >> 8) | 0x40;
+	cmd->lun[3] = sc->device->lun & 0xff;
+	cmd->tag = cpu_to_virtio64(vdev, (unsigned long)sc);
+	cmd->task_attr = VIRTIO_SCSI_S_SIMPLE;
+	cmd->prio = 0;
+	cmd->crn = 0;
+}
 
+#ifdef CONFIG_BLK_DEV_INTEGRITY
+static void virtio_scsi_init_hdr_pi(struct virtio_device *vdev,
+				    struct virtio_scsi_cmd_req_pi *cmd_pi,
+				    struct scsi_cmnd *sc)
+{
+	struct request *rq = sc->request;
+	struct blk_integrity *bi;
+
+	virtio_scsi_init_hdr(vdev, (struct virtio_scsi_cmd_req *)cmd_pi, sc);
+
+	if (!rq || !scsi_prot_sg_count(sc))
+		return;
+
+	bi = blk_get_integrity(rq->rq_disk);
+
+	if (sc->sc_data_direction == DMA_TO_DEVICE)
+		cmd_pi->pi_bytesout = cpu_to_virtio32(vdev,
+							blk_rq_sectors(rq) *
+							bi->tuple_size);
+	else if (sc->sc_data_direction == DMA_FROM_DEVICE)
+		cmd_pi->pi_bytesin = cpu_to_virtio32(vdev,
+						       blk_rq_sectors(rq) *
+						       bi->tuple_size);
+}
+#endif
+
+static int virtscsi_queuecommand(struct virtio_scsi *vscsi,
+				 struct virtio_scsi_vq *req_vq,
+				 struct scsi_cmnd *sc)
+{
 	struct Scsi_Host *shost = virtio_scsi_host(vscsi->vdev);
+	struct virtio_scsi_cmd *cmd = scsi_cmd_priv(sc);
+	int req_size;
+
 	BUG_ON(scsi_sg_count(sc) > shost->sg_tablesize);
 
 	/* TODO: check feature bit and fail if unsupported?  */
@@ -416,52 +543,128 @@ static int virtscsi_queuecommand(struct Scsi_Host *sh, struct scsi_cmnd *sc)
 	dev_dbg(&sc->device->sdev_gendev,
 		"cmd %p CDB: %#02x\n", sc, sc->cmnd[0]);
 
-	ret = SCSI_MLQUEUE_HOST_BUSY;
-	cmd = mempool_alloc(virtscsi_cmd_pool, GFP_ATOMIC);
-	if (!cmd)
-		goto out;
-
 	memset(cmd, 0, sizeof(*cmd));
 	cmd->sc = sc;
-	cmd->req.cmd = (struct virtio_scsi_cmd_req){
-		.lun[0] = 1,
-		.lun[1] = sc->device->id,
-		.lun[2] = (sc->device->lun >> 8) | 0x40,
-		.lun[3] = sc->device->lun & 0xff,
-		.tag = (unsigned long)sc,
-		.task_attr = VIRTIO_SCSI_S_SIMPLE,
-		.prio = 0,
-		.crn = 0,
-	};
 
 	BUG_ON(sc->cmd_len > VIRTIO_SCSI_CDB_SIZE);
-	memcpy(cmd->req.cmd.cdb, sc->cmnd, sc->cmd_len);
 
-	if (virtscsi_kick_cmd(tgt, &vscsi->req_vq, cmd,
-			      sizeof cmd->req.cmd, sizeof cmd->resp.cmd,
-			      GFP_ATOMIC) >= 0)
-		ret = 0;
+#ifdef CONFIG_BLK_DEV_INTEGRITY
+	if (virtio_has_feature(vscsi->vdev, VIRTIO_SCSI_F_T10_PI)) {
+		virtio_scsi_init_hdr_pi(vscsi->vdev, &cmd->req.cmd_pi, sc);
+		memcpy(cmd->req.cmd_pi.cdb, sc->cmnd, sc->cmd_len);
+		req_size = sizeof(cmd->req.cmd_pi);
+	} else
+#endif
+	{
+		virtio_scsi_init_hdr(vscsi->vdev, &cmd->req.cmd, sc);
+		memcpy(cmd->req.cmd.cdb, sc->cmnd, sc->cmd_len);
+		req_size = sizeof(cmd->req.cmd);
+	}
 
-out:
-	return ret;
+	if (virtscsi_kick_cmd(req_vq, cmd, req_size, sizeof(cmd->resp.cmd)) != 0)
+		return SCSI_MLQUEUE_HOST_BUSY;
+	return 0;
+}
+
+static int virtscsi_queuecommand_single(struct Scsi_Host *sh,
+					struct scsi_cmnd *sc)
+{
+	struct virtio_scsi *vscsi = shost_priv(sh);
+	struct virtio_scsi_target_state *tgt =
+				scsi_target(sc->device)->hostdata;
+
+	atomic_inc(&tgt->reqs);
+	return virtscsi_queuecommand(vscsi, &vscsi->req_vqs[0], sc);
+}
+
+static struct virtio_scsi_vq *virtscsi_pick_vq_mq(struct virtio_scsi *vscsi,
+						  struct scsi_cmnd *sc)
+{
+	u32 tag = blk_mq_unique_tag(sc->request);
+	u16 hwq = blk_mq_unique_tag_to_hwq(tag);
+
+	return &vscsi->req_vqs[hwq];
+}
+
+static struct virtio_scsi_vq *virtscsi_pick_vq(struct virtio_scsi *vscsi,
+					       struct virtio_scsi_target_state *tgt)
+{
+	struct virtio_scsi_vq *vq;
+	unsigned long flags;
+	u32 queue_num;
+
+	local_irq_save(flags);
+	if (atomic_inc_return(&tgt->reqs) > 1) {
+		unsigned long seq;
+
+		do {
+			seq = read_seqcount_begin(&tgt->tgt_seq);
+			vq = tgt->req_vq;
+		} while (read_seqcount_retry(&tgt->tgt_seq, seq));
+	} else {
+		/* no writes can be concurrent because of atomic_t */
+		write_seqcount_begin(&tgt->tgt_seq);
+
+		/* keep previous req_vq if a reader just arrived */
+		if (unlikely(atomic_read(&tgt->reqs) > 1)) {
+			vq = tgt->req_vq;
+			goto unlock;
+		}
+
+		queue_num = smp_processor_id();
+		while (unlikely(queue_num >= vscsi->num_queues))
+			queue_num -= vscsi->num_queues;
+		tgt->req_vq = vq = &vscsi->req_vqs[queue_num];
+ unlock:
+		write_seqcount_end(&tgt->tgt_seq);
+	}
+	local_irq_restore(flags);
+
+	return vq;
+}
+
+static int virtscsi_queuecommand_multi(struct Scsi_Host *sh,
+				       struct scsi_cmnd *sc)
+{
+	struct virtio_scsi *vscsi = shost_priv(sh);
+	struct virtio_scsi_target_state *tgt =
+				scsi_target(sc->device)->hostdata;
+	struct virtio_scsi_vq *req_vq;
+
+	if (shost_use_blk_mq(sh))
+		req_vq = virtscsi_pick_vq_mq(vscsi, sc);
+	else
+		req_vq = virtscsi_pick_vq(vscsi, tgt);
+
+	return virtscsi_queuecommand(vscsi, req_vq, sc);
 }
 
 static int virtscsi_tmf(struct virtio_scsi *vscsi, struct virtio_scsi_cmd *cmd)
 {
 	DECLARE_COMPLETION_ONSTACK(comp);
-	struct virtio_scsi_target_state *tgt = vscsi->tgt[cmd->sc->device->id];
 	int ret = FAILED;
 
 	cmd->comp = &comp;
-	if (virtscsi_kick_cmd(tgt, &vscsi->ctrl_vq, cmd,
-			      sizeof cmd->req.tmf, sizeof cmd->resp.tmf,
-			      GFP_NOIO) < 0)
+	if (virtscsi_kick_cmd(&vscsi->ctrl_vq, cmd,
+			      sizeof cmd->req.tmf, sizeof cmd->resp.tmf) < 0)
 		goto out;
 
 	wait_for_completion(&comp);
 	if (cmd->resp.tmf.response == VIRTIO_SCSI_S_OK ||
 	    cmd->resp.tmf.response == VIRTIO_SCSI_S_FUNCTION_SUCCEEDED)
 		ret = SUCCESS;
+
+	/*
+	 * The spec guarantees that all requests related to the TMF have
+	 * been completed, but the callback might not have run yet if
+	 * we're using independent interrupts (e.g. MSI).  Poll the
+	 * virtqueues once.
+	 *
+	 * In the abort case, sc->scsi_done will do nothing, because
+	 * the block layer must have detected a timeout and as a result
+	 * REQ_ATOM_COMPLETE has been set.
+	 */
+	virtscsi_poll_requests(vscsi);
 
 out:
 	mempool_free(cmd, virtscsi_cmd_pool);
@@ -482,13 +685,27 @@ static int virtscsi_device_reset(struct scsi_cmnd *sc)
 	cmd->sc = sc;
 	cmd->req.tmf = (struct virtio_scsi_ctrl_tmf_req){
 		.type = VIRTIO_SCSI_T_TMF,
-		.subtype = VIRTIO_SCSI_T_TMF_LOGICAL_UNIT_RESET,
+		.subtype = cpu_to_virtio32(vscsi->vdev,
+					     VIRTIO_SCSI_T_TMF_LOGICAL_UNIT_RESET),
 		.lun[0] = 1,
 		.lun[1] = sc->device->id,
 		.lun[2] = (sc->device->lun >> 8) | 0x40,
 		.lun[3] = sc->device->lun & 0xff,
 	};
 	return virtscsi_tmf(vscsi, cmd);
+}
+
+/**
+ * virtscsi_change_queue_depth() - Change a virtscsi target's queue depth
+ * @sdev:	Virtscsi target whose queue depth to change
+ * @qdepth:	New queue depth
+ */
+static int virtscsi_change_queue_depth(struct scsi_device *sdev, int qdepth)
+{
+	struct Scsi_Host *shost = sdev->host;
+	int max_depth = shost->cmd_per_lun;
+
+	return scsi_change_queue_depth(sdev, min(max_depth, qdepth));
 }
 
 static int virtscsi_abort(struct scsi_cmnd *sc)
@@ -510,41 +727,147 @@ static int virtscsi_abort(struct scsi_cmnd *sc)
 		.lun[1] = sc->device->id,
 		.lun[2] = (sc->device->lun >> 8) | 0x40,
 		.lun[3] = sc->device->lun & 0xff,
-		.tag = (unsigned long)sc,
+		.tag = cpu_to_virtio64(vscsi->vdev, (unsigned long)sc),
 	};
 	return virtscsi_tmf(vscsi, cmd);
 }
 
-static struct scsi_host_template virtscsi_host_template = {
+static int virtscsi_target_alloc(struct scsi_target *starget)
+{
+	struct Scsi_Host *sh = dev_to_shost(starget->dev.parent);
+	struct virtio_scsi *vscsi = shost_priv(sh);
+
+	struct virtio_scsi_target_state *tgt =
+				kmalloc(sizeof(*tgt), GFP_KERNEL);
+	if (!tgt)
+		return -ENOMEM;
+
+	seqcount_init(&tgt->tgt_seq);
+	atomic_set(&tgt->reqs, 0);
+	tgt->req_vq = &vscsi->req_vqs[0];
+
+	starget->hostdata = tgt;
+	return 0;
+}
+
+static void virtscsi_target_destroy(struct scsi_target *starget)
+{
+	struct virtio_scsi_target_state *tgt = starget->hostdata;
+	kfree(tgt);
+}
+
+static struct scsi_host_template virtscsi_host_template_single = {
 	.module = THIS_MODULE,
 	.name = "Virtio SCSI HBA",
 	.proc_name = "virtio_scsi",
-	.queuecommand = virtscsi_queuecommand,
 	.this_id = -1,
+	.cmd_size = sizeof(struct virtio_scsi_cmd),
+	.queuecommand = virtscsi_queuecommand_single,
+	.change_queue_depth = virtscsi_change_queue_depth,
 	.eh_abort_handler = virtscsi_abort,
 	.eh_device_reset_handler = virtscsi_device_reset,
 
 	.can_queue = 1024,
 	.dma_boundary = UINT_MAX,
 	.use_clustering = ENABLE_CLUSTERING,
+	.target_alloc = virtscsi_target_alloc,
+	.target_destroy = virtscsi_target_destroy,
+	.track_queue_depth = 1,
+};
+
+static struct scsi_host_template virtscsi_host_template_multi = {
+	.module = THIS_MODULE,
+	.name = "Virtio SCSI HBA",
+	.proc_name = "virtio_scsi",
+	.this_id = -1,
+	.cmd_size = sizeof(struct virtio_scsi_cmd),
+	.queuecommand = virtscsi_queuecommand_multi,
+	.change_queue_depth = virtscsi_change_queue_depth,
+	.eh_abort_handler = virtscsi_abort,
+	.eh_device_reset_handler = virtscsi_device_reset,
+
+	.can_queue = 1024,
+	.dma_boundary = UINT_MAX,
+	.use_clustering = ENABLE_CLUSTERING,
+	.target_alloc = virtscsi_target_alloc,
+	.target_destroy = virtscsi_target_destroy,
+	.track_queue_depth = 1,
 };
 
 #define virtscsi_config_get(vdev, fld) \
 	({ \
 		typeof(((struct virtio_scsi_config *)0)->fld) __val; \
-		vdev->config->get(vdev, \
-				  offsetof(struct virtio_scsi_config, fld), \
-				  &__val, sizeof(__val)); \
+		virtio_cread(vdev, struct virtio_scsi_config, fld, &__val); \
 		__val; \
 	})
 
 #define virtscsi_config_set(vdev, fld, val) \
-	(void)({ \
+	do { \
 		typeof(((struct virtio_scsi_config *)0)->fld) __val = (val); \
-		vdev->config->set(vdev, \
-				  offsetof(struct virtio_scsi_config, fld), \
-				  &__val, sizeof(__val)); \
-	})
+		virtio_cwrite(vdev, struct virtio_scsi_config, fld, &__val); \
+	} while(0)
+
+static void __virtscsi_set_affinity(struct virtio_scsi *vscsi, bool affinity)
+{
+	int i;
+	int cpu;
+
+	/* In multiqueue mode, when the number of cpu is equal
+	 * to the number of request queues, we let the qeueues
+	 * to be private to one cpu by setting the affinity hint
+	 * to eliminate the contention.
+	 */
+	if ((vscsi->num_queues == 1 ||
+	     vscsi->num_queues != num_online_cpus()) && affinity) {
+		if (vscsi->affinity_hint_set)
+			affinity = false;
+		else
+			return;
+	}
+
+	if (affinity) {
+		i = 0;
+		for_each_online_cpu(cpu) {
+			virtqueue_set_affinity(vscsi->req_vqs[i].vq, cpu);
+			i++;
+		}
+
+		vscsi->affinity_hint_set = true;
+	} else {
+		for (i = 0; i < vscsi->num_queues; i++) {
+			if (!vscsi->req_vqs[i].vq)
+				continue;
+
+			virtqueue_set_affinity(vscsi->req_vqs[i].vq, -1);
+		}
+
+		vscsi->affinity_hint_set = false;
+	}
+}
+
+static void virtscsi_set_affinity(struct virtio_scsi *vscsi, bool affinity)
+{
+	get_online_cpus();
+	__virtscsi_set_affinity(vscsi, affinity);
+	put_online_cpus();
+}
+
+static int virtscsi_cpu_callback(struct notifier_block *nfb,
+				 unsigned long action, void *hcpu)
+{
+	struct virtio_scsi *vscsi = container_of(nfb, struct virtio_scsi, nb);
+	switch(action) {
+	case CPU_ONLINE:
+	case CPU_ONLINE_FROZEN:
+	case CPU_DEAD:
+	case CPU_DEAD_FROZEN:
+		__virtscsi_set_affinity(vscsi, true);
+		break;
+	default:
+		break;
+	}
+	return NOTIFY_OK;
+}
 
 static void virtscsi_init_vq(struct virtio_scsi_vq *virtscsi_vq,
 			     struct virtqueue *vq)
@@ -553,114 +876,103 @@ static void virtscsi_init_vq(struct virtio_scsi_vq *virtscsi_vq,
 	virtscsi_vq->vq = vq;
 }
 
-static struct virtio_scsi_target_state *virtscsi_alloc_tgt(
-	struct virtio_device *vdev, int sg_elems)
-{
-	struct virtio_scsi_target_state *tgt;
-	gfp_t gfp_mask = GFP_KERNEL;
-
-	/* We need extra sg elements at head and tail.  */
-	tgt = kmalloc(sizeof(*tgt) + sizeof(tgt->sg[0]) * (sg_elems + 2),
-		      gfp_mask);
-
-	if (!tgt)
-		return NULL;
-
-	spin_lock_init(&tgt->tgt_lock);
-	sg_init_table(tgt->sg, sg_elems + 2);
-	return tgt;
-}
-
-static void virtscsi_scan(struct virtio_device *vdev)
-{
-	struct Scsi_Host *shost = (struct Scsi_Host *)vdev->priv;
-
-	scsi_scan_host(shost);
-}
-
 static void virtscsi_remove_vqs(struct virtio_device *vdev)
 {
 	struct Scsi_Host *sh = virtio_scsi_host(vdev);
 	struct virtio_scsi *vscsi = shost_priv(sh);
-	u32 i, num_targets;
+
+	virtscsi_set_affinity(vscsi, false);
 
 	/* Stop all the virtqueues. */
 	vdev->config->reset(vdev);
-
-	num_targets = sh->max_id;
-	for (i = 0; i < num_targets; i++) {
-		kfree(vscsi->tgt[i]);
-		vscsi->tgt[i] = NULL;
-	}
 
 	vdev->config->del_vqs(vdev);
 }
 
 static int virtscsi_init(struct virtio_device *vdev,
-			 struct virtio_scsi *vscsi, int num_targets)
+			 struct virtio_scsi *vscsi)
 {
 	int err;
-	struct virtqueue *vqs[3];
-	u32 i, sg_elems;
+	u32 i;
+	u32 num_vqs;
+	vq_callback_t **callbacks;
+	const char **names;
+	struct virtqueue **vqs;
 
-	vq_callback_t *callbacks[] = {
-		virtscsi_ctrl_done,
-		virtscsi_event_done,
-		virtscsi_req_done
-	};
-	const char *names[] = {
-		"control",
-		"event",
-		"request"
-	};
+	num_vqs = vscsi->num_queues + VIRTIO_SCSI_VQ_BASE;
+	vqs = kmalloc(num_vqs * sizeof(struct virtqueue *), GFP_KERNEL);
+	callbacks = kmalloc(num_vqs * sizeof(vq_callback_t *), GFP_KERNEL);
+	names = kmalloc(num_vqs * sizeof(char *), GFP_KERNEL);
+
+	if (!callbacks || !vqs || !names) {
+		err = -ENOMEM;
+		goto out;
+	}
+
+	callbacks[0] = virtscsi_ctrl_done;
+	callbacks[1] = virtscsi_event_done;
+	names[0] = "control";
+	names[1] = "event";
+	for (i = VIRTIO_SCSI_VQ_BASE; i < num_vqs; i++) {
+		callbacks[i] = virtscsi_req_done;
+		names[i] = "request";
+	}
 
 	/* Discover virtqueues and write information to configuration.  */
-	err = vdev->config->find_vqs(vdev, 3, vqs, callbacks, names);
+	err = vdev->config->find_vqs(vdev, num_vqs, vqs, callbacks, names);
 	if (err)
-		return err;
+		goto out;
 
 	virtscsi_init_vq(&vscsi->ctrl_vq, vqs[0]);
 	virtscsi_init_vq(&vscsi->event_vq, vqs[1]);
-	virtscsi_init_vq(&vscsi->req_vq, vqs[2]);
+	for (i = VIRTIO_SCSI_VQ_BASE; i < num_vqs; i++)
+		virtscsi_init_vq(&vscsi->req_vqs[i - VIRTIO_SCSI_VQ_BASE],
+				 vqs[i]);
+
+	virtscsi_set_affinity(vscsi, true);
 
 	virtscsi_config_set(vdev, cdb_size, VIRTIO_SCSI_CDB_SIZE);
 	virtscsi_config_set(vdev, sense_size, VIRTIO_SCSI_SENSE_SIZE);
 
-	if (virtio_has_feature(vdev, VIRTIO_SCSI_F_HOTPLUG))
-		virtscsi_kick_event_all(vscsi);
-
-	/* We need to know how many segments before we allocate.  */
-	sg_elems = virtscsi_config_get(vdev, seg_max) ?: 1;
-
-	for (i = 0; i < num_targets; i++) {
-		vscsi->tgt[i] = virtscsi_alloc_tgt(vdev, sg_elems);
-		if (!vscsi->tgt[i]) {
-			err = -ENOMEM;
-			goto out;
-		}
-	}
 	err = 0;
 
 out:
+	kfree(names);
+	kfree(callbacks);
+	kfree(vqs);
 	if (err)
 		virtscsi_remove_vqs(vdev);
 	return err;
 }
 
-static int __devinit virtscsi_probe(struct virtio_device *vdev)
+static int virtscsi_probe(struct virtio_device *vdev)
 {
 	struct Scsi_Host *shost;
 	struct virtio_scsi *vscsi;
 	int err;
 	u32 sg_elems, num_targets;
 	u32 cmd_per_lun;
+	u32 num_queues;
+	struct scsi_host_template *hostt;
 
-	/* Allocate memory and link the structs together.  */
+	if (!vdev->config->get) {
+		dev_err(&vdev->dev, "%s failure: config access disabled\n",
+			__func__);
+		return -EINVAL;
+	}
+
+	/* We need to know how many queues before we allocate. */
+	num_queues = virtscsi_config_get(vdev, num_queues) ? : 1;
+
 	num_targets = virtscsi_config_get(vdev, max_target) + 1;
-	shost = scsi_host_alloc(&virtscsi_host_template,
-		sizeof(*vscsi)
-		+ num_targets * sizeof(struct virtio_scsi_target_state));
 
+	if (num_queues == 1)
+		hostt = &virtscsi_host_template_single;
+	else
+		hostt = &virtscsi_host_template_multi;
+
+	shost = scsi_host_alloc(hostt,
+		sizeof(*vscsi) + sizeof(vscsi->req_vqs[0]) * num_queues);
 	if (!shost)
 		return -ENOMEM;
 
@@ -668,26 +980,56 @@ static int __devinit virtscsi_probe(struct virtio_device *vdev)
 	shost->sg_tablesize = sg_elems;
 	vscsi = shost_priv(shost);
 	vscsi->vdev = vdev;
+	vscsi->num_queues = num_queues;
 	vdev->priv = shost;
 
-	err = virtscsi_init(vdev, vscsi, num_targets);
+	err = virtscsi_init(vdev, vscsi);
 	if (err)
 		goto virtscsi_init_failed;
+
+	vscsi->nb.notifier_call = &virtscsi_cpu_callback;
+	err = register_hotcpu_notifier(&vscsi->nb);
+	if (err) {
+		pr_err("registering cpu notifier failed\n");
+		goto scsi_add_host_failed;
+	}
 
 	cmd_per_lun = virtscsi_config_get(vdev, cmd_per_lun) ?: 1;
 	shost->cmd_per_lun = min_t(u32, cmd_per_lun, shost->can_queue);
 	shost->max_sectors = virtscsi_config_get(vdev, max_sectors) ?: 0xFFFF;
-	shost->max_lun = virtscsi_config_get(vdev, max_lun) + 1;
+
+	/* LUNs > 256 are reported with format 1, so they go in the range
+	 * 16640-32767.
+	 */
+	shost->max_lun = virtscsi_config_get(vdev, max_lun) + 1 + 0x4000;
 	shost->max_id = num_targets;
 	shost->max_channel = 0;
 	shost->max_cmd_len = VIRTIO_SCSI_CDB_SIZE;
+	shost->nr_hw_queues = num_queues;
+
+#ifdef CONFIG_BLK_DEV_INTEGRITY
+	if (virtio_has_feature(vdev, VIRTIO_SCSI_F_T10_PI)) {
+		int host_prot;
+
+		host_prot = SHOST_DIF_TYPE1_PROTECTION | SHOST_DIF_TYPE2_PROTECTION |
+			    SHOST_DIF_TYPE3_PROTECTION | SHOST_DIX_TYPE1_PROTECTION |
+			    SHOST_DIX_TYPE2_PROTECTION | SHOST_DIX_TYPE3_PROTECTION;
+
+		scsi_host_set_prot(shost, host_prot);
+		scsi_host_set_guard(shost, SHOST_DIX_GUARD_CRC);
+	}
+#endif
+
 	err = scsi_add_host(shost, &vdev->dev);
 	if (err)
 		goto scsi_add_host_failed;
-	/*
-	 * scsi_scan_host() happens in virtscsi_scan() via virtio_driver->scan()
-	 * after VIRTIO_CONFIG_S_DRIVER_OK has been set..
-	 */
+
+	virtio_device_ready(vdev);
+
+	if (virtio_has_feature(vdev, VIRTIO_SCSI_F_HOTPLUG))
+		virtscsi_kick_event_all(vscsi);
+
+	scsi_scan_host(shost);
 	return 0;
 
 scsi_add_host_failed:
@@ -697,7 +1039,7 @@ virtscsi_init_failed:
 	return err;
 }
 
-static void __devexit virtscsi_remove(struct virtio_device *vdev)
+static void virtscsi_remove(struct virtio_device *vdev)
 {
 	struct Scsi_Host *shost = virtio_scsi_host(vdev);
 	struct virtio_scsi *vscsi = shost_priv(shost);
@@ -707,13 +1049,19 @@ static void __devexit virtscsi_remove(struct virtio_device *vdev)
 
 	scsi_remove_host(shost);
 
+	unregister_hotcpu_notifier(&vscsi->nb);
+
 	virtscsi_remove_vqs(vdev);
 	scsi_host_put(shost);
 }
 
-#ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 static int virtscsi_freeze(struct virtio_device *vdev)
 {
+	struct Scsi_Host *sh = virtio_scsi_host(vdev);
+	struct virtio_scsi *vscsi = shost_priv(sh);
+
+	unregister_hotcpu_notifier(&vscsi->nb);
 	virtscsi_remove_vqs(vdev);
 	return 0;
 }
@@ -722,8 +1070,24 @@ static int virtscsi_restore(struct virtio_device *vdev)
 {
 	struct Scsi_Host *sh = virtio_scsi_host(vdev);
 	struct virtio_scsi *vscsi = shost_priv(sh);
+	int err;
 
-	return virtscsi_init(vdev, vscsi, sh->max_id);
+	err = virtscsi_init(vdev, vscsi);
+	if (err)
+		return err;
+
+	err = register_hotcpu_notifier(&vscsi->nb);
+	if (err) {
+		vdev->config->del_vqs(vdev);
+		return err;
+	}
+
+	virtio_device_ready(vdev);
+
+	if (virtio_has_feature(vdev, VIRTIO_SCSI_F_HOTPLUG))
+		virtscsi_kick_event_all(vscsi);
+
+	return err;
 }
 #endif
 
@@ -733,7 +1097,11 @@ static struct virtio_device_id id_table[] = {
 };
 
 static unsigned int features[] = {
-	VIRTIO_SCSI_F_HOTPLUG
+	VIRTIO_SCSI_F_HOTPLUG,
+	VIRTIO_SCSI_F_CHANGE,
+#ifdef CONFIG_BLK_DEV_INTEGRITY
+	VIRTIO_SCSI_F_T10_PI,
+#endif
 };
 
 static struct virtio_driver virtio_scsi_driver = {
@@ -743,12 +1111,11 @@ static struct virtio_driver virtio_scsi_driver = {
 	.driver.owner = THIS_MODULE,
 	.id_table = id_table,
 	.probe = virtscsi_probe,
-	.scan = virtscsi_scan,
-#ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 	.freeze = virtscsi_freeze,
 	.restore = virtscsi_restore,
 #endif
-	.remove = __devexit_p(virtscsi_remove),
+	.remove = virtscsi_remove,
 };
 
 static int __init init(void)
@@ -757,8 +1124,7 @@ static int __init init(void)
 
 	virtscsi_cmd_cache = KMEM_CACHE(virtio_scsi_cmd, 0);
 	if (!virtscsi_cmd_cache) {
-		printk(KERN_ERR "kmem_cache_create() for "
-				"virtscsi_cmd_cache failed\n");
+		pr_err("kmem_cache_create() for virtscsi_cmd_cache failed\n");
 		goto error;
 	}
 
@@ -767,8 +1133,7 @@ static int __init init(void)
 		mempool_create_slab_pool(VIRTIO_SCSI_MEMPOOL_SZ,
 					 virtscsi_cmd_cache);
 	if (!virtscsi_cmd_pool) {
-		printk(KERN_ERR "mempool_create() for"
-				"virtscsi_cmd_pool failed\n");
+		pr_err("mempool_create() for virtscsi_cmd_pool failed\n");
 		goto error;
 	}
 	ret = register_virtio_driver(&virtio_scsi_driver);

@@ -9,7 +9,6 @@
  *  Copyright (c) 2000-2005 Vojtech Pavlik <vojtech@suse.cz>
  *  Copyright (c) 2005 Michael Haboustak <mike-@cinci.rr.com> for Concept2, Inc
  *  Copyright (c) 2006-2007 Jiri Kosina
- *  Copyright (c) 2007 Paul Walmsley
  *  Copyright (c) 2008 Jiri Slaby
  */
 #include <linux/device.h>
@@ -24,7 +23,8 @@ static __u8 *aureal_report_fixup(struct hid_device *hdev, __u8 *rdesc,
 	if (*rsize >= 54 && rdesc[52] == 0x25 && rdesc[53] == 0x01) {
 		dev_info(&hdev->dev, "fixing Aureal Cy se W-01RN USB_V3.1 report descriptor.\n");
 		rdesc[53] = 0x65;
-	} return rdesc;
+	}
+	return rdesc;
 }
 
 static const struct hid_device_id aureal_devices[] = {
@@ -38,17 +38,6 @@ static struct hid_driver aureal_driver = {
 	.id_table = aureal_devices,
 	.report_fixup = aureal_report_fixup,
 };
+module_hid_driver(aureal_driver);
 
-static int __init aureal_init(void)
-{
-	return hid_register_driver(&aureal_driver);
-}
-
-static void __exit aureal_exit(void)
-{
-	hid_unregister_driver(&aureal_driver);
-}
-
-module_init(aureal_init);
-module_exit(aureal_exit);
 MODULE_LICENSE("GPL");

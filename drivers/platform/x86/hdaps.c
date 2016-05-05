@@ -305,10 +305,12 @@ static int hdaps_probe(struct platform_device *dev)
 	return 0;
 }
 
+#ifdef CONFIG_PM_SLEEP
 static int hdaps_resume(struct device *dev)
 {
 	return hdaps_device_init();
 }
+#endif
 
 static SIMPLE_DEV_PM_OPS(hdaps_pm, NULL, hdaps_resume);
 
@@ -316,7 +318,6 @@ static struct platform_driver hdaps_driver = {
 	.probe = hdaps_probe,
 	.driver	= {
 		.name = "hdaps",
-		.owner = THIS_MODULE,
 		.pm = &hdaps_pm,
 	},
 };

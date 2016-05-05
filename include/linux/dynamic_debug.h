@@ -42,7 +42,7 @@ int ddebug_add_module(struct _ddebug *tab, unsigned int n,
 #if defined(CONFIG_DYNAMIC_DEBUG)
 extern int ddebug_remove_module(const char *mod_name);
 extern __printf(2, 3)
-int __dynamic_pr_debug(struct _ddebug *descriptor, const char *fmt, ...);
+void __dynamic_pr_debug(struct _ddebug *descriptor, const char *fmt, ...);
 
 extern int ddebug_dyndbg_module_param_cb(char *param, char *val,
 					const char *modname);
@@ -50,18 +50,18 @@ extern int ddebug_dyndbg_module_param_cb(char *param, char *val,
 struct device;
 
 extern __printf(3, 4)
-int __dynamic_dev_dbg(struct _ddebug *descriptor, const struct device *dev,
-		      const char *fmt, ...);
+void __dynamic_dev_dbg(struct _ddebug *descriptor, const struct device *dev,
+		       const char *fmt, ...);
 
 struct net_device;
 
 extern __printf(3, 4)
-int __dynamic_netdev_dbg(struct _ddebug *descriptor,
-			 const struct net_device *dev,
-			 const char *fmt, ...);
+void __dynamic_netdev_dbg(struct _ddebug *descriptor,
+			  const struct net_device *dev,
+			  const char *fmt, ...);
 
 #define DEFINE_DYNAMIC_DEBUG_METADATA(name, fmt)		\
-	static struct _ddebug __used __aligned(8)		\
+	static struct _ddebug  __aligned(8)			\
 	__attribute__((section("__verbose"))) name = {		\
 		.modname = KBUILD_MODNAME,			\
 		.function = __func__,				\
@@ -93,6 +93,17 @@ do {								\
 	if (unlikely(descriptor.flags & _DPRINTK_FLAGS_PRINT))	\
 		__dynamic_netdev_dbg(&descriptor, dev, fmt,	\
 				     ##__VA_ARGS__);		\
+} while (0)
+
+#define dynamic_hex_dump(prefix_str, prefix_type, rowsize,	\
+			 groupsize, buf, len, ascii)		\
+do {								\
+	DEFINE_DYNAMIC_DEBUG_METADATA(descriptor,		\
+		__builtin_constant_p(prefix_str) ? prefix_str : "hexdump");\
+	if (unlikely(descriptor.flags & _DPRINTK_FLAGS_PRINT))	\
+		print_hex_dump(KERN_DEBUG, prefix_str,		\
+			       prefix_type, rowsize, groupsize,	\
+			       buf, len, ascii);		\
 } while (0)
 
 #else

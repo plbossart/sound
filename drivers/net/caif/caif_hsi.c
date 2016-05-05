@@ -1,8 +1,7 @@
 /*
  * Copyright (C) ST-Ericsson AB 2010
- * Contact: Sjur Brendeland / sjur.brandeland@stericsson.com
- * Author:  Daniel Martensson / daniel.martensson@stericsson.com
- *	    Dmitry.Tarnyagin  / dmitry.tarnyagin@stericsson.com
+ * Author:  Daniel Martensson
+ *	    Dmitry.Tarnyagin  / dmitry.tarnyagin@lockless.no
  * License terms: GNU General Public License (GPL) version 2.
  */
 
@@ -25,7 +24,7 @@
 #include <net/caif/caif_hsi.h>
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Daniel Martensson<daniel.martensson@stericsson.com>");
+MODULE_AUTHOR("Daniel Martensson");
 MODULE_DESCRIPTION("CAIF HSI driver");
 
 /* Returns the number of padding bytes for alignment. */
@@ -1121,7 +1120,7 @@ static void cfhsi_setup(struct net_device *dev)
 	dev->type = ARPHRD_CAIF;
 	dev->flags = IFF_POINTOPOINT | IFF_NOARP;
 	dev->mtu = CFHSI_MAX_CAIF_FRAME_SZ;
-	dev->tx_queue_len = 0;
+	dev->priv_flags |= IFF_NO_QUEUE;
 	dev->destructor = free_netdev;
 	dev->netdev_ops = &cfhsi_netdevops;
 	for (i = 0; i < CFHSI_PRIO_LAST; ++i)
@@ -1416,7 +1415,6 @@ static int caif_hsi_newlink(struct net *src_net, struct net_device *dev,
 
 	cfhsi = netdev_priv(dev);
 	cfhsi_netlink_parms(data, cfhsi);
-	dev_net_set(cfhsi->ndev, src_net);
 
 	get_ops = symbol_get(cfhsi_get_ops);
 	if (!get_ops) {

@@ -44,7 +44,7 @@ static struct dentry *isofs_export_get_parent(struct dentry *child)
 {
 	unsigned long parent_block = 0;
 	unsigned long parent_offset = 0;
-	struct inode *child_inode = child->d_inode;
+	struct inode *child_inode = d_inode(child);
 	struct iso_inode_info *e_child_inode = ISOFS_I(child_inode);
 	struct iso_directory_record *de = NULL;
 	struct buffer_head * bh = NULL;
@@ -125,10 +125,10 @@ isofs_export_encode_fh(struct inode *inode,
 	 */
 	if (parent && (len < 5)) {
 		*max_len = 5;
-		return 255;
+		return FILEID_INVALID;
 	} else if (len < 3) {
 		*max_len = 3;
-		return 255;
+		return FILEID_INVALID;
 	}
 
 	len = 3;
@@ -175,7 +175,7 @@ static struct dentry *isofs_fh_to_parent(struct super_block *sb,
 {
 	struct isofs_fid *ifid = (struct isofs_fid *)fid;
 
-	if (fh_type != 2)
+	if (fh_len < 2 || fh_type != 2)
 		return NULL;
 
 	return isofs_export_iget(sb,

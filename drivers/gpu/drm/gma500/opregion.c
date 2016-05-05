@@ -22,7 +22,6 @@
  *
  */
 #include <linux/acpi.h>
-#include <linux/acpi_io.h>
 #include "psb_drv.h"
 #include "psb_intel_reg.h"
 
@@ -166,8 +165,7 @@ static u32 asle_set_backlight(struct drm_device *dev, u32 bclp)
 
 	if (config_enabled(CONFIG_BACKLIGHT_CLASS_DEVICE)) {
 		int max = bd->props.max_brightness;
-		bd->props.brightness = bclp * max / 255;
-		backlight_update_status(bd);
+		gma_backlight_set(dev, bclp * max / 255);
 	}
 
 	asle->cblv = (bclp * 0x64) / 0xff | ASLE_CBLV_VALID;
@@ -175,10 +173,13 @@ static u32 asle_set_backlight(struct drm_device *dev, u32 bclp)
 	return 0;
 }
 
-void psb_intel_opregion_asle_intr(struct drm_device *dev)
+static void psb_intel_opregion_asle_work(struct work_struct *work)
 {
-	struct drm_psb_private *dev_priv = dev->dev_private;
-	struct opregion_asle *asle = dev_priv->opregion.asle;
+	struct psb_intel_opregion *opregion =
+		container_of(work, struct psb_intel_opregion, asle_work);
+	struct drm_psb_private *dev_priv =
+		container_of(opregion, struct drm_psb_private, opregion);
+	struct opregion_asle *asle = opregion->asle;
 	u32 asle_stat = 0;
 	u32 asle_req;
 
@@ -192,9 +193,18 @@ void psb_intel_opregion_asle_intr(struct drm_device *dev)
 	}
 
 	if (asle_req & ASLE_SET_BACKLIGHT)
-		asle_stat |= asle_set_backlight(dev, asle->bclp);
+		asle_stat |= asle_set_backlight(dev_priv->dev, asle->bclp);
 
 	asle->aslc = asle_stat;
+
+}
+
+void psb_intel_opregion_asle_intr(struct drm_device *dev)
+{
+	struct drm_psb_private *dev_priv = dev->dev_private;
+
+	if (dev_priv->opregion.asle)
+		schedule_work(&dev_priv->opregion.asle_work);
 }
 
 #define ASLE_ALS_EN    (1<<0)
@@ -284,6 +294,8 @@ void psb_intel_opregion_fini(struct drm_device *dev)
 		unregister_acpi_notifier(&psb_intel_opregion_notifier);
 	}
 
+	cancel_work_sync(&opregion->asle_work);
+
 	/* just clear all opregion memory pointers now */
 	iounmap(opregion->header);
 	opregion->header = NULL;
@@ -306,6 +318,9 @@ int psb_intel_opregion_setup(struct drm_device *dev)
 		DRM_DEBUG_DRIVER("ACPI Opregion not supported\n");
 		return -ENOTSUPP;
 	}
+
+	INIT_WORK(&opregion->asle_work, psb_intel_opregion_asle_work);
+
 	DRM_DEBUG("OpRegion detected at 0x%8x\n", opregion_phy);
 	base = acpi_os_ioremap(opregion_phy, 8*1024);
 	if (!base)

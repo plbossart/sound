@@ -115,8 +115,6 @@ static bool mei_init(struct mei *me, const uuid_le *guid,
 	struct mei_client *cl;
 	struct mei_connect_client_data data;
 
-	mei_deinit(me);
-
 	me->verbose = verbose;
 
 	me->fd = open("/dev/mei", O_RDWR);
@@ -214,7 +212,7 @@ out:
 }
 
 /***************************************************************************
- * Intel Advanced Management Technolgy ME Client
+ * Intel Advanced Management Technology ME Client
  ***************************************************************************/
 
 #define AMT_MAJOR_VERSION 1
@@ -256,7 +254,7 @@ struct amt_code_versions {
 } __attribute__((packed));
 
 /***************************************************************************
- * Intel Advanced Management Technolgy Host Interface
+ * Intel Advanced Management Technology Host Interface
  ***************************************************************************/
 
 struct amt_host_if_msg_header {

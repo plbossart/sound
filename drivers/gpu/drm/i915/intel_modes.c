@@ -27,10 +27,26 @@
 #include <linux/i2c.h>
 #include <linux/fb.h>
 #include <drm/drm_edid.h>
-#include "drmP.h"
-#include "drm_edid.h"
+#include <drm/drmP.h>
 #include "intel_drv.h"
 #include "i915_drv.h"
+
+/**
+ * intel_connector_update_modes - update connector from edid
+ * @connector: DRM connector device to use
+ * @edid: previously read EDID information
+ */
+int intel_connector_update_modes(struct drm_connector *connector,
+				struct edid *edid)
+{
+	int ret;
+
+	drm_mode_connector_update_edid_property(connector, edid);
+	ret = drm_add_edid_modes(connector, edid);
+	drm_edid_to_eld(connector, edid);
+
+	return ret;
+}
 
 /**
  * intel_ddc_get_modes - get modelist from monitor
@@ -43,16 +59,14 @@ int intel_ddc_get_modes(struct drm_connector *connector,
 			struct i2c_adapter *adapter)
 {
 	struct edid *edid;
-	int ret = 0;
+	int ret;
 
 	edid = drm_get_edid(connector, adapter);
-	if (edid) {
-		drm_mode_connector_update_edid_property(connector, edid);
-		ret = drm_add_edid_modes(connector, edid);
-		drm_edid_to_eld(connector, edid);
-		connector->display_info.raw_edid = NULL;
-		kfree(edid);
-	}
+	if (!edid)
+		return 0;
+
+	ret = intel_connector_update_modes(connector, edid);
+	kfree(edid);
 
 	return ret;
 }
@@ -82,12 +96,13 @@ intel_attach_force_audio_property(struct drm_connector *connector)
 
 		dev_priv->force_audio_property = prop;
 	}
-	drm_connector_attach_property(connector, prop, 0);
+	drm_object_attach_property(&connector->base, prop, 0);
 }
 
 static const struct drm_prop_enum_list broadcast_rgb_names[] = {
-	{ 0, "Full" },
-	{ 1, "Limited 16:235" },
+	{ INTEL_BROADCAST_RGB_AUTO, "Automatic" },
+	{ INTEL_BROADCAST_RGB_FULL, "Full" },
+	{ INTEL_BROADCAST_RGB_LIMITED, "Limited 16:235" },
 };
 
 void
@@ -109,5 +124,14 @@ intel_attach_broadcast_rgb_property(struct drm_connector *connector)
 		dev_priv->broadcast_rgb_property = prop;
 	}
 
-	drm_connector_attach_property(connector, prop, 0);
+	drm_object_attach_property(&connector->base, prop, 0);
+}
+
+void
+intel_attach_aspect_ratio_property(struct drm_connector *connector)
+{
+	if (!drm_mode_create_aspect_ratio_property(connector->dev))
+		drm_object_attach_property(&connector->base,
+			connector->dev->mode_config.aspect_ratio_property,
+			DRM_MODE_PICTURE_ASPECT_NONE);
 }

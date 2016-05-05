@@ -14,6 +14,7 @@
 #include <linux/ioport.h>
 #include <linux/delay.h>
 #include <linux/platform_device.h>
+#include <linux/gpio/driver.h>
 #include <linux/gpio.h>
 #include <linux/mtd/physmap.h>
 
@@ -107,10 +108,10 @@ static void __init rbtx4938_pci_setup(void)
 /* SPI support */
 
 /* chip select for SPI devices */
-#define	SEEPROM1_CS	7	/* PIO7 */
-#define	SEEPROM2_CS	0	/* IOC */
-#define	SEEPROM3_CS	1	/* IOC */
-#define	SRTC_CS	2	/* IOC */
+#define SEEPROM1_CS	7	/* PIO7 */
+#define SEEPROM2_CS	0	/* IOC */
+#define SEEPROM3_CS	1	/* IOC */
+#define SRTC_CS 2	/* IOC */
 #define SPI_BUSNO	0
 
 static int __init rbtx4938_ethaddr_init(void)
@@ -335,7 +336,7 @@ static void __init rbtx4938_mtd_init(void)
 
 static void __init rbtx4938_arch_init(void)
 {
-	gpiochip_add(&rbtx4938_spi_gpio_chip);
+	gpiochip_add_data(&rbtx4938_spi_gpio_chip, NULL);
 	rbtx4938_pci_setup();
 	rbtx4938_spi_init();
 }

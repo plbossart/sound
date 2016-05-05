@@ -22,11 +22,11 @@
 #include <linux/dmi.h>
 #include <drm/drmP.h>
 #include <drm/drm.h>
-#include "gma_drm.h"
+#include <drm/gma_drm.h>
 #include "psb_drv.h"
 #include "psb_reg.h"
 #include "psb_intel_reg.h"
-#include <asm/mrst.h>
+#include <asm/intel-mid.h>
 #include <asm/intel_scu_ipc.h>
 #include "mid_bios.h"
 #include "intel_bios.h"
@@ -40,6 +40,9 @@ static int oaktrail_output_init(struct drm_device *dev)
 		dev_err(dev->dev, "DSI is not supported\n");
 	if (dev_priv->hdmi_priv)
 		oaktrail_hdmi_init(dev, &dev_priv->mode_dev);
+
+	psb_intel_sdvo_init(dev, SDVOB);
+
 	return 0;
 }
 
@@ -476,6 +479,7 @@ static const struct psb_offset oaktrail_regmap[2] = {
 		.pos = DSPAPOS,
 		.surf = DSPASURF,
 		.addr = MRST_DSPABASE,
+		.base = MRST_DSPABASE,
 		.status = PIPEASTAT,
 		.linoff = DSPALINOFF,
 		.tileoff = DSPATILEOFF,
@@ -499,6 +503,7 @@ static const struct psb_offset oaktrail_regmap[2] = {
 		.pos = DSPBPOS,
 		.surf = DSPBSURF,
 		.addr = DSPBBASE,
+		.base = DSPBBASE,
 		.status = PIPEBSTAT,
 		.linoff = DSPBLINOFF,
 		.tileoff = DSPBTILEOFF,
@@ -524,6 +529,7 @@ static int oaktrail_chip_setup(struct drm_device *dev)
 		psb_intel_opregion_init(dev);
 		psb_intel_init_bios(dev);
 	}
+	gma_intel_setup_gmbus(dev);
 	oaktrail_hdmi_setup(dev);
 	return 0;
 }
@@ -532,6 +538,7 @@ static void oaktrail_teardown(struct drm_device *dev)
 {
 	struct drm_psb_private *dev_priv = dev->dev_private;
 
+	gma_intel_teardown_gmbus(dev);
 	oaktrail_hdmi_teardown(dev);
 	if (!dev_priv->has_gct)
 		psb_intel_destroy_bios(dev);
@@ -542,8 +549,9 @@ const struct psb_ops oaktrail_chip_ops = {
 	.accel_2d = 1,
 	.pipes = 2,
 	.crtcs = 2,
-	.hdmi_mask = (1 << 0),
+	.hdmi_mask = (1 << 1),
 	.lvds_mask = (1 << 0),
+	.sdvo_mask = (1 << 1),
 	.cursor_needs_phys = 0,
 	.sgx_offset = MRST_SGX_OFFSET,
 
@@ -560,6 +568,8 @@ const struct psb_ops oaktrail_chip_ops = {
 
 	.save_regs = oaktrail_save_display_registers,
 	.restore_regs = oaktrail_restore_display_registers,
+	.save_crtc = gma_crtc_save,
+	.restore_crtc = gma_crtc_restore,
 	.power_down = oaktrail_power_down,
 	.power_up = oaktrail_power_up,
 

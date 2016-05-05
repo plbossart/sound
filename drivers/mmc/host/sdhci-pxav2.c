@@ -51,10 +51,12 @@
 #define MMC_CARD		0x1000
 #define MMC_WIDTH		0x0100
 
-static void pxav2_set_private_registers(struct sdhci_host *host, u8 mask)
+static void pxav2_reset(struct sdhci_host *host, u8 mask)
 {
 	struct platform_device *pdev = to_platform_device(mmc_dev(host->mmc));
 	struct sdhci_pxa_platdata *pdata = pdev->dev.platform_data;
+
+	sdhci_reset(host, mask);
 
 	if (mask == SDHCI_RESET_ALL) {
 		u16 tmp = 0;
@@ -88,7 +90,7 @@ static void pxav2_set_private_registers(struct sdhci_host *host, u8 mask)
 	}
 }
 
-static int pxav2_mmc_set_width(struct sdhci_host *host, int width)
+static void pxav2_mmc_set_bus_width(struct sdhci_host *host, int width)
 {
 	u8 ctrl;
 	u16 tmp;
@@ -107,21 +109,14 @@ static int pxav2_mmc_set_width(struct sdhci_host *host, int width)
 	}
 	writew(tmp, host->ioaddr + SD_CE_ATA_2);
 	writeb(ctrl, host->ioaddr + SDHCI_HOST_CONTROL);
-
-	return 0;
 }
 
-static u32 pxav2_get_max_clock(struct sdhci_host *host)
-{
-	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
-
-	return clk_get_rate(pltfm_host->clk);
-}
-
-static struct sdhci_ops pxav2_sdhci_ops = {
-	.get_max_clock = pxav2_get_max_clock,
-	.platform_reset_exit = pxav2_set_private_registers,
-	.platform_8bit_width = pxav2_mmc_set_width,
+static const struct sdhci_ops pxav2_sdhci_ops = {
+	.set_clock     = sdhci_set_clock,
+	.get_max_clock = sdhci_pltfm_clk_get_max_clock,
+	.set_bus_width = pxav2_mmc_set_bus_width,
+	.reset         = pxav2_reset,
+	.set_uhs_signaling = sdhci_set_uhs_signaling,
 };
 
 #ifdef CONFIG_OF
@@ -166,29 +161,22 @@ static inline struct sdhci_pxa_platdata *pxav2_get_mmc_pdata(struct device *dev)
 }
 #endif
 
-static int __devinit sdhci_pxav2_probe(struct platform_device *pdev)
+static int sdhci_pxav2_probe(struct platform_device *pdev)
 {
 	struct sdhci_pltfm_host *pltfm_host;
 	struct sdhci_pxa_platdata *pdata = pdev->dev.platform_data;
 	struct device *dev = &pdev->dev;
 	struct sdhci_host *host = NULL;
-	struct sdhci_pxa *pxa = NULL;
 	const struct of_device_id *match;
 
 	int ret;
 	struct clk *clk;
 
-	pxa = kzalloc(sizeof(struct sdhci_pxa), GFP_KERNEL);
-	if (!pxa)
-		return -ENOMEM;
-
-	host = sdhci_pltfm_init(pdev, NULL);
-	if (IS_ERR(host)) {
-		kfree(pxa);
+	host = sdhci_pltfm_init(pdev, NULL, 0);
+	if (IS_ERR(host))
 		return PTR_ERR(host);
-	}
+
 	pltfm_host = sdhci_priv(host);
-	pltfm_host->priv = pxa;
 
 	clk = clk_get(dev, "PXA-SDHCLK");
 	if (IS_ERR(clk)) {
@@ -197,7 +185,7 @@ static int __devinit sdhci_pxav2_probe(struct platform_device *pdev)
 		goto err_clk_get;
 	}
 	pltfm_host->clk = clk;
-	clk_enable(clk);
+	clk_prepare_enable(clk);
 
 	host->quirks = SDHCI_QUIRK_BROKEN_ADMA
 		| SDHCI_QUIRK_BROKEN_TIMEOUT_VAL
@@ -239,28 +227,23 @@ static int __devinit sdhci_pxav2_probe(struct platform_device *pdev)
 	return 0;
 
 err_add_host:
-	clk_disable(clk);
+	clk_disable_unprepare(clk);
 	clk_put(clk);
 err_clk_get:
 	sdhci_pltfm_free(pdev);
-	kfree(pxa);
 	return ret;
 }
 
-static int __devexit sdhci_pxav2_remove(struct platform_device *pdev)
+static int sdhci_pxav2_remove(struct platform_device *pdev)
 {
 	struct sdhci_host *host = platform_get_drvdata(pdev);
 	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
-	struct sdhci_pxa *pxa = pltfm_host->priv;
 
 	sdhci_remove_host(host, 1);
 
-	clk_disable(pltfm_host->clk);
+	clk_disable_unprepare(pltfm_host->clk);
 	clk_put(pltfm_host->clk);
 	sdhci_pltfm_free(pdev);
-	kfree(pxa);
-
-	platform_set_drvdata(pdev, NULL);
 
 	return 0;
 }
@@ -268,14 +251,11 @@ static int __devexit sdhci_pxav2_remove(struct platform_device *pdev)
 static struct platform_driver sdhci_pxav2_driver = {
 	.driver		= {
 		.name	= "sdhci-pxav2",
-		.owner	= THIS_MODULE,
-#ifdef CONFIG_OF
-		.of_match_table = sdhci_pxav2_of_match,
-#endif
+		.of_match_table = of_match_ptr(sdhci_pxav2_of_match),
 		.pm	= SDHCI_PLTFM_PMOPS,
 	},
 	.probe		= sdhci_pxav2_probe,
-	.remove		= __devexit_p(sdhci_pxav2_remove),
+	.remove		= sdhci_pxav2_remove,
 };
 
 module_platform_driver(sdhci_pxav2_driver);

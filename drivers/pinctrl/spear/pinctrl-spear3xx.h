@@ -2,7 +2,7 @@
  * Header file for the ST Microelectronics SPEAr3xx pinmux
  *
  * Copyright (C) 2012 ST Microelectronics
- * Viresh Kumar <viresh.linux@gmail.com>
+ * Viresh Kumar <vireshk@kernel.org>
  *
  * This file is licensed under the terms of the GNU General Public
  * License version 2. This program is licensed "as is" without any
@@ -15,6 +15,7 @@
 #include "pinctrl-spear.h"
 
 /* pad mux declarations */
+#define PMX_PWM_MASK		(1 << 16)
 #define PMX_FIRDA_MASK		(1 << 14)
 #define PMX_I2C_MASK		(1 << 13)
 #define PMX_SSP_CS_MASK		(1 << 12)

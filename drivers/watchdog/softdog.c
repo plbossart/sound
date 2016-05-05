@@ -42,9 +42,7 @@
 #include <linux/moduleparam.h>
 #include <linux/types.h>
 #include <linux/timer.h>
-#include <linux/miscdevice.h>
 #include <linux/watchdog.h>
-#include <linux/notifier.h>
 #include <linux/reboot.h>
 #include <linux/init.h>
 #include <linux/jiffies.h>
@@ -63,7 +61,7 @@ MODULE_PARM_DESC(nowayout,
 		"Watchdog cannot be stopped once started (default="
 				__MODULE_STRING(WATCHDOG_NOWAYOUT) ")");
 
-static int soft_noboot = 0;
+static int soft_noboot;
 module_param(soft_noboot, int, 0);
 MODULE_PARM_DESC(soft_noboot,
 	"Softdog action, set to 1 to ignore reboots, 0 to reboot (default=0)");
@@ -88,6 +86,7 @@ static struct timer_list watchdog_ticktock =
 
 static void watchdog_fire(unsigned long data)
 {
+	module_put(THIS_MODULE);
 	if (soft_noboot)
 		pr_crit("Triggered - Reboot ignored\n");
 	else if (soft_panic) {
@@ -106,13 +105,16 @@ static void watchdog_fire(unsigned long data)
 
 static int softdog_ping(struct watchdog_device *w)
 {
-	mod_timer(&watchdog_ticktock, jiffies+(w->timeout*HZ));
+	if (!mod_timer(&watchdog_ticktock, jiffies+(w->timeout*HZ)))
+		__module_get(THIS_MODULE);
 	return 0;
 }
 
 static int softdog_stop(struct watchdog_device *w)
 {
-	del_timer(&watchdog_ticktock);
+	if (del_timer(&watchdog_ticktock))
+		module_put(THIS_MODULE);
+
 	return 0;
 }
 
@@ -123,25 +125,8 @@ static int softdog_set_timeout(struct watchdog_device *w, unsigned int t)
 }
 
 /*
- *	Notifier for system down
- */
-
-static int softdog_notify_sys(struct notifier_block *this, unsigned long code,
-	void *unused)
-{
-	if (code == SYS_DOWN || code == SYS_HALT)
-		/* Turn the WDT off */
-		softdog_stop(NULL);
-	return NOTIFY_DONE;
-}
-
-/*
  *	Kernel Interfaces
  */
-
-static struct notifier_block softdog_notifier = {
-	.notifier_call	= softdog_notify_sys,
-};
 
 static struct watchdog_info softdog_info = {
 	.identity = "Software Watchdog",
@@ -152,7 +137,6 @@ static struct watchdog_ops softdog_ops = {
 	.owner = THIS_MODULE,
 	.start = softdog_ping,
 	.stop = softdog_stop,
-	.ping = softdog_ping,
 	.set_timeout = softdog_set_timeout,
 };
 
@@ -177,18 +161,11 @@ static int __init watchdog_init(void)
 	softdog_dev.timeout = soft_margin;
 
 	watchdog_set_nowayout(&softdog_dev, nowayout);
-
-	ret = register_reboot_notifier(&softdog_notifier);
-	if (ret) {
-		pr_err("cannot register reboot notifier (err=%d)\n", ret);
-		return ret;
-	}
+	watchdog_stop_on_reboot(&softdog_dev);
 
 	ret = watchdog_register_device(&softdog_dev);
-	if (ret) {
-		unregister_reboot_notifier(&softdog_notifier);
+	if (ret)
 		return ret;
-	}
 
 	pr_info("Software Watchdog Timer: 0.08 initialized. soft_noboot=%d soft_margin=%d sec soft_panic=%d (nowayout=%d)\n",
 		soft_noboot, soft_margin, soft_panic, nowayout);
@@ -199,7 +176,6 @@ static int __init watchdog_init(void)
 static void __exit watchdog_exit(void)
 {
 	watchdog_unregister_device(&softdog_dev);
-	unregister_reboot_notifier(&softdog_notifier);
 }
 
 module_init(watchdog_init);
@@ -208,4 +184,3 @@ module_exit(watchdog_exit);
 MODULE_AUTHOR("Alan Cox");
 MODULE_DESCRIPTION("Software Watchdog Device Driver");
 MODULE_LICENSE("GPL");
-MODULE_ALIAS_MISCDEV(WATCHDOG_MINOR);

@@ -3,7 +3,7 @@
  *
  * Copyright (c) 2010 Ericsson AB.
  *
- * Author: Guenter Roeck <guenter.roeck@ericsson.com>
+ * Author: Guenter Roeck <linux@roeck-us.net>
  *
  * Derived from:
  *  pca954x.c
@@ -17,7 +17,6 @@
  */
 
 #include <linux/module.h>
-#include <linux/init.h>
 #include <linux/jiffies.h>
 #include <linux/delay.h>
 #include <linux/slab.h>
@@ -105,7 +104,7 @@ static int pca9541_reg_write(struct i2c_client *client, u8 command, u8 val)
 		buf[0] = command;
 		buf[1] = val;
 		msg.buf = buf;
-		ret = adap->algo->master_xfer(adap, &msg, 1);
+		ret = __i2c_transfer(adap, &msg, 1);
 	} else {
 		union i2c_smbus_data data;
 
@@ -145,7 +144,7 @@ static int pca9541_reg_read(struct i2c_client *client, u8 command)
 				.buf = &val
 			}
 		};
-		ret = adap->algo->master_xfer(adap, msg, 2);
+		ret = __i2c_transfer(adap, msg, 2);
 		if (ret == 2)
 			ret = val;
 		else if (ret >= 0)
@@ -324,7 +323,7 @@ static int pca9541_probe(struct i2c_client *client,
 			 const struct i2c_device_id *id)
 {
 	struct i2c_adapter *adap = client->adapter;
-	struct pca954x_platform_data *pdata = client->dev.platform_data;
+	struct pca954x_platform_data *pdata = dev_get_platdata(&client->dev);
 	struct pca9541 *data;
 	int force;
 	int ret = -ENODEV;
@@ -354,7 +353,7 @@ static int pca9541_probe(struct i2c_client *client,
 	if (pdata)
 		force = pdata->modes[0].adap_id;
 	data->mux_adap = i2c_add_mux_adapter(adap, &client->dev, client,
-					     force, 0,
+					     force, 0, 0,
 					     pca9541_select_chan,
 					     pca9541_release_chan);
 
@@ -387,7 +386,6 @@ static int pca9541_remove(struct i2c_client *client)
 static struct i2c_driver pca9541_driver = {
 	.driver = {
 		   .name = "pca9541",
-		   .owner = THIS_MODULE,
 		   },
 	.probe = pca9541_probe,
 	.remove = pca9541_remove,

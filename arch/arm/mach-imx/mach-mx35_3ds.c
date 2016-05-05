@@ -43,15 +43,16 @@
 #include <asm/mach/map.h>
 #include <asm/memblock.h>
 
-#include <mach/hardware.h>
-#include <mach/common.h>
-#include <mach/iomux-mx35.h>
-#include <mach/3ds_debugboard.h>
 #include <video/platform_lcd.h>
 
 #include <media/soc_camera.h>
 
+#include "3ds_debugboard.h"
+#include "common.h"
 #include "devices-imx35.h"
+#include "ehci.h"
+#include "hardware.h"
+#include "iomux-mx35.h"
 
 #define GPIO_MC9S08DZ60_GPS_ENABLE 0
 #define GPIO_MC9S08DZ60_HDD_ENABLE 4
@@ -165,7 +166,7 @@ static struct platform_device *devices[] __initdata = {
 	&mx35pdk_flash,
 };
 
-static iomux_v3_cfg_t mx35pdk_pads[] = {
+static const iomux_v3_cfg_t mx35pdk_pads[] __initconst = {
 	/* UART1 */
 	MX35_PAD_CTS1__UART1_CTS,
 	MX35_PAD_RTS1__UART1_RTS,
@@ -602,10 +603,6 @@ static void __init mx35pdk_timer_init(void)
 	mx35_clocks_init();
 }
 
-static struct sys_timer mx35pdk_timer = {
-	.init	= mx35pdk_timer_init,
-};
-
 static void __init mx35_3ds_reserve(void)
 {
 	/* reserve MX35_3DS_CAMERA_BUF_SIZE bytes for mx3-camera */
@@ -619,8 +616,7 @@ MACHINE_START(MX35_3DS, "Freescale MX35PDK")
 	.map_io = mx35_map_io,
 	.init_early = imx35_init_early,
 	.init_irq = mx35_init_irq,
-	.handle_irq = imx35_handle_irq,
-	.timer = &mx35pdk_timer,
+	.init_time	= mx35pdk_timer_init,
 	.init_machine = mx35_3ds_init,
 	.reserve = mx35_3ds_reserve,
 	.restart	= mxc_restart,

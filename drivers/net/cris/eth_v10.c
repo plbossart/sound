@@ -1448,10 +1448,10 @@ static int e100_set_settings(struct net_device *dev,
 static void e100_get_drvinfo(struct net_device *dev,
 			     struct ethtool_drvinfo *info)
 {
-	strncpy(info->driver, "ETRAX 100LX", sizeof(info->driver) - 1);
-	strncpy(info->version, "$Revision: 1.31 $", sizeof(info->version) - 1);
-	strncpy(info->fw_version, "N/A", sizeof(info->fw_version) - 1);
-	strncpy(info->bus_info, "N/A", sizeof(info->bus_info) - 1);
+	strlcpy(info->driver, "ETRAX 100LX", sizeof(info->driver));
+	strlcpy(info->version, "$Revision: 1.31 $", sizeof(info->version));
+	strlcpy(info->fw_version, "N/A", sizeof(info->fw_version));
+	strlcpy(info->bus_info, "N/A", sizeof(info->bus_info));
 }
 
 static int e100_nway_reset(struct net_device *dev)
@@ -1496,7 +1496,6 @@ e100_set_config(struct net_device *dev, struct ifmap *map)
 		case IF_PORT_AUI:
 			spin_unlock(&np->lock);
 			return -EOPNOTSUPP;
-			break;
 		default:
 			printk(KERN_ERR "%s: Invalid media selected", dev->name);
 			spin_unlock(&np->lock);
@@ -1712,7 +1711,7 @@ e100_set_network_leds(int active)
 static void
 e100_netpoll(struct net_device* netdev)
 {
-	e100rxtx_interrupt(NETWORK_DMA_TX_IRQ_NBR, netdev, NULL);
+	e100rxtx_interrupt(NETWORK_DMA_TX_IRQ_NBR, netdev);
 }
 #endif
 

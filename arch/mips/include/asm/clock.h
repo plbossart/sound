@@ -6,8 +6,6 @@
 #include <linux/seq_file.h>
 #include <linux/clk.h>
 
-extern void (*cpu_wait) (void);
-
 struct clk;
 
 struct clk_ops {
@@ -36,9 +34,6 @@ struct clk {
 
 #define CLK_ALWAYS_ENABLED	(1 << 0)
 #define CLK_RATE_PROPAGATES	(1 << 1)
-
-/* Should be defined by processor-specific code */
-void arch_init_clk_ops(struct clk_ops **, int type);
 
 int clk_init(void);
 

@@ -26,13 +26,13 @@
 #include <linux/device.h>
 #include <linux/i2c.h>
 #include <linux/gpio.h>
+#include <linux/platform_data/asoc-mx27vis.h>
 #include <sound/core.h>
 #include <sound/pcm.h>
 #include <sound/soc.h>
 #include <sound/soc-dapm.h>
 #include <sound/tlv.h>
 #include <asm/mach-types.h>
-#include <mach/iomux-mx27.h>
 
 #include "../codecs/tlv320aic32x4.h"
 #include "imx-ssi.h"
@@ -41,20 +41,12 @@
 #define MX27VIS_AMP_GAIN	0
 #define MX27VIS_AMP_MUTE	1
 
-#define MX27VIS_PIN_G0		(GPIO_PORTF + 9)
-#define MX27VIS_PIN_G1		(GPIO_PORTF + 8)
-#define MX27VIS_PIN_SDL		(GPIO_PORTE + 5)
-#define MX27VIS_PIN_SDR		(GPIO_PORTF + 7)
-
 static int mx27vis_amp_gain;
 static int mx27vis_amp_mute;
-
-static const int mx27vis_amp_pins[] = {
-	MX27VIS_PIN_G0 | GPIO_GPIO | GPIO_OUT,
-	MX27VIS_PIN_G1 | GPIO_GPIO | GPIO_OUT,
-	MX27VIS_PIN_SDL | GPIO_GPIO | GPIO_OUT,
-	MX27VIS_PIN_SDR | GPIO_GPIO | GPIO_OUT,
-};
+static int mx27vis_amp_gain0_gpio;
+static int mx27vis_amp_gain1_gpio;
+static int mx27vis_amp_mutel_gpio;
+static int mx27vis_amp_muter_gpio;
 
 static int mx27vis_aic32x4_hw_params(struct snd_pcm_substream *substream,
 			    struct snd_pcm_hw_params *params)
@@ -63,16 +55,6 @@ static int mx27vis_aic32x4_hw_params(struct snd_pcm_substream *substream,
 	struct snd_soc_dai *codec_dai = rtd->codec_dai;
 	struct snd_soc_dai *cpu_dai = rtd->cpu_dai;
 	int ret;
-	u32 dai_format;
-
-	dai_format = SND_SOC_DAIFMT_DSP_B | SND_SOC_DAIFMT_NB_NF |
-		SND_SOC_DAIFMT_CBM_CFM;
-
-	/* set codec DAI configuration */
-	snd_soc_dai_set_fmt(codec_dai, dai_format);
-
-	/* set cpu DAI configuration */
-	snd_soc_dai_set_fmt(cpu_dai, dai_format);
 
 	ret = snd_soc_dai_set_sysclk(codec_dai, 0,
 				     25000000, SND_SOC_CLOCK_OUT);
@@ -109,13 +91,13 @@ static int mx27vis_amp_set(struct snd_kcontrol *kcontrol,
 
 	switch (reg) {
 	case MX27VIS_AMP_GAIN:
-		gpio_set_value(MX27VIS_PIN_G0, value & 1);
-		gpio_set_value(MX27VIS_PIN_G1, value >> 1);
+		gpio_set_value(mx27vis_amp_gain0_gpio, value & 1);
+		gpio_set_value(mx27vis_amp_gain1_gpio, value >> 1);
 		mx27vis_amp_gain = value;
 		break;
 	case MX27VIS_AMP_MUTE:
-		gpio_set_value(MX27VIS_PIN_SDL, value & 1);
-		gpio_set_value(MX27VIS_PIN_SDR, value >> 1);
+		gpio_set_value(mx27vis_amp_mutel_gpio, value & 1);
+		gpio_set_value(mx27vis_amp_muter_gpio, value >> 1);
 		mx27vis_amp_mute = value;
 		break;
 	}
@@ -169,9 +151,11 @@ static struct snd_soc_dai_link mx27vis_aic32x4_dai = {
 	.name		= "tlv320aic32x4",
 	.stream_name	= "TLV320AIC32X4",
 	.codec_dai_name	= "tlv320aic32x4-hifi",
-	.platform_name	= "imx-pcm-audio.0",
+	.platform_name	= "imx-ssi.0",
 	.codec_name	= "tlv320aic32x4.0-0018",
 	.cpu_dai_name	= "imx-ssi.0",
+	.dai_fmt	= SND_SOC_DAIFMT_DSP_B | SND_SOC_DAIFMT_NB_NF |
+			  SND_SOC_DAIFMT_CBM_CFM,
 	.ops		= &mx27vis_aic32x4_snd_ops,
 };
 
@@ -188,9 +172,20 @@ static struct snd_soc_card mx27vis_aic32x4 = {
 	.num_dapm_routes = ARRAY_SIZE(aic32x4_dapm_routes),
 };
 
-static int __devinit mx27vis_aic32x4_probe(struct platform_device *pdev)
+static int mx27vis_aic32x4_probe(struct platform_device *pdev)
 {
+	struct snd_mx27vis_platform_data *pdata = pdev->dev.platform_data;
 	int ret;
+
+	if (!pdata) {
+		dev_err(&pdev->dev, "No platform data supplied\n");
+		return -EINVAL;
+	}
+
+	mx27vis_amp_gain0_gpio = pdata->amp_gain0_gpio;
+	mx27vis_amp_gain1_gpio = pdata->amp_gain1_gpio;
+	mx27vis_amp_mutel_gpio = pdata->amp_mutel_gpio;
+	mx27vis_amp_muter_gpio = pdata->amp_muter_gpio;
 
 	mx27vis_aic32x4.dev = &pdev->dev;
 	ret = snd_soc_register_card(&mx27vis_aic32x4);
@@ -213,15 +208,10 @@ static int __devinit mx27vis_aic32x4_probe(struct platform_device *pdev)
 			IMX_AUDMUX_V1_PCR_RXDSEL(MX27_AUDMUX_HPCR1_SSI0)
 	);
 
-	ret = mxc_gpio_setup_multiple_pins(mx27vis_amp_pins,
-			ARRAY_SIZE(mx27vis_amp_pins), "MX27VIS_AMP");
-	if (ret)
-		printk(KERN_ERR "ASoC: unable to setup gpios\n");
-
 	return ret;
 }
 
-static int __devexit mx27vis_aic32x4_remove(struct platform_device *pdev)
+static int mx27vis_aic32x4_remove(struct platform_device *pdev)
 {
 	snd_soc_unregister_card(&mx27vis_aic32x4);
 
@@ -231,10 +221,9 @@ static int __devexit mx27vis_aic32x4_remove(struct platform_device *pdev)
 static struct platform_driver mx27vis_aic32x4_audio_driver = {
 	.driver = {
 		.name = "mx27vis",
-		.owner = THIS_MODULE,
 	},
 	.probe = mx27vis_aic32x4_probe,
-	.remove = __devexit_p(mx27vis_aic32x4_remove),
+	.remove = mx27vis_aic32x4_remove,
 };
 
 module_platform_driver(mx27vis_aic32x4_audio_driver);

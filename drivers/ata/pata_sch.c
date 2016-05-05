@@ -27,7 +27,6 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/pci.h>
-#include <linux/init.h>
 #include <linux/blkdev.h>
 #include <linux/delay.h>
 #include <linux/device.h>
@@ -65,7 +64,7 @@ static struct pci_driver sch_pci_driver = {
 	.id_table		= sch_pci_tbl,
 	.probe			= sch_init_one,
 	.remove			= ata_pci_remove_one,
-#ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 	.suspend		= ata_pci_device_suspend,
 	.resume			= ata_pci_device_resume,
 #endif
@@ -169,8 +168,7 @@ static void sch_set_dmamode(struct ata_port *ap, struct ata_device *adev)
  *	Zero on success, or -ERRNO value.
  */
 
-static int __devinit sch_init_one(struct pci_dev *pdev,
-				   const struct pci_device_id *ent)
+static int sch_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 {
 	const struct ata_port_info *ppi[] = { &sch_port_info, NULL };
 

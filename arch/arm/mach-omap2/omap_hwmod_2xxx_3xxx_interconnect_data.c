@@ -13,8 +13,7 @@
  */
 #include <asm/sizes.h>
 
-#include <plat/omap_hwmod.h>
-#include <plat/serial.h>
+#include "omap_hwmod.h"
 
 #include "omap_hwmod_common_data.h"
 
@@ -149,15 +148,6 @@ struct omap_hwmod_addr_space omap2_dma_system_addrs[] = {
 		.pa_start	= 0x48056000,
 		.pa_end		= 0x48056000 + SZ_4K - 1,
 		.flags		= ADDR_TYPE_RT
-	},
-	{ }
-};
-
-struct omap_hwmod_addr_space omap2_mailbox_addrs[] = {
-	{
-		.pa_start	= 0x48094000,
-		.pa_end		= 0x48094000 + SZ_512 - 1,
-		.flags		= ADDR_TYPE_RT,
 	},
 	{ }
 };

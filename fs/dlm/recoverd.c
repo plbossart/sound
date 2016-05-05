@@ -41,6 +41,7 @@ static int enable_locking(struct dlm_ls *ls, uint64_t seq)
 		set_bit(LSFL_RUNNING, &ls->ls_flags);
 		/* unblocks processes waiting to enter the dlm */
 		up_write(&ls->ls_in_recovery);
+		clear_bit(LSFL_RECOVER_LOCK, &ls->ls_flags);
 		error = 0;
 	}
 	spin_unlock(&ls->ls_recover_lock);
@@ -54,7 +55,7 @@ static int ls_recover(struct dlm_ls *ls, struct dlm_recover *rv)
 	unsigned long start;
 	int error, neg = 0;
 
-	log_debug(ls, "dlm_recover %llu", (unsigned long long)rv->seq);
+	log_rinfo(ls, "dlm_recover %llu", (unsigned long long)rv->seq);
 
 	mutex_lock(&ls->ls_recoverd_active);
 
@@ -75,7 +76,7 @@ static int ls_recover(struct dlm_ls *ls, struct dlm_recover *rv)
 
 	error = dlm_recover_members(ls, rv, &neg);
 	if (error) {
-		log_debug(ls, "dlm_recover_members error %d", error);
+		log_rinfo(ls, "dlm_recover_members error %d", error);
 		goto fail;
 	}
 
@@ -89,7 +90,7 @@ static int ls_recover(struct dlm_ls *ls, struct dlm_recover *rv)
 
 	error = dlm_recover_members_wait(ls);
 	if (error) {
-		log_debug(ls, "dlm_recover_members_wait error %d", error);
+		log_rinfo(ls, "dlm_recover_members_wait error %d", error);
 		goto fail;
 	}
 
@@ -102,7 +103,7 @@ static int ls_recover(struct dlm_ls *ls, struct dlm_recover *rv)
 
 	error = dlm_recover_directory(ls);
 	if (error) {
-		log_debug(ls, "dlm_recover_directory error %d", error);
+		log_rinfo(ls, "dlm_recover_directory error %d", error);
 		goto fail;
 	}
 
@@ -110,11 +111,11 @@ static int ls_recover(struct dlm_ls *ls, struct dlm_recover *rv)
 
 	error = dlm_recover_directory_wait(ls);
 	if (error) {
-		log_debug(ls, "dlm_recover_directory_wait error %d", error);
+		log_rinfo(ls, "dlm_recover_directory_wait error %d", error);
 		goto fail;
 	}
 
-	log_debug(ls, "dlm_recover_directory %u out %u messages",
+	log_rinfo(ls, "dlm_recover_directory %u out %u messages",
 		  ls->ls_recover_dir_sent_res, ls->ls_recover_dir_sent_msg);
 
 	/*
@@ -143,7 +144,7 @@ static int ls_recover(struct dlm_ls *ls, struct dlm_recover *rv)
 
 		error = dlm_recover_masters(ls);
 		if (error) {
-			log_debug(ls, "dlm_recover_masters error %d", error);
+			log_rinfo(ls, "dlm_recover_masters error %d", error);
 			goto fail;
 		}
 
@@ -153,7 +154,7 @@ static int ls_recover(struct dlm_ls *ls, struct dlm_recover *rv)
 
 		error = dlm_recover_locks(ls);
 		if (error) {
-			log_debug(ls, "dlm_recover_locks error %d", error);
+			log_rinfo(ls, "dlm_recover_locks error %d", error);
 			goto fail;
 		}
 
@@ -161,11 +162,11 @@ static int ls_recover(struct dlm_ls *ls, struct dlm_recover *rv)
 
 		error = dlm_recover_locks_wait(ls);
 		if (error) {
-			log_debug(ls, "dlm_recover_locks_wait error %d", error);
+			log_rinfo(ls, "dlm_recover_locks_wait error %d", error);
 			goto fail;
 		}
 
-		log_debug(ls, "dlm_recover_locks %u in",
+		log_rinfo(ls, "dlm_recover_locks %u in",
 			  ls->ls_recover_locks_in);
 
 		/*
@@ -185,7 +186,7 @@ static int ls_recover(struct dlm_ls *ls, struct dlm_recover *rv)
 
 		error = dlm_recover_locks_wait(ls);
 		if (error) {
-			log_debug(ls, "dlm_recover_locks_wait error %d", error);
+			log_rinfo(ls, "dlm_recover_locks_wait error %d", error);
 			goto fail;
 		}
 	}
@@ -204,7 +205,7 @@ static int ls_recover(struct dlm_ls *ls, struct dlm_recover *rv)
 
 	error = dlm_recover_done_wait(ls);
 	if (error) {
-		log_debug(ls, "dlm_recover_done_wait error %d", error);
+		log_rinfo(ls, "dlm_recover_done_wait error %d", error);
 		goto fail;
 	}
 
@@ -216,25 +217,25 @@ static int ls_recover(struct dlm_ls *ls, struct dlm_recover *rv)
 
 	error = enable_locking(ls, rv->seq);
 	if (error) {
-		log_debug(ls, "enable_locking error %d", error);
+		log_rinfo(ls, "enable_locking error %d", error);
 		goto fail;
 	}
 
 	error = dlm_process_requestqueue(ls);
 	if (error) {
-		log_debug(ls, "dlm_process_requestqueue error %d", error);
+		log_rinfo(ls, "dlm_process_requestqueue error %d", error);
 		goto fail;
 	}
 
 	error = dlm_recover_waiters_post(ls);
 	if (error) {
-		log_debug(ls, "dlm_recover_waiters_post error %d", error);
+		log_rinfo(ls, "dlm_recover_waiters_post error %d", error);
 		goto fail;
 	}
 
 	dlm_recover_grant(ls);
 
-	log_debug(ls, "dlm_recover %llu generation %u done: %u ms",
+	log_rinfo(ls, "dlm_recover %llu generation %u done: %u ms",
 		  (unsigned long long)rv->seq, ls->ls_generation,
 		  jiffies_to_msecs(jiffies - start));
 	mutex_unlock(&ls->ls_recoverd_active);
@@ -244,7 +245,7 @@ static int ls_recover(struct dlm_ls *ls, struct dlm_recover *rv)
 
  fail:
 	dlm_release_root_list(ls);
-	log_debug(ls, "dlm_recover %llu error %d",
+	log_rinfo(ls, "dlm_recover %llu error %d",
 		  (unsigned long long)rv->seq, error);
 	mutex_unlock(&ls->ls_recoverd_active);
 	return error;
@@ -262,7 +263,7 @@ static void do_ls_recovery(struct dlm_ls *ls)
 	rv = ls->ls_recover_args;
 	ls->ls_recover_args = NULL;
 	if (rv && ls->ls_recover_seq == rv->seq)
-		clear_bit(LSFL_RECOVERY_STOP, &ls->ls_flags);
+		clear_bit(LSFL_RECOVER_STOP, &ls->ls_flags);
 	spin_unlock(&ls->ls_recover_lock);
 
 	if (rv) {
@@ -282,24 +283,32 @@ static int dlm_recoverd(void *arg)
 		return -1;
 	}
 
+	down_write(&ls->ls_in_recovery);
+	set_bit(LSFL_RECOVER_LOCK, &ls->ls_flags);
+	wake_up(&ls->ls_recover_lock_wait);
+
 	while (!kthread_should_stop()) {
 		set_current_state(TASK_INTERRUPTIBLE);
-		if (!test_bit(LSFL_WORK, &ls->ls_flags))
+		if (!test_bit(LSFL_RECOVER_WORK, &ls->ls_flags) &&
+		    !test_bit(LSFL_RECOVER_DOWN, &ls->ls_flags))
 			schedule();
 		set_current_state(TASK_RUNNING);
 
-		if (test_and_clear_bit(LSFL_WORK, &ls->ls_flags))
+		if (test_and_clear_bit(LSFL_RECOVER_DOWN, &ls->ls_flags)) {
+			down_write(&ls->ls_in_recovery);
+			set_bit(LSFL_RECOVER_LOCK, &ls->ls_flags);
+			wake_up(&ls->ls_recover_lock_wait);
+		}
+
+		if (test_and_clear_bit(LSFL_RECOVER_WORK, &ls->ls_flags))
 			do_ls_recovery(ls);
 	}
 
+	if (test_bit(LSFL_RECOVER_LOCK, &ls->ls_flags))
+		up_write(&ls->ls_in_recovery);
+
 	dlm_put_lockspace(ls);
 	return 0;
-}
-
-void dlm_recoverd_kick(struct dlm_ls *ls)
-{
-	set_bit(LSFL_WORK, &ls->ls_flags);
-	wake_up_process(ls->ls_recoverd_task);
 }
 
 int dlm_recoverd_start(struct dlm_ls *ls)

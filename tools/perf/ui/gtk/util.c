@@ -23,8 +23,7 @@ int perf_gtk__deactivate_context(struct perf_gtk_context **ctx)
 	if (!perf_gtk__is_active_context(*ctx))
 		return -1;
 
-	free(*ctx);
-	*ctx = NULL;
+	zfree(ctx);
 	return 0;
 }
 
@@ -53,7 +52,7 @@ static int perf_gtk__error(const char *format, va_list args)
 	return 0;
 }
 
-#ifdef HAVE_GTK_INFO_BAR
+#ifdef HAVE_GTK_INFO_BAR_SUPPORT
 static int perf_gtk__warning_info_bar(const char *format, va_list args)
 {
 	char *msg;
@@ -105,25 +104,9 @@ static int perf_gtk__warning_statusbar(const char *format, va_list args)
 
 struct perf_error_ops perf_gtk_eops = {
 	.error		= perf_gtk__error,
-#ifdef HAVE_GTK_INFO_BAR
+#ifdef HAVE_GTK_INFO_BAR_SUPPORT
 	.warning	= perf_gtk__warning_info_bar,
 #else
 	.warning	= perf_gtk__warning_statusbar,
 #endif
 };
-
-/*
- * FIXME: Functions below should be implemented properly.
- *        For now, just add stubs for NO_NEWT=1 build.
- */
-#ifdef NO_NEWT_SUPPORT
-int ui_helpline__show_help(const char *format __used, va_list ap __used)
-{
-	return 0;
-}
-
-void ui_progress__update(u64 curr __used, u64 total __used,
-			 const char *title __used)
-{
-}
-#endif

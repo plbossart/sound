@@ -1,7 +1,8 @@
 /* cfg80211 Interface for prism2_usb module */
+#include "hfa384x.h"
+#include "prism2mgmt.h"
 
-
-/* Prism2 channell/frequency/bitrate declarations */
+/* Prism2 channel/frequency/bitrate declarations */
 static const struct ieee80211_channel prism2_channels[] = {
 	{ .center_freq = 2412 },
 	{ .center_freq = 2417 },
@@ -32,7 +33,6 @@ static const u32 prism2_cipher_suites[PRISM2_NUM_CIPHER_SUITES] = {
 	WLAN_CIPHER_SUITE_WEP104
 };
 
-
 /* prism2 device private data */
 struct prism2_wiphy_private {
 	wlandevice_t *wlandev;
@@ -45,7 +45,6 @@ struct prism2_wiphy_private {
 };
 
 static const void * const prism2_wiphy_privid = &prism2_wiphy_privid;
-
 
 /* Helper Functions */
 static int prism2_result2err(int prism2_result)
@@ -73,35 +72,36 @@ static int prism2_result2err(int prism2_result)
 static int prism2_domibset_uint32(wlandevice_t *wlandev, u32 did, u32 data)
 {
 	struct p80211msg_dot11req_mibset msg;
-	p80211item_uint32_t *mibitem = (p80211item_uint32_t *) &msg.mibattribute.data;
+	p80211item_uint32_t *mibitem =
+			(p80211item_uint32_t *)&msg.mibattribute.data;
 
 	msg.msgcode = DIDmsg_dot11req_mibset;
 	mibitem->did = did;
 	mibitem->data = data;
 
-	return p80211req_dorequest(wlandev, (u8 *) &msg);
+	return p80211req_dorequest(wlandev, (u8 *)&msg);
 }
 
 static int prism2_domibset_pstr32(wlandevice_t *wlandev,
-				  u32 did, u8 len, u8 *data)
+				  u32 did, u8 len, const u8 *data)
 {
 	struct p80211msg_dot11req_mibset msg;
-	p80211item_pstr32_t *mibitem = (p80211item_pstr32_t *) &msg.mibattribute.data;
+	p80211item_pstr32_t *mibitem =
+			(p80211item_pstr32_t *)&msg.mibattribute.data;
 
 	msg.msgcode = DIDmsg_dot11req_mibset;
 	mibitem->did = did;
 	mibitem->data.len = len;
 	memcpy(mibitem->data.data, data, len);
 
-	return p80211req_dorequest(wlandev, (u8 *) &msg);
+	return p80211req_dorequest(wlandev, (u8 *)&msg);
 }
 
-
 /* The interface functions, called by the cfg80211 layer */
-int prism2_change_virtual_intf(struct wiphy *wiphy,
-			       struct net_device *dev,
-			       enum nl80211_iftype type, u32 *flags,
-			       struct vif_params *params)
+static int prism2_change_virtual_intf(struct wiphy *wiphy,
+				      struct net_device *dev,
+				      enum nl80211_iftype type, u32 *flags,
+				      struct vif_params *params)
 {
 	wlandevice_t *wlandev = dev->ml_priv;
 	u32 data;
@@ -122,7 +122,7 @@ int prism2_change_virtual_intf(struct wiphy *wiphy,
 		data = 1;
 		break;
 	default:
-		printk(KERN_WARNING "Operation mode: %d not support\n", type);
+		netdev_warn(dev, "Operation mode: %d not support\n", type);
 		return -EOPNOTSUPP;
 	}
 
@@ -140,9 +140,9 @@ exit:
 	return err;
 }
 
-int prism2_add_key(struct wiphy *wiphy, struct net_device *dev,
-		   u8 key_index, bool pairwise, const u8 *mac_addr,
-		   struct key_params *params)
+static int prism2_add_key(struct wiphy *wiphy, struct net_device *dev,
+			  u8 key_index, bool pairwise, const u8 *mac_addr,
+			  struct key_params *params)
 {
 	wlandevice_t *wlandev = dev->ml_priv;
 	u32 did;
@@ -182,7 +182,8 @@ int prism2_add_key(struct wiphy *wiphy, struct net_device *dev,
 			goto exit;
 		}
 
-		result = prism2_domibset_pstr32(wlandev, did, params->key_len, params->key);
+		result = prism2_domibset_pstr32(wlandev, did,
+						params->key_len, params->key);
 		if (result)
 			goto exit;
 		break;
@@ -199,9 +200,10 @@ exit:
 	return err;
 }
 
-int prism2_get_key(struct wiphy *wiphy, struct net_device *dev,
-		   u8 key_index, bool pairwise, const u8 *mac_addr, void *cookie,
-		   void (*callback)(void *cookie, struct key_params*))
+static int prism2_get_key(struct wiphy *wiphy, struct net_device *dev,
+			  u8 key_index, bool pairwise,
+			  const u8 *mac_addr, void *cookie,
+			  void (*callback)(void *cookie, struct key_params*))
 {
 	wlandevice_t *wlandev = dev->ml_priv;
 	struct key_params params;
@@ -228,8 +230,8 @@ int prism2_get_key(struct wiphy *wiphy, struct net_device *dev,
 	return 0;
 }
 
-int prism2_del_key(struct wiphy *wiphy, struct net_device *dev,
-		   u8 key_index, bool pairwise, const u8 *mac_addr)
+static int prism2_del_key(struct wiphy *wiphy, struct net_device *dev,
+			  u8 key_index, bool pairwise, const u8 *mac_addr)
 {
 	wlandevice_t *wlandev = dev->ml_priv;
 	u32 did;
@@ -237,7 +239,9 @@ int prism2_del_key(struct wiphy *wiphy, struct net_device *dev,
 	int result = 0;
 
 	/* There is no direct way in the hardware (AFAIK) of removing
-	   a key, so we will cheat by setting the key to a bogus value */
+	 * a key, so we will cheat by setting the key to a bogus value
+	 */
+
 	/* send key to driver */
 	switch (key_index) {
 	case 0:
@@ -274,8 +278,8 @@ exit:
 	return err;
 }
 
-int prism2_set_default_key(struct wiphy *wiphy, struct net_device *dev,
-			   u8 key_index, bool unicast, bool multicast)
+static int prism2_set_default_key(struct wiphy *wiphy, struct net_device *dev,
+				  u8 key_index, bool unicast, bool multicast)
 {
 	wlandevice_t *wlandev = dev->ml_priv;
 
@@ -292,9 +296,8 @@ int prism2_set_default_key(struct wiphy *wiphy, struct net_device *dev,
 	return err;
 }
 
-
-int prism2_get_station(struct wiphy *wiphy, struct net_device *dev,
-		       u8 *mac, struct station_info *sinfo)
+static int prism2_get_station(struct wiphy *wiphy, struct net_device *dev,
+			      const u8 *mac, struct station_info *sinfo)
 {
 	wlandevice_t *wlandev = dev->ml_priv;
 	struct p80211msg_lnxreq_commsquality quality;
@@ -314,24 +317,24 @@ int prism2_get_station(struct wiphy *wiphy, struct net_device *dev,
 	if (wlandev->mlmerequest == NULL)
 		return -EOPNOTSUPP;
 
-	result = wlandev->mlmerequest(wlandev, (struct p80211msg *) &quality);
-
+	result = wlandev->mlmerequest(wlandev, (struct p80211msg *)&quality);
 
 	if (result == 0) {
 		sinfo->txrate.legacy = quality.txrate.data;
-		sinfo->filled |= STATION_INFO_TX_BITRATE;
+		sinfo->filled |= BIT(NL80211_STA_INFO_TX_BITRATE);
 		sinfo->signal = quality.level.data;
-		sinfo->filled |= STATION_INFO_SIGNAL;
+		sinfo->filled |= BIT(NL80211_STA_INFO_SIGNAL);
 	}
 
 	return result;
 }
 
-int prism2_scan(struct wiphy *wiphy, struct net_device *dev,
-		struct cfg80211_scan_request *request)
+static int prism2_scan(struct wiphy *wiphy,
+		       struct cfg80211_scan_request *request)
 {
+	struct net_device *dev;
 	struct prism2_wiphy_private *priv = wiphy_priv(wiphy);
-	wlandevice_t *wlandev = dev->ml_priv;
+	wlandevice_t *wlandev;
 	struct p80211msg_dot11req_scan msg1;
 	struct p80211msg_dot11req_scan_results msg2;
 	struct cfg80211_bss *bss;
@@ -345,11 +348,14 @@ int prism2_scan(struct wiphy *wiphy, struct net_device *dev,
 	if (!request)
 		return -EINVAL;
 
+	dev = request->wdev->netdev;
+	wlandev = dev->ml_priv;
+
 	if (priv->scan_request && priv->scan_request != request)
 		return -EBUSY;
 
 	if (wlandev->macmode == WLAN_MACMODE_ESS_AP) {
-		printk(KERN_ERR "Can't scan in AP mode\n");
+		netdev_err(dev, "Can't scan in AP mode\n");
 		return -EOPNOTSUPP;
 	}
 
@@ -376,13 +382,14 @@ int prism2_scan(struct wiphy *wiphy, struct net_device *dev,
 		(i < request->n_channels) && i < ARRAY_SIZE(prism2_channels);
 		i++)
 		msg1.channellist.data.data[i] =
-			ieee80211_frequency_to_channel(request->channels[i]->center_freq);
+			ieee80211_frequency_to_channel(
+				request->channels[i]->center_freq);
 	msg1.channellist.data.len = request->n_channels;
 
 	msg1.maxchanneltime.data = 250;
 	msg1.minchanneltime.data = 200;
 
-	result = p80211req_dorequest(wlandev, (u8 *) &msg1);
+	result = p80211req_dorequest(wlandev, (u8 *)&msg1);
 	if (result) {
 		err = prism2_result2err(msg1.resultcode.data);
 		goto exit;
@@ -391,11 +398,13 @@ int prism2_scan(struct wiphy *wiphy, struct net_device *dev,
 	numbss = msg1.numbss.data;
 
 	for (i = 0; i < numbss; i++) {
+		int freq;
+
 		memset(&msg2, 0, sizeof(msg2));
 		msg2.msgcode = DIDmsg_dot11req_scan_results;
 		msg2.bssindex.data = i;
 
-		result = p80211req_dorequest(wlandev, (u8 *) &msg2);
+		result = p80211req_dorequest(wlandev, (u8 *)&msg2);
 		if ((result != 0) ||
 		    (msg2.resultcode.data != P80211ENUM_resultcode_success)) {
 			break;
@@ -405,9 +414,12 @@ int prism2_scan(struct wiphy *wiphy, struct net_device *dev,
 		ie_buf[1] = msg2.ssid.data.len;
 		ie_len = ie_buf[1] + 2;
 		memcpy(&ie_buf[2], &(msg2.ssid.data.data), msg2.ssid.data.len);
+		freq = ieee80211_channel_to_frequency(msg2.dschannel.data,
+						      IEEE80211_BAND_2GHZ);
 		bss = cfg80211_inform_bss(wiphy,
-			ieee80211_get_channel(wiphy, ieee80211_dsss_chan_to_freq(msg2.dschannel.data)),
-			(const u8 *) &(msg2.bssid.data.data),
+			ieee80211_get_channel(wiphy, freq),
+			CFG80211_BSS_FTYPE_UNKNOWN,
+			(const u8 *)&(msg2.bssid.data.data),
 			msg2.timestamp.data, msg2.capinfo.data,
 			msg2.beaconperiod.data,
 			ie_buf,
@@ -421,7 +433,7 @@ int prism2_scan(struct wiphy *wiphy, struct net_device *dev,
 			goto exit;
 		}
 
-		cfg80211_put_bss(bss);
+		cfg80211_put_bss(wiphy, bss);
 	}
 
 	if (result)
@@ -433,7 +445,7 @@ exit:
 	return err;
 }
 
-int prism2_set_wiphy_params(struct wiphy *wiphy, u32 changed)
+static int prism2_set_wiphy_params(struct wiphy *wiphy, u32 changed)
 {
 	struct prism2_wiphy_private *priv = wiphy_priv(wiphy);
 	wlandevice_t *wlandev = priv->wlandev;
@@ -475,8 +487,8 @@ exit:
 	return err;
 }
 
-int prism2_connect(struct wiphy *wiphy, struct net_device *dev,
-		   struct cfg80211_connect_params *sme)
+static int prism2_connect(struct wiphy *wiphy, struct net_device *dev,
+			  struct cfg80211_connect_params *sme)
 {
 	wlandevice_t *wlandev = dev->ml_priv;
 	struct ieee80211_channel *channel = sme->channel;
@@ -499,7 +511,7 @@ int prism2_connect(struct wiphy *wiphy, struct net_device *dev,
 			goto exit;
 	}
 
-	/* Set the authorisation */
+	/* Set the authorization */
 	if ((sme->auth_type == NL80211_AUTHTYPE_OPEN_SYSTEM) ||
 		((sme->auth_type == NL80211_AUTHTYPE_AUTOMATIC) && !is_wep))
 			msg_join.authtype.data = P80211ENUM_authalg_opensystem;
@@ -507,7 +519,7 @@ int prism2_connect(struct wiphy *wiphy, struct net_device *dev,
 		((sme->auth_type == NL80211_AUTHTYPE_AUTOMATIC) && is_wep))
 			msg_join.authtype.data = P80211ENUM_authalg_sharedkey;
 	else
-		printk(KERN_WARNING
+		netdev_warn(dev,
 			"Unhandled authorisation type for connect (%d)\n",
 			sme->auth_type);
 
@@ -548,12 +560,12 @@ int prism2_connect(struct wiphy *wiphy, struct net_device *dev,
 							(u8 *)sme->key);
 			if (result)
 				goto exit;
-
 		}
 
 		/* Assume we should set privacy invoked and exclude unencrypted
-		   We could possibly use sme->privacy here, but the assumption
-		   seems reasonable anyway */
+		 * We could possible use sme->privacy here, but the assumption
+		 * seems reasonable anyways
+		 */
 		result = prism2_domibset_uint32(wlandev,
 						DIDmib_dot11smt_dot11PrivacyTable_dot11PrivacyInvoked,
 						P80211ENUM_truth_true);
@@ -568,7 +580,8 @@ int prism2_connect(struct wiphy *wiphy, struct net_device *dev,
 
 	} else {
 		/* Assume we should unset privacy invoked
-		   and exclude unencrypted */
+		 * and exclude unencrypted
+		 */
 		result = prism2_domibset_uint32(wlandev,
 						DIDmib_dot11smt_dot11PrivacyTable_dot11PrivacyInvoked,
 						P80211ENUM_truth_false);
@@ -580,17 +593,17 @@ int prism2_connect(struct wiphy *wiphy, struct net_device *dev,
 						P80211ENUM_truth_false);
 		if (result)
 			goto exit;
-
 	}
 
 	/* Now do the actual join. Note there is no way that I can
-	   see to request a specific bssid */
+	 * see to request a specific bssid
+	 */
 	msg_join.msgcode = DIDmsg_lnxreq_autojoin;
 
 	memcpy(msg_join.ssid.data.data, sme->ssid, length);
 	msg_join.ssid.data.len = length;
 
-	result = p80211req_dorequest(wlandev, (u8 *) &msg_join);
+	result = p80211req_dorequest(wlandev, (u8 *)&msg_join);
 
 exit:
 	if (result)
@@ -599,14 +612,13 @@ exit:
 	return err;
 }
 
-int prism2_disconnect(struct wiphy *wiphy, struct net_device *dev,
-		      u16 reason_code)
+static int prism2_disconnect(struct wiphy *wiphy, struct net_device *dev,
+			     u16 reason_code)
 {
 	wlandevice_t *wlandev = dev->ml_priv;
 	struct p80211msg_lnxreq_autojoin msg_join;
 	int result;
 	int err = 0;
-
 
 	/* Do a join, with a bogus ssid. Thats the only way I can think of */
 	msg_join.msgcode = DIDmsg_lnxreq_autojoin;
@@ -614,7 +626,7 @@ int prism2_disconnect(struct wiphy *wiphy, struct net_device *dev,
 	memcpy(msg_join.ssid.data.data, "---", 3);
 	msg_join.ssid.data.len = 3;
 
-	result = p80211req_dorequest(wlandev, (u8 *) &msg_join);
+	result = p80211req_dorequest(wlandev, (u8 *)&msg_join);
 
 	if (result)
 		err = -EFAULT;
@@ -622,21 +634,19 @@ int prism2_disconnect(struct wiphy *wiphy, struct net_device *dev,
 	return err;
 }
 
-
-int prism2_join_ibss(struct wiphy *wiphy, struct net_device *dev,
-		     struct cfg80211_ibss_params *params)
+static int prism2_join_ibss(struct wiphy *wiphy, struct net_device *dev,
+			    struct cfg80211_ibss_params *params)
 {
 	return -EOPNOTSUPP;
 }
 
-int prism2_leave_ibss(struct wiphy *wiphy, struct net_device *dev)
+static int prism2_leave_ibss(struct wiphy *wiphy, struct net_device *dev)
 {
 	return -EOPNOTSUPP;
 }
 
-
-int prism2_set_tx_power(struct wiphy *wiphy, enum nl80211_tx_power_setting type,
-			int mbm)
+static int prism2_set_tx_power(struct wiphy *wiphy, struct wireless_dev *wdev,
+			       enum nl80211_tx_power_setting type, int mbm)
 {
 	struct prism2_wiphy_private *priv = wiphy_priv(wiphy);
 	wlandevice_t *wlandev = priv->wlandev;
@@ -662,7 +672,8 @@ exit:
 	return err;
 }
 
-int prism2_get_tx_power(struct wiphy *wiphy, int *dbm)
+static int prism2_get_tx_power(struct wiphy *wiphy, struct wireless_dev *wdev,
+			       int *dbm)
 {
 	struct prism2_wiphy_private *priv = wiphy_priv(wiphy);
 	wlandevice_t *wlandev = priv->wlandev;
@@ -671,12 +682,12 @@ int prism2_get_tx_power(struct wiphy *wiphy, int *dbm)
 	int result;
 	int err = 0;
 
-	mibitem = (p80211item_uint32_t *) &msg.mibattribute.data;
+	mibitem = (p80211item_uint32_t *)&msg.mibattribute.data;
 	msg.msgcode = DIDmsg_dot11req_mibget;
 	mibitem->did =
 	    DIDmib_dot11phy_dot11PhyTxPowerTable_dot11CurrentTxPowerLevel;
 
-	result = p80211req_dorequest(wlandev, (u8 *) &msg);
+	result = p80211req_dorequest(wlandev, (u8 *)&msg);
 
 	if (result) {
 		err = -EFAULT;
@@ -688,9 +699,6 @@ int prism2_get_tx_power(struct wiphy *wiphy, int *dbm)
 exit:
 	return err;
 }
-
-
-
 
 /* Interface callback functions, passing data back up to the cfg80211 layer */
 void prism2_connect_result(wlandevice_t *wlandev, u8 failed)
@@ -705,7 +713,7 @@ void prism2_connect_result(wlandevice_t *wlandev, u8 failed)
 void prism2_disconnected(wlandevice_t *wlandev)
 {
 	cfg80211_disconnected(wlandev->netdev, 0, NULL,
-		0, GFP_KERNEL);
+		0, false, GFP_KERNEL);
 }
 
 void prism2_roamed(wlandevice_t *wlandev)
@@ -713,7 +721,6 @@ void prism2_roamed(wlandevice_t *wlandev)
 	cfg80211_roamed(wlandev->netdev, NULL, wlandev->bssid,
 		NULL, 0, NULL, 0, GFP_KERNEL);
 }
-
 
 /* Structures for declaring wiphy interface */
 static const struct cfg80211_ops prism2_usb_cfg_ops = {
@@ -733,9 +740,8 @@ static const struct cfg80211_ops prism2_usb_cfg_ops = {
 	.get_tx_power = prism2_get_tx_power,
 };
 
-
 /* Functions to create/free wiphy interface */
-struct wiphy *wlan_create_wiphy(struct device *dev, wlandevice_t *wlandev)
+static struct wiphy *wlan_create_wiphy(struct device *dev, wlandevice_t *wlandev)
 {
 	struct wiphy *wiphy;
 	struct prism2_wiphy_private *priv;
@@ -771,8 +777,7 @@ struct wiphy *wlan_create_wiphy(struct device *dev, wlandevice_t *wlandev)
 	return wiphy;
 }
 
-
-void wlan_free_wiphy(struct wiphy *wiphy)
+static void wlan_free_wiphy(struct wiphy *wiphy)
 {
 	wiphy_unregister(wiphy);
 	wiphy_free(wiphy);

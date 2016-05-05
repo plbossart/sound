@@ -10,10 +10,67 @@
 #include "dm-persistent-data-internal.h"
 
 #include <linux/export.h>
+#include <linux/mutex.h>
+#include <linux/hash.h>
 #include <linux/slab.h>
 #include <linux/device-mapper.h>
 
 #define DM_MSG_PREFIX "transaction manager"
+
+/*----------------------------------------------------------------*/
+
+#define PREFETCH_SIZE 128
+#define PREFETCH_BITS 7
+#define PREFETCH_SENTINEL ((dm_block_t) -1ULL)
+
+struct prefetch_set {
+	struct mutex lock;
+	dm_block_t blocks[PREFETCH_SIZE];
+};
+
+static unsigned prefetch_hash(dm_block_t b)
+{
+	return hash_64(b, PREFETCH_BITS);
+}
+
+static void prefetch_wipe(struct prefetch_set *p)
+{
+	unsigned i;
+	for (i = 0; i < PREFETCH_SIZE; i++)
+		p->blocks[i] = PREFETCH_SENTINEL;
+}
+
+static void prefetch_init(struct prefetch_set *p)
+{
+	mutex_init(&p->lock);
+	prefetch_wipe(p);
+}
+
+static void prefetch_add(struct prefetch_set *p, dm_block_t b)
+{
+	unsigned h = prefetch_hash(b);
+
+	mutex_lock(&p->lock);
+	if (p->blocks[h] == PREFETCH_SENTINEL)
+		p->blocks[h] = b;
+
+	mutex_unlock(&p->lock);
+}
+
+static void prefetch_issue(struct prefetch_set *p, struct dm_block_manager *bm)
+{
+	unsigned i;
+
+	mutex_lock(&p->lock);
+
+	for (i = 0; i < PREFETCH_SIZE; i++)
+		if (p->blocks[i] != PREFETCH_SENTINEL) {
+			dm_bm_prefetch(bm, p->blocks[i]);
+			p->blocks[i] = PREFETCH_SENTINEL;
+		}
+
+	mutex_unlock(&p->lock);
+}
 
 /*----------------------------------------------------------------*/
 
@@ -25,8 +82,8 @@ struct shadow_info {
 /*
  * It would be nice if we scaled with the size of transaction.
  */
-#define HASH_SIZE 256
-#define HASH_MASK (HASH_SIZE - 1)
+#define DM_HASH_SIZE 256
+#define DM_HASH_MASK (DM_HASH_SIZE - 1)
 
 struct dm_transaction_manager {
 	int is_clone;
@@ -36,7 +93,9 @@ struct dm_transaction_manager {
 	struct dm_space_map *sm;
 
 	spinlock_t lock;
-	struct hlist_head buckets[HASH_SIZE];
+	struct hlist_head buckets[DM_HASH_SIZE];
+
+	struct prefetch_set prefetches;
 };
 
 /*----------------------------------------------------------------*/
@@ -44,12 +103,11 @@ struct dm_transaction_manager {
 static int is_shadow(struct dm_transaction_manager *tm, dm_block_t b)
 {
 	int r = 0;
-	unsigned bucket = dm_hash_block(b, HASH_MASK);
+	unsigned bucket = dm_hash_block(b, DM_HASH_MASK);
 	struct shadow_info *si;
-	struct hlist_node *n;
 
 	spin_lock(&tm->lock);
-	hlist_for_each_entry(si, n, tm->buckets + bucket, hlist)
+	hlist_for_each_entry(si, tm->buckets + bucket, hlist)
 		if (si->where == b) {
 			r = 1;
 			break;
@@ -71,7 +129,7 @@ static void insert_shadow(struct dm_transaction_manager *tm, dm_block_t b)
 	si = kmalloc(sizeof(*si), GFP_NOIO);
 	if (si) {
 		si->where = b;
-		bucket = dm_hash_block(b, HASH_MASK);
+		bucket = dm_hash_block(b, DM_HASH_MASK);
 		spin_lock(&tm->lock);
 		hlist_add_head(&si->hlist, tm->buckets + bucket);
 		spin_unlock(&tm->lock);
@@ -81,14 +139,14 @@ static void insert_shadow(struct dm_transaction_manager *tm, dm_block_t b)
 static void wipe_shadow_table(struct dm_transaction_manager *tm)
 {
 	struct shadow_info *si;
-	struct hlist_node *n, *tmp;
+	struct hlist_node *tmp;
 	struct hlist_head *bucket;
 	int i;
 
 	spin_lock(&tm->lock);
-	for (i = 0; i < HASH_SIZE; i++) {
+	for (i = 0; i < DM_HASH_SIZE; i++) {
 		bucket = tm->buckets + i;
-		hlist_for_each_entry_safe(si, n, tmp, bucket, hlist)
+		hlist_for_each_entry_safe(si, tmp, bucket, hlist)
 			kfree(si);
 
 		INIT_HLIST_HEAD(bucket);
@@ -115,8 +173,10 @@ static struct dm_transaction_manager *dm_tm_create(struct dm_block_manager *bm,
 	tm->sm = sm;
 
 	spin_lock_init(&tm->lock);
-	for (i = 0; i < HASH_SIZE; i++)
+	for (i = 0; i < DM_HASH_SIZE; i++)
 		INIT_HLIST_HEAD(tm->buckets + i);
+
+	prefetch_init(&tm->prefetches);
 
 	return tm;
 }
@@ -155,7 +215,7 @@ int dm_tm_pre_commit(struct dm_transaction_manager *tm)
 	if (r < 0)
 		return r;
 
-	return 0;
+	return dm_bm_flush(tm->bm);
 }
 EXPORT_SYMBOL_GPL(dm_tm_pre_commit);
 
@@ -165,8 +225,9 @@ int dm_tm_commit(struct dm_transaction_manager *tm, struct dm_block *root)
 		return -EWOULDBLOCK;
 
 	wipe_shadow_table(tm);
+	dm_bm_unlock(root);
 
-	return dm_bm_flush_and_unlock(tm->bm, root);
+	return dm_bm_flush(tm->bm);
 }
 EXPORT_SYMBOL_GPL(dm_tm_commit);
 
@@ -268,16 +329,22 @@ int dm_tm_read_lock(struct dm_transaction_manager *tm, dm_block_t b,
 		    struct dm_block_validator *v,
 		    struct dm_block **blk)
 {
-	if (tm->is_clone)
-		return dm_bm_read_try_lock(tm->real->bm, b, v, blk);
+	if (tm->is_clone) {
+		int r = dm_bm_read_try_lock(tm->real->bm, b, v, blk);
+
+		if (r == -EWOULDBLOCK)
+			prefetch_add(&tm->real->prefetches, b);
+
+		return r;
+	}
 
 	return dm_bm_read_lock(tm->bm, b, v, blk);
 }
 EXPORT_SYMBOL_GPL(dm_tm_read_lock);
 
-int dm_tm_unlock(struct dm_transaction_manager *tm, struct dm_block *b)
+void dm_tm_unlock(struct dm_transaction_manager *tm, struct dm_block *b)
 {
-	return dm_bm_unlock(b);
+	dm_bm_unlock(b);
 }
 EXPORT_SYMBOL_GPL(dm_tm_unlock);
 
@@ -316,6 +383,12 @@ struct dm_block_manager *dm_tm_get_bm(struct dm_transaction_manager *tm)
 {
 	return tm->bm;
 }
+
+void dm_tm_issue_prefetches(struct dm_transaction_manager *tm)
+{
+	prefetch_issue(&tm->prefetches, tm->bm);
+}
+EXPORT_SYMBOL_GPL(dm_tm_issue_prefetches);
 
 /*----------------------------------------------------------------*/
 

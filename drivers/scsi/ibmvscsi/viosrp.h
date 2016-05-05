@@ -51,13 +51,25 @@ union srp_iu {
 	u8 reserved[SRP_MAX_IU_LEN];
 };
 
+enum viosrp_crq_headers {
+	VIOSRP_CRQ_FREE = 0x00,
+	VIOSRP_CRQ_CMD_RSP = 0x80,
+	VIOSRP_CRQ_INIT_RSP = 0xC0,
+	VIOSRP_CRQ_XPORT_EVENT = 0xFF
+};
+
+enum viosrp_crq_init_formats {
+	VIOSRP_CRQ_INIT = 0x01,
+	VIOSRP_CRQ_INIT_COMPLETE = 0x02
+};
+
 enum viosrp_crq_formats {
 	VIOSRP_SRP_FORMAT = 0x01,
 	VIOSRP_MAD_FORMAT = 0x02,
 	VIOSRP_OS400_FORMAT = 0x03,
 	VIOSRP_AIX_FORMAT = 0x04,
-	VIOSRP_LINUX_FORMAT = 0x06,
-	VIOSRP_INLINE_FORMAT = 0x07
+	VIOSRP_LINUX_FORMAT = 0x05,
+	VIOSRP_INLINE_FORMAT = 0x06
 };
 
 enum viosrp_crq_status {
@@ -75,9 +87,9 @@ struct viosrp_crq {
 	u8 format;		/* SCSI vs out-of-band */
 	u8 reserved;
 	u8 status;		/* non-scsi failure? (e.g. DMA failure) */
-	u16 timeout;		/* in seconds */
-	u16 IU_length;		/* in bytes */
-	u64 IU_data_ptr;	/* the TCE for transferring data */
+	__be16 timeout;		/* in seconds */
+	__be16 IU_length;		/* in bytes */
+	__be64 IU_data_ptr;	/* the TCE for transferring data */
 };
 
 /* MADs are Management requests above and beyond the IUs defined in the SRP
@@ -87,7 +99,6 @@ enum viosrp_mad_types {
 	VIOSRP_EMPTY_IU_TYPE = 0x01,
 	VIOSRP_ERROR_LOG_TYPE = 0x02,
 	VIOSRP_ADAPTER_INFO_TYPE = 0x03,
-	VIOSRP_HOST_CONFIG_TYPE = 0x04,
 	VIOSRP_CAPABILITIES_TYPE = 0x05,
 	VIOSRP_ENABLE_FAST_FAIL = 0x08,
 };
@@ -124,10 +135,10 @@ enum viosrp_capability_flag {
  * Common MAD header
  */
 struct mad_common {
-	u32 type;
-	u16 status;
-	u16 length;
-	u64 tag;
+	__be32 type;
+	__be16 status;
+	__be16 length;
+	__be64 tag;
 };
 
 /*
@@ -139,23 +150,18 @@ struct mad_common {
  */
 struct viosrp_empty_iu {
 	struct mad_common common;
-	u64 buffer;
-	u32 port;
+	__be64 buffer;
+	__be32 port;
 };
 
 struct viosrp_error_log {
 	struct mad_common common;
-	u64 buffer;
+	__be64 buffer;
 };
 
 struct viosrp_adapter_info {
 	struct mad_common common;
-	u64 buffer;
-};
-
-struct viosrp_host_config {
-	struct mad_common common;
-	u64 buffer;
+	__be64 buffer;
 };
 
 struct viosrp_fast_fail {
@@ -164,27 +170,27 @@ struct viosrp_fast_fail {
 
 struct viosrp_capabilities {
 	struct mad_common common;
-	u64 buffer;
+	__be64 buffer;
 };
 
 struct mad_capability_common {
-	u32 cap_type;
-	u16 length;
-	u16 server_support;
+	__be32 cap_type;
+	__be16 length;
+	__be16 server_support;
 };
 
 struct mad_reserve_cap {
 	struct mad_capability_common common;
-	u32 type;
+	__be32 type;
 };
 
 struct mad_migration_cap {
 	struct mad_capability_common common;
-	u32 ecl;
+	__be32 ecl;
 };
 
 struct capabilities{
-	u32 flags;
+	__be32 flags;
 	char name[SRP_MAX_LOC_LEN];
 	char loc[SRP_MAX_LOC_LEN];
 	struct mad_migration_cap migration;
@@ -195,7 +201,6 @@ union mad_iu {
 	struct viosrp_empty_iu empty_iu;
 	struct viosrp_error_log error_log;
 	struct viosrp_adapter_info adapter_info;
-	struct viosrp_host_config host_config;
 	struct viosrp_fast_fail fast_fail;
 	struct viosrp_capabilities capabilities;
 };
@@ -208,10 +213,13 @@ union viosrp_iu {
 struct mad_adapter_info_data {
 	char srp_version[8];
 	char partition_name[96];
-	u32 partition_number;
-	u32 mad_version;
-	u32 os_type;
-	u32 port_max_txu[8];	/* per-port maximum transfer */
+	__be32 partition_number;
+#define SRP_MAD_VERSION_1 1
+	__be32 mad_version;
+#define SRP_MAD_OS_LINUX 2
+#define SRP_MAD_OS_AIX 3
+	__be32 os_type;
+	__be32 port_max_txu[8];	/* per-port maximum transfer */
 };
 
 #endif

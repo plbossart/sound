@@ -3,20 +3,36 @@
 
 config TILE
 	def_bool y
-	select HAVE_DMA_ATTRS
+	select HAVE_PERF_EVENTS
+	select USE_PMC if PERF_EVENTS
 	select HAVE_DMA_API_DEBUG
 	select HAVE_KVM if !TILEGX
 	select GENERIC_FIND_FIRST_BIT
-	select USE_GENERIC_SMP_HELPERS
+	select SYSCTL_EXCEPTION_TRACE
 	select CC_OPTIMIZE_FOR_SIZE
-	select HAVE_GENERIC_HARDIRQS
+	select HAVE_DEBUG_KMEMLEAK
 	select GENERIC_IRQ_PROBE
 	select GENERIC_PENDING_IRQ if SMP
 	select GENERIC_IRQ_SHOW
-	select HAVE_SYSCALL_WRAPPERS if TILEGX
+	select HAVE_DEBUG_BUGVERBOSE
+	select VIRT_TO_BUS
 	select SYS_HYPERVISOR
+	select ARCH_HAS_DEBUG_STRICT_USER_COPY_CHECKS
+	select ARCH_HAS_DEVMEM_IS_ALLOWED
 	select ARCH_HAVE_NMI_SAFE_CMPXCHG
 	select GENERIC_CLOCKEVENTS
+	select MODULES_USE_ELF_RELA
+	select HAVE_ARCH_TRACEHOOK
+	select HAVE_SYSCALL_TRACEPOINTS
+	select USER_STACKTRACE_SUPPORT
+	select ARCH_HAS_ATOMIC64_DEC_IF_POSITIVE
+	select HAVE_DEBUG_STACKOVERFLOW
+	select ARCH_WANT_FRAME_POINTERS
+	select HAVE_CONTEXT_TRACKING
+	select EDAC_SUPPORT
+	select GENERIC_STRNCPY_FROM_USER
+	select GENERIC_STRNLEN_USER
+	select HAVE_ARCH_SECCOMP_FILTER
 
 # FIXME: investigate whether we need/want these options.
 #	select HAVE_IOREMAP_PROT
@@ -33,9 +49,6 @@ config MMU
 	def_bool y
 
 config GENERIC_CSUM
-	def_bool y
-
-config SEMAPHORE_SLEEPERS
 	def_bool y
 
 config HAVE_ARCH_ALLOC_REMAP
@@ -58,15 +71,16 @@ config HUGETLB_SUPER_PAGES
 	depends on HUGETLB_PAGE && TILEGX
 	def_bool y
 
+config GENERIC_TIME_VSYSCALL
+	def_bool y
+
+# Enable PMC if PERF_EVENTS, OPROFILE, or WATCHPOINTS are enabled.
+config USE_PMC
+	bool
+
 # FIXME: tilegx can implement a more efficient rwsem.
 config RWSEM_GENERIC_SPINLOCK
 	def_bool y
-
-# We have a very flat architecture from a migration point of view,
-# so save boot time by presetting this (particularly useful on tile-sim).
-config DEFAULT_MIGRATION_COST
-	int
-	default "10000000"
 
 # We only support gcc 4.4 and above, so this should work.
 config ARCH_SUPPORTS_OPTIMIZED_INLINING
@@ -102,26 +116,31 @@ config ARCH_DISCONTIGMEM_DEFAULT
 config TRACE_IRQFLAGS_SUPPORT
 	def_bool y
 
-config STRICT_DEVMEM
-	def_bool y
-
 # SMP is required for Tilera Linux.
 config SMP
 	def_bool y
 
-# Allow checking for compile-time determined overflow errors in
-# copy_from_user().  There are still unprovable places in the
-# generic code as of 2.6.34, so this option is not really compatible
-# with -Werror, which is more useful in general.
-config DEBUG_COPY_FROM_USER
-	def_bool n
-
 config HVC_TILE
+	depends on TTY
 	select HVC_DRIVER
+	select HVC_IRQ if TILEGX
 	def_bool y
 
+# Building with ARCH=tilegx (or ARCH=tile) implies using the
+# 64-bit TILE-Gx toolchain, so force CONFIG_TILEGX on.
 config TILEGX
-	bool "Building with TILE-Gx (64-bit) compiler and toolchain"
+	def_bool ARCH != "tilepro"
+	select SPARSE_IRQ
+	select GENERIC_IRQ_LEGACY_ALLOC_HWIRQ
+	select HAVE_FUNCTION_TRACER
+	select HAVE_FUNCTION_GRAPH_TRACER
+	select HAVE_DYNAMIC_FTRACE
+	select HAVE_FTRACE_MCOUNT_RECORD
+	select HAVE_KPROBES
+	select HAVE_KRETPROBES
+	select HAVE_ARCH_KGDB
+	select ARCH_SUPPORTS_ATOMIC_RMW
+	select HAVE_ARCH_JUMP_LABEL
 
 config TILEPRO
 	def_bool !TILEGX
@@ -134,7 +153,14 @@ config ARCH_DEFCONFIG
 	default "arch/tile/configs/tilepro_defconfig" if !TILEGX
 	default "arch/tile/configs/tilegx_defconfig" if TILEGX
 
+config PGTABLE_LEVELS
+	int
+	default 3 if 64BIT
+	default 2
+
 source "init/Kconfig"
+
+source "kernel/Kconfig.freezer"
 
 menu "Tilera-specific configuration"
 
@@ -148,8 +174,6 @@ config NR_CPUS
 	  smaller kernel memory footprint results from using a smaller
 	  value on chips with fewer tiles.
 
-if TILEGX
-
 choice
 	prompt "Kernel page size"
 	default PAGE_SIZE_64KB
@@ -160,8 +184,11 @@ choice
 	  connections, etc., it may be better to select 16KB, which uses
 	  memory more efficiently at some cost in TLB performance.
 
-	  Note that this option is TILE-Gx specific; currently
-	  TILEPro page size is set by rebuilding the hypervisor.
+	  Note that for TILEPro, you must also rebuild the hypervisor
+	  with a matching page size.
+
+config PAGE_SIZE_4KB
+	bool "4KB" if TILEPRO
 
 config PAGE_SIZE_16KB
 	bool "16KB"
@@ -171,12 +198,11 @@ config PAGE_SIZE_64KB
 
 endchoice
 
-endif
-
 source "kernel/Kconfig.hz"
 
 config KEXEC
 	bool "kexec system call"
+	select KEXEC_CORE
 	---help---
 	  kexec is a system call that implements the ability to shutdown your
 	  current kernel, and to start another kernel.  It is like a reboot
@@ -194,11 +220,27 @@ config COMPAT
 	  If enabled, the kernel will support running TILE-Gx binaries
 	  that were built with the -m32 option.
 
+config SECCOMP
+	bool "Enable seccomp to safely compute untrusted bytecode"
+	depends on PROC_FS
+	help
+	  This kernel feature is useful for number crunching applications
+	  that may need to compute untrusted bytecode during their
+	  execution. By using pipes or other transports made available to
+	  the process as file descriptors supporting the read/write
+	  syscalls, it's possible to isolate those applications in
+	  their own address space using seccomp. Once seccomp is
+	  enabled via prctl, it cannot be disabled and the task is only
+	  allowed to execute a few safe syscalls defined by each seccomp
+	  mode.
+
+	  If unsure, say N.
+
 config SYSVIPC_COMPAT
 	def_bool y
 	depends on COMPAT && SYSVIPC
 
-# We do not currently support disabling HIGHMEM on tile64 and tilepro.
+# We do not currently support disabling HIGHMEM on tilepro.
 config HIGHMEM
 	bool # "Support for more than 512 MB of RAM"
 	default !TILEGX
@@ -304,6 +346,8 @@ config PAGE_OFFSET
 
 source "mm/Kconfig"
 
+source "kernel/Kconfig.preempt"
+
 config CMDLINE_BOOL
 	bool "Built-in kernel command line"
 	default n
@@ -351,7 +395,7 @@ config CMDLINE_OVERRIDE
 
 config VMALLOC_RESERVE
 	hex
-	default 0x1000000
+	default 0x2000000
 
 config HARDWALL
 	bool "Hardwall support to allow access to user dynamic network"
@@ -360,11 +404,17 @@ config HARDWALL
 config KERNEL_PL
 	int "Processor protection level for kernel"
 	range 1 2
-	default "1"
+	default 2 if TILEGX
+	default 1 if !TILEGX
 	---help---
-	  This setting determines the processor protection level the
-	  kernel will be built to run at.  Generally you should use
-	  the default value here.
+	  Since MDE 4.2, the Tilera hypervisor runs the kernel
+	  at PL2 by default.  If running under an older hypervisor,
+	  or as a KVM guest, you must run at PL1.  (The current
+	  hypervisor may also be recompiled with "make HV_PL=2" to
+	  allow it to run a kernel at PL1, but clients running at PL1
+	  are not expected to be supported indefinitely.)
+
+	  If you're not sure, don't change the default.
 
 source "arch/tile/gxio/Kconfig"
 
@@ -378,7 +428,6 @@ config PCI
 	select PCI_DOMAINS
 	select GENERIC_PCI_IOMAP
 	select TILE_GXIO_TRIO if TILEGX
-	select ARCH_SUPPORTS_MSI if TILEGX
 	select PCI_MSI if TILEGX
 	---help---
 	  Enable PCI root complex support, so PCIe endpoint devices can
@@ -391,8 +440,18 @@ config PCI_DOMAINS
 config NO_IOMEM
 	def_bool !PCI
 
-config NO_IOPORT
+config NO_IOPORT_MAP
 	def_bool !PCI
+
+config TILE_PCI_IO
+	bool "PCI I/O space support"
+	default n
+	depends on PCI
+	depends on TILEGX
+	---help---
+	  Enable PCI I/O space support on TILEGx. Since the PCI I/O space
+	  is used by few modern PCIe endpoint devices, its support is disabled
+	  by default to save the TRIO PIO Region resource for other purposes.
 
 source "drivers/pci/Kconfig"
 
@@ -406,30 +465,9 @@ config TILE_USB
 	  Provides USB host adapter support for the built-in EHCI and OHCI
 	  interfaces on TILE-Gx chips.
 
-# USB OHCI needs the bounce pool since tilegx will often have more
-# than 4GB of memory, but we don't currently use the IOTLB to present
-# a 32-bit address to OHCI.  So we need to use a bounce pool instead.
-config NEED_BOUNCE_POOL
-	def_bool USB_OHCI_HCD
-
-config HOTPLUG
-	bool "Support for hot-pluggable devices"
-	---help---
-	  Say Y here if you want to plug devices into your computer while
-	  the system is running, and be able to use them quickly.  In many
-	  cases, the devices can likewise be unplugged at any time too.
-	  One well-known example of this is USB.
-
-source "drivers/pci/hotplug/Kconfig"
-
 endmenu
 
 menu "Executable file formats"
-
-# only elf supported
-config KCORE_ELF
-	def_bool y
-	depends on PROC_FS
 
 source "fs/Kconfig.binfmt"
 

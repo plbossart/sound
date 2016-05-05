@@ -28,7 +28,7 @@
  * permissions bits or the LSM check.
  */
 int key_task_permission(const key_ref_t key_ref, const struct cred *cred,
-			key_perm_t perm)
+			unsigned perm)
 {
 	struct key *key;
 	key_perm_t kperm;
@@ -36,32 +36,26 @@ int key_task_permission(const key_ref_t key_ref, const struct cred *cred,
 
 	key = key_ref_to_ptr(key_ref);
 
-	if (key->user->user_ns != cred->user_ns)
-		goto use_other_perms;
-
 	/* use the second 8-bits of permissions for keys the caller owns */
-	if (key->uid == cred->fsuid) {
+	if (uid_eq(key->uid, cred->fsuid)) {
 		kperm = key->perm >> 16;
 		goto use_these_perms;
 	}
 
 	/* use the third 8-bits of permissions for keys the caller has a group
 	 * membership in common with */
-	if (key->gid != -1 && key->perm & KEY_GRP_ALL) {
-		if (key->gid == cred->fsgid) {
+	if (gid_valid(key->gid) && key->perm & KEY_GRP_ALL) {
+		if (gid_eq(key->gid, cred->fsgid)) {
 			kperm = key->perm >> 8;
 			goto use_these_perms;
 		}
 
-		ret = groups_search(cred->group_info,
-				    make_kgid(current_user_ns(), key->gid));
+		ret = groups_search(cred->group_info, key->gid);
 		if (ret) {
 			kperm = key->perm >> 8;
 			goto use_these_perms;
 		}
 	}
-
-use_other_perms:
 
 	/* otherwise use the least-significant 8-bits */
 	kperm = key->perm;
@@ -74,7 +68,7 @@ use_these_perms:
 	if (is_key_possessed(key_ref))
 		kperm |= key->perm >> 24;
 
-	kperm = kperm & perm & KEY_ALL;
+	kperm = kperm & perm & KEY_NEED_ALL;
 
 	if (kperm != perm)
 		return -EACCES;

@@ -432,7 +432,7 @@ static int fsp_onpad_hscr(struct psmouse *psmouse, bool enable)
 static ssize_t fsp_attr_set_setreg(struct psmouse *psmouse, void *data,
 				   const char *buf, size_t count)
 {
-	int reg, val;
+	unsigned int reg, val;
 	char *rest;
 	ssize_t retval;
 
@@ -440,7 +440,7 @@ static ssize_t fsp_attr_set_setreg(struct psmouse *psmouse, void *data,
 	if (rest == buf || *rest != ' ' || reg > 0xff)
 		return -EINVAL;
 
-	retval = kstrtoint(rest + 1, 16, &val);
+	retval = kstrtouint(rest + 1, 16, &val);
 	if (retval)
 		return retval;
 
@@ -476,9 +476,10 @@ static ssize_t fsp_attr_set_getreg(struct psmouse *psmouse, void *data,
 					const char *buf, size_t count)
 {
 	struct fsp_data *pad = psmouse->private;
-	int reg, val, err;
+	unsigned int reg, val;
+	int err;
 
-	err = kstrtoint(buf, 16, &reg);
+	err = kstrtouint(buf, 16, &reg);
 	if (err)
 		return err;
 
@@ -511,9 +512,10 @@ static ssize_t fsp_attr_show_pagereg(struct psmouse *psmouse,
 static ssize_t fsp_attr_set_pagereg(struct psmouse *psmouse, void *data,
 					const char *buf, size_t count)
 {
-	int val, err;
+	unsigned int val;
+	int err;
 
-	err = kstrtoint(buf, 16, &val);
+	err = kstrtouint(buf, 16, &val);
 	if (err)
 		return err;
 
@@ -721,6 +723,17 @@ static psmouse_ret_t fsp_process_byte(struct psmouse *psmouse)
 
 	switch (psmouse->packet[0] >> FSP_PKT_TYPE_SHIFT) {
 	case FSP_PKT_TYPE_ABS:
+
+		if ((packet[0] == 0x48 || packet[0] == 0x49) &&
+		    packet[1] == 0 && packet[2] == 0) {
+			/*
+			 * Ignore coordinate noise when finger leaving the
+			 * surface, otherwise cursor may jump to upper-left
+			 * corner.
+			 */
+			packet[3] &= 0xf0;
+		}
+
 		abs_x = GET_ABS_X(packet);
 		abs_y = GET_ABS_Y(packet);
 
@@ -780,7 +793,7 @@ static psmouse_ret_t fsp_process_byte(struct psmouse *psmouse)
 			fsp_set_slot(dev, 0, fgrs > 0, abs_x, abs_y);
 			fsp_set_slot(dev, 1, false, 0, 0);
 		}
-		if (fgrs > 0) {
+		if (fgrs == 1 || (fgrs == 2 && !(packet[0] & FSP_PB0_MFMC_FGR2))) {
 			input_report_abs(dev, ABS_X, abs_x);
 			input_report_abs(dev, ABS_Y, abs_y);
 		}
@@ -960,7 +973,7 @@ static int fsp_set_input_params(struct psmouse *psmouse)
 
 		input_set_abs_params(dev, ABS_X, 0, abs_x, 0, 0);
 		input_set_abs_params(dev, ABS_Y, 0, abs_y, 0, 0);
-		input_mt_init_slots(dev, 2);
+		input_mt_init_slots(dev, 2, 0);
 		input_set_abs_params(dev, ABS_MT_POSITION_X, 0, abs_x, 0, 0);
 		input_set_abs_params(dev, ABS_MT_POSITION_Y, 0, abs_y, 0, 0);
 	}

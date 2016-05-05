@@ -14,9 +14,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston,
- * MA  02111-1307, USA.
+ * along with this program; if not, see <http://www.gnu.org/licenses/>.
  *
  * The full GNU General Public License is included in this distribution
  * in the file called "COPYING".
@@ -95,8 +93,6 @@ netxen_nic_get_drvinfo(struct net_device *dev, struct ethtool_drvinfo *drvinfo)
 
 	strlcpy(drvinfo->bus_info, pci_name(adapter->pdev),
 		sizeof(drvinfo->bus_info));
-	drvinfo->regdump_len = NETXEN_NIC_REGS_LEN;
-	drvinfo->eedump_len = netxen_nic_get_eeprom_len(dev);
 }
 
 static int
@@ -218,7 +214,7 @@ skip:
 			check_sfp_module = netif_running(dev) &&
 				adapter->has_link_events;
 		} else {
-			ecmd->supported |= (SUPPORTED_TP |SUPPORTED_Autoneg);
+			ecmd->supported |= (SUPPORTED_TP | SUPPORTED_Autoneg);
 			ecmd->advertising |=
 				(ADVERTISED_TP | ADVERTISED_Autoneg);
 			ecmd->port = PORT_TP;
@@ -381,7 +377,7 @@ static u32 netxen_nic_test_link(struct net_device *dev)
 
 static int
 netxen_nic_get_eeprom(struct net_device *dev, struct ethtool_eeprom *eeprom,
-		      u8 * bytes)
+		      u8 *bytes)
 {
 	struct netxen_adapter *adapter = netdev_priv(dev);
 	int offset;
@@ -488,6 +484,8 @@ netxen_nic_get_pauseparam(struct net_device *dev,
 	__u32 val;
 	int port = adapter->physical_port;
 
+	pause->autoneg = 0;
+
 	if (adapter->ahw.port_type == NETXEN_NIC_GBE) {
 		if ((port < 0) || (port >= NETXEN_NIU_MAX_GBE_PORTS))
 			return;
@@ -496,19 +494,19 @@ netxen_nic_get_pauseparam(struct net_device *dev,
 		pause->rx_pause = netxen_gb_get_rx_flowctl(val);
 		val = NXRD32(adapter, NETXEN_NIU_GB_PAUSE_CTL);
 		switch (port) {
-			case 0:
-				pause->tx_pause = !(netxen_gb_get_gb0_mask(val));
-				break;
-			case 1:
-				pause->tx_pause = !(netxen_gb_get_gb1_mask(val));
-				break;
-			case 2:
-				pause->tx_pause = !(netxen_gb_get_gb2_mask(val));
-				break;
-			case 3:
-			default:
-				pause->tx_pause = !(netxen_gb_get_gb3_mask(val));
-				break;
+		case 0:
+			pause->tx_pause = !(netxen_gb_get_gb0_mask(val));
+			break;
+		case 1:
+			pause->tx_pause = !(netxen_gb_get_gb1_mask(val));
+			break;
+		case 2:
+			pause->tx_pause = !(netxen_gb_get_gb2_mask(val));
+			break;
+		case 3:
+		default:
+			pause->tx_pause = !(netxen_gb_get_gb3_mask(val));
+			break;
 		}
 	} else if (adapter->ahw.port_type == NETXEN_NIC_XGBE) {
 		if ((port < 0) || (port >= NETXEN_NIU_MAX_XG_PORTS))
@@ -532,6 +530,11 @@ netxen_nic_set_pauseparam(struct net_device *dev,
 	struct netxen_adapter *adapter = netdev_priv(dev);
 	__u32 val;
 	int port = adapter->physical_port;
+
+	/* not supported */
+	if (pause->autoneg)
+		return -EINVAL;
+
 	/* read mode */
 	if (adapter->ahw.port_type == NETXEN_NIC_GBE) {
 		if ((port < 0) || (port >= NETXEN_NIU_MAX_GBE_PORTS))
@@ -549,31 +552,31 @@ netxen_nic_set_pauseparam(struct net_device *dev,
 		/* set autoneg */
 		val = NXRD32(adapter, NETXEN_NIU_GB_PAUSE_CTL);
 		switch (port) {
-			case 0:
-				if (pause->tx_pause)
-					netxen_gb_unset_gb0_mask(val);
-				else
-					netxen_gb_set_gb0_mask(val);
-				break;
-			case 1:
-				if (pause->tx_pause)
-					netxen_gb_unset_gb1_mask(val);
-				else
-					netxen_gb_set_gb1_mask(val);
-				break;
-			case 2:
-				if (pause->tx_pause)
-					netxen_gb_unset_gb2_mask(val);
-				else
-					netxen_gb_set_gb2_mask(val);
-				break;
-			case 3:
-			default:
-				if (pause->tx_pause)
-					netxen_gb_unset_gb3_mask(val);
-				else
-					netxen_gb_set_gb3_mask(val);
-				break;
+		case 0:
+			if (pause->tx_pause)
+				netxen_gb_unset_gb0_mask(val);
+			else
+				netxen_gb_set_gb0_mask(val);
+			break;
+		case 1:
+			if (pause->tx_pause)
+				netxen_gb_unset_gb1_mask(val);
+			else
+				netxen_gb_set_gb1_mask(val);
+			break;
+		case 2:
+			if (pause->tx_pause)
+				netxen_gb_unset_gb2_mask(val);
+			else
+				netxen_gb_set_gb2_mask(val);
+			break;
+		case 3:
+		default:
+			if (pause->tx_pause)
+				netxen_gb_unset_gb3_mask(val);
+			else
+				netxen_gb_set_gb3_mask(val);
+			break;
 		}
 		NXWR32(adapter, NETXEN_NIU_GB_PAUSE_CTL, val);
 	} else if (adapter->ahw.port_type == NETXEN_NIC_XGBE) {
@@ -636,7 +639,7 @@ static int netxen_get_sset_count(struct net_device *dev, int sset)
 
 static void
 netxen_nic_diag_test(struct net_device *dev, struct ethtool_test *eth_test,
-		     u64 * data)
+		     u64 *data)
 {
 	memset(data, 0, sizeof(uint64_t) * NETXEN_NIC_TEST_LEN);
 	if ((data[0] = netxen_nic_reg_test(dev)))
@@ -647,7 +650,7 @@ netxen_nic_diag_test(struct net_device *dev, struct ethtool_test *eth_test,
 }
 
 static void
-netxen_nic_get_strings(struct net_device *dev, u32 stringset, u8 * data)
+netxen_nic_get_strings(struct net_device *dev, u32 stringset, u8 *data)
 {
 	int index;
 
@@ -668,7 +671,7 @@ netxen_nic_get_strings(struct net_device *dev, u32 stringset, u8 * data)
 
 static void
 netxen_nic_get_ethtool_stats(struct net_device *dev,
-			     struct ethtool_stats *stats, u64 * data)
+			     struct ethtool_stats *stats, u64 *data)
 {
 	struct netxen_adapter *adapter = netdev_priv(dev);
 	int index;

@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2012 ST Microelectronics
- * Viresh Kumar <viresh.linux@gmail.com>
+ * Viresh Kumar <vireshk@kernel.org>
  *
  * This file is licensed under the terms of the GNU General Public
  * License version 2. This program is licensed "as is" without any
@@ -179,7 +179,8 @@ struct clk *clk_register_aux(const char *aux_name, const char *gate_name,
 	if (gate_name) {
 		struct clk *tgate_clk;
 
-		tgate_clk = clk_register_gate(NULL, gate_name, aux_name, 0, reg,
+		tgate_clk = clk_register_gate(NULL, gate_name, aux_name,
+				CLK_SET_RATE_PARENT, reg,
 				aux->masks->enable_bit, 0, lock);
 		if (IS_ERR_OR_NULL(tgate_clk))
 			goto free_aux;

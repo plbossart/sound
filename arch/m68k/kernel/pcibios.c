@@ -62,7 +62,7 @@ int pcibios_enable_device(struct pci_dev *dev, int mask)
 
 		r = dev->resource + idx;
 		if (!r->start && r->end) {
-			pr_err(KERN_ERR "PCI: Device %s not available because of resource collisions\n",
+			pr_err("PCI: Device %s not available because of resource collisions\n",
 				pci_name(dev));
 			return -EINVAL;
 		}
@@ -87,12 +87,7 @@ int pcibios_enable_device(struct pci_dev *dev, int mask)
 	return 0;
 }
 
-void pcibios_update_irq(struct pci_dev *dev, int irq)
-{
-	pci_write_config_byte(dev, PCI_INTERRUPT_LINE, irq);
-}
-
-void __devinit pcibios_fixup_bus(struct pci_bus *bus)
+void pcibios_fixup_bus(struct pci_bus *bus)
 {
 	struct pci_dev *dev;
 
@@ -102,7 +97,7 @@ void __devinit pcibios_fixup_bus(struct pci_bus *bus)
 	}
 }
 
-char __devinit *pcibios_setup(char *str)
+char *pcibios_setup(char *str)
 {
 	return str;
 }

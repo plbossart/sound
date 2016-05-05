@@ -61,8 +61,6 @@ static int wm1250_ev1_set_bias_level(struct snd_soc_codec *codec,
 		break;
 	}
 
-	codec->dapm.bias_level = level;
-
 	return 0;
 }
 
@@ -153,7 +151,7 @@ static struct snd_soc_codec_driver soc_codec_dev_wm1250_ev1 = {
 	.idle_bias_off = true,
 };
 
-static int __devinit wm1250_ev1_pdata(struct i2c_client *i2c)
+static int wm1250_ev1_pdata(struct i2c_client *i2c)
 {
 	struct wm1250_ev1_pdata *pdata = dev_get_platdata(&i2c->dev);
 	struct wm1250_priv *wm1250;
@@ -164,7 +162,6 @@ static int __devinit wm1250_ev1_pdata(struct i2c_client *i2c)
 
 	wm1250 = devm_kzalloc(&i2c->dev, sizeof(*wm1250), GFP_KERNEL);
 	if (!wm1250) {
-		dev_err(&i2c->dev, "Unable to allocate private data\n");
 		ret = -ENOMEM;
 		goto err;
 	}
@@ -199,8 +196,8 @@ static void wm1250_ev1_free(struct i2c_client *i2c)
 		gpio_free_array(wm1250->gpios, ARRAY_SIZE(wm1250->gpios));
 }
 
-static int __devinit wm1250_ev1_probe(struct i2c_client *i2c,
-				      const struct i2c_device_id *i2c_id)
+static int wm1250_ev1_probe(struct i2c_client *i2c,
+			    const struct i2c_device_id *i2c_id)
 {
 	int id, board, rev, ret;
 
@@ -237,7 +234,7 @@ static int __devinit wm1250_ev1_probe(struct i2c_client *i2c,
 	return 0;
 }
 
-static int __devexit wm1250_ev1_remove(struct i2c_client *i2c)
+static int wm1250_ev1_remove(struct i2c_client *i2c)
 {
 	snd_soc_unregister_codec(&i2c->dev);
 	wm1250_ev1_free(i2c);
@@ -254,10 +251,9 @@ MODULE_DEVICE_TABLE(i2c, wm1250_ev1_i2c_id);
 static struct i2c_driver wm1250_ev1_i2c_driver = {
 	.driver = {
 		.name = "wm1250-ev1",
-		.owner = THIS_MODULE,
 	},
 	.probe =    wm1250_ev1_probe,
-	.remove =   __devexit_p(wm1250_ev1_remove),
+	.remove =   wm1250_ev1_remove,
 	.id_table = wm1250_ev1_i2c_id,
 };
 

@@ -57,18 +57,17 @@ void (*mach_reset)(void);
 void (*mach_halt)(void);
 void (*mach_power_off)(void);
 
-#ifdef CONFIG_M68328
+#ifdef CONFIG_M68000
+#if defined(CONFIG_M68328)
 #define CPU_NAME	"MC68328"
-#endif
-#ifdef CONFIG_M68EZ328
+#elif defined(CONFIG_M68EZ328)
 #define CPU_NAME	"MC68EZ328"
-#endif
-#ifdef CONFIG_M68VZ328
+#elif defined(CONFIG_M68VZ328)
 #define CPU_NAME	"MC68VZ328"
+#else
+#define CPU_NAME	"MC68000"
 #endif
-#ifdef CONFIG_M68360
-#define CPU_NAME	"MC68360"
-#endif
+#endif /* CONFIG_M68000 */
 #ifndef CPU_NAME
 #define	CPU_NAME	"UNKNOWN"
 #endif
@@ -115,7 +114,7 @@ void (*mach_power_off)(void);
  *
  * Returns:
  */
-void parse_uboot_commandline(char *commandp, int size)
+static void __init parse_uboot_commandline(char *commandp, int size)
 {
 	extern unsigned long _init_sp;
 	unsigned long *sp;
@@ -207,10 +206,6 @@ void __init setup_arch(char **cmdline_p)
 #if defined( CONFIG_PILOT ) && defined( CONFIG_M68EZ328 )
 	printk(KERN_INFO "PalmV support by Lineo Inc. <jeff@uclinux.com>\n");
 #endif
-#if defined (CONFIG_M68360)
-	printk(KERN_INFO "QUICC port done by SED Systems <hamilton@sedsystems.ca>,\n");
-	printk(KERN_INFO "based on 2.0.38 port by Lineo Inc. <mleslie@lineo.com>.\n");
-#endif
 #ifdef CONFIG_DRAGEN2
 	printk(KERN_INFO "DragonEngine II board support by Georges Menie\n");
 #endif
@@ -218,13 +213,10 @@ void __init setup_arch(char **cmdline_p)
 	printk(KERN_INFO "Motorola M5235EVB support (C)2005 Syn-tech Systems, Inc. (Jate Sujjavanich)\n");
 #endif
 
-	pr_debug("KERNEL -> TEXT=0x%06x-0x%06x DATA=0x%06x-0x%06x "
-		 "BSS=0x%06x-0x%06x\n", (int) &_stext, (int) &_etext,
-		 (int) &_sdata, (int) &_edata,
-		 (int) &_sbss, (int) &_ebss);
-	pr_debug("MEMORY -> ROMFS=0x%06x-0x%06x MEM=0x%06x-0x%06x\n ",
-		 (int) &_ebss, (int) memory_start,
-		 (int) memory_start, (int) memory_end);
+	pr_debug("KERNEL -> TEXT=0x%p-0x%p DATA=0x%p-0x%p BSS=0x%p-0x%p\n",
+		 _stext, _etext, _sdata, _edata, __bss_start, __bss_stop);
+	pr_debug("MEMORY -> ROMFS=0x%p-0x%06lx MEM=0x%06lx-0x%06lx\n ",
+		 __bss_stop, memory_start, memory_start, memory_end);
 
 	/* Keep a copy of command line */
 	*cmdline_p = &command_line[0];
@@ -239,11 +231,14 @@ void __init setup_arch(char **cmdline_p)
 	 * Give all the memory to the bootmap allocator, tell it to put the
 	 * boot mem_map at the start of memory.
 	 */
+	min_low_pfn = PFN_DOWN(memory_start);
+	max_pfn = max_low_pfn = PFN_DOWN(memory_end);
+
 	bootmap_size = init_bootmem_node(
 			NODE_DATA(0),
-			memory_start >> PAGE_SHIFT, /* map goes here */
-			PAGE_OFFSET >> PAGE_SHIFT,	/* 0 on coldfire */
-			memory_end >> PAGE_SHIFT);
+			min_low_pfn,		/* map goes here */
+			PFN_DOWN(PAGE_OFFSET),
+			max_pfn);
 	/*
 	 * Free the usable memory, we have to make sure we do not free
 	 * the bootmem bitmap so we then reserve it after freeing it :-)

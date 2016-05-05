@@ -263,6 +263,8 @@ dbx500_regulator_info[DB8500_NUM_REGULATORS] = {
 			.ops	= &db8500_regulator_ops,
 			.type	= REGULATOR_VOLTAGE,
 			.owner	= THIS_MODULE,
+			.fixed_uV = 1800000,
+			.n_voltages = 1,
 		},
 		.exclude_from_power_state = true,
 	},
@@ -412,7 +414,7 @@ dbx500_regulator_info[DB8500_NUM_REGULATORS] = {
 	},
 };
 
-static __devinit int db8500_regulator_register(struct platform_device *pdev,
+static int db8500_regulator_register(struct platform_device *pdev,
 					struct regulator_init_data *init_data,
 					int id,
 					struct device_node *np)
@@ -431,17 +433,11 @@ static __devinit int db8500_regulator_register(struct platform_device *pdev,
 	config.of_node = np;
 
 	/* register with the regulator framework */
-	info->rdev = regulator_register(&info->desc, &config);
+	info->rdev = devm_regulator_register(&pdev->dev, &info->desc, &config);
 	if (IS_ERR(info->rdev)) {
 		err = PTR_ERR(info->rdev);
 		dev_err(&pdev->dev, "failed to register %s: err %i\n",
 			info->desc.name, err);
-
-		/* if failing, unregister all earlier regulators */
-		while (--id >= 0) {
-			info = &dbx500_regulator_info[id];
-			regulator_unregister(info->rdev);
-		}
 		return err;
 	}
 
@@ -474,7 +470,7 @@ static struct of_regulator_match db8500_regulator_matches[] = {
 	{ .name	= "db8500_esram34_ret",   .driver_data = (void *) DB8500_REGULATOR_SWITCH_ESRAM34RET, },
 };
 
-static __devinit int
+static int
 db8500_regulator_of_probe(struct platform_device *pdev,
 			struct device_node *np)
 {
@@ -491,7 +487,7 @@ db8500_regulator_of_probe(struct platform_device *pdev,
 	return 0;
 }
 
-static int __devinit db8500_regulator_probe(struct platform_device *pdev)
+static int db8500_regulator_probe(struct platform_device *pdev)
 {
 	struct regulator_init_data *db8500_init_data =
 					dev_get_platdata(&pdev->dev);
@@ -528,21 +524,9 @@ static int __devinit db8500_regulator_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int __exit db8500_regulator_remove(struct platform_device *pdev)
+static int db8500_regulator_remove(struct platform_device *pdev)
 {
-	int i;
-
 	ux500_regulator_debug_exit();
-
-	for (i = 0; i < ARRAY_SIZE(dbx500_regulator_info); i++) {
-		struct dbx500_regulator_info *info;
-		info = &dbx500_regulator_info[i];
-
-		dev_vdbg(rdev_get_dev(info->rdev),
-			"regulator-%s-remove\n", info->desc.name);
-
-		regulator_unregister(info->rdev);
-	}
 
 	return 0;
 }
@@ -550,10 +534,9 @@ static int __exit db8500_regulator_remove(struct platform_device *pdev)
 static struct platform_driver db8500_regulator_driver = {
 	.driver = {
 		.name = "db8500-prcmu-regulators",
-		.owner = THIS_MODULE,
 	},
 	.probe = db8500_regulator_probe,
-	.remove = __exit_p(db8500_regulator_remove),
+	.remove = db8500_regulator_remove,
 };
 
 static int __init db8500_regulator_init(void)

@@ -17,84 +17,37 @@
 #include <linux/platform_device.h>
 #include <linux/io.h>
 #include <linux/mfd/abx500/ab8500.h>
+#include <linux/mfd/dbx500-prcmu.h>
+#include <linux/of.h>
+#include <linux/of_platform.h>
+#include <linux/perf/arm_pmu.h>
+#include <linux/regulator/machine.h>
+#include <linux/random.h>
 
 #include <asm/mach/map.h>
-#include <asm/pmu.h>
-#include <plat/gpio-nomadik.h>
-#include <mach/hardware.h>
-#include <mach/setup.h>
-#include <mach/devices.h>
-#include <mach/usb.h>
-#include <mach/db8500-regs.h>
 
-#include "devices-db8500.h"
-#include "ste-dma40-db8500.h"
+#include "setup.h"
 
-/* minimum static i/o mapping required to boot U8500 platforms */
-static struct map_desc u8500_uart_io_desc[] __initdata = {
-	__IO_DEV_DESC(U8500_UART0_BASE, SZ_4K),
-	__IO_DEV_DESC(U8500_UART2_BASE, SZ_4K),
-};
-/*  U8500 and U9540 common io_desc */
-static struct map_desc u8500_common_io_desc[] __initdata = {
-	/* SCU base also covers GIC CPU BASE and TWD with its 4K page */
-	__IO_DEV_DESC(U8500_SCU_BASE, SZ_4K),
-	__IO_DEV_DESC(U8500_GIC_DIST_BASE, SZ_4K),
-	__IO_DEV_DESC(U8500_L2CC_BASE, SZ_4K),
-	__IO_DEV_DESC(U8500_MTU0_BASE, SZ_4K),
-	__IO_DEV_DESC(U8500_BACKUPRAM0_BASE, SZ_8K),
+#include "board-mop500-regulators.h"
+#include "board-mop500.h"
+#include "db8500-regs.h"
+#include "id.h"
 
-	__IO_DEV_DESC(U8500_CLKRST1_BASE, SZ_4K),
-	__IO_DEV_DESC(U8500_CLKRST2_BASE, SZ_4K),
-	__IO_DEV_DESC(U8500_CLKRST3_BASE, SZ_4K),
-	__IO_DEV_DESC(U8500_CLKRST5_BASE, SZ_4K),
-	__IO_DEV_DESC(U8500_CLKRST6_BASE, SZ_4K),
-
-	__IO_DEV_DESC(U8500_GPIO0_BASE, SZ_4K),
-	__IO_DEV_DESC(U8500_GPIO1_BASE, SZ_4K),
-	__IO_DEV_DESC(U8500_GPIO2_BASE, SZ_4K),
-	__IO_DEV_DESC(U8500_GPIO3_BASE, SZ_4K),
+static struct ab8500_platform_data ab8500_platdata = {
+	.regulator	= &ab8500_regulator_plat_data,
 };
 
-/* U8500 IO map specific description */
-static struct map_desc u8500_io_desc[] __initdata = {
-	__IO_DEV_DESC(U8500_PRCMU_BASE, SZ_4K),
-	__IO_DEV_DESC(U8500_PRCMU_TCDM_BASE, SZ_4K),
-
+static struct prcmu_pdata db8500_prcmu_pdata = {
+	.ab_platdata	= &ab8500_platdata,
+	.version_offset	= DB8500_PRCMU_FW_VERSION_OFFSET,
+	.legacy_offset	= DB8500_PRCMU_LEGACY_OFFSET,
 };
 
-/* U9540 IO map specific description */
-static struct map_desc u9540_io_desc[] __initdata = {
-	__IO_DEV_DESC(U8500_PRCMU_BASE, SZ_4K + SZ_8K),
-	__IO_DEV_DESC(U8500_PRCMU_TCDM_BASE, SZ_4K + SZ_8K),
-};
-
-void __init u8500_map_io(void)
+static void __init u8500_map_io(void)
 {
-	/*
-	 * Map the UARTs early so that the DEBUG_LL stuff continues to work.
-	 */
-	iotable_init(u8500_uart_io_desc, ARRAY_SIZE(u8500_uart_io_desc));
-
-	ux500_map_io();
-
-	iotable_init(u8500_common_io_desc, ARRAY_SIZE(u8500_common_io_desc));
-
-	if (cpu_is_u9540())
-		iotable_init(u9540_io_desc, ARRAY_SIZE(u9540_io_desc));
-	else
-		iotable_init(u8500_io_desc, ARRAY_SIZE(u8500_io_desc));
-
-	_PRCMU_BASE = __io_address(U8500_PRCMU_BASE);
+	debug_ll_io_init();
+	ux500_setup_id();
 }
-
-static struct resource db8500_pmu_resources[] = {
-	[0] = {
-		.start		= IRQ_DB8500_PMU,
-		.end		= IRQ_DB8500_PMU,
-		.flags		= IORESOURCE_IRQ,
-	},
-};
 
 /*
  * The PMU IRQ lines of two cores are wired together into a single interrupt.
@@ -116,85 +69,26 @@ static irqreturn_t db8500_pmu_handler(int irq, void *dev, irq_handler_t handler)
 	return ret;
 }
 
-struct arm_pmu_platdata db8500_pmu_platdata = {
+static struct arm_pmu_platdata db8500_pmu_platdata = {
 	.handle_irq		= db8500_pmu_handler,
-};
-
-static struct platform_device db8500_pmu_device = {
-	.name			= "arm-pmu",
-	.id			= ARM_PMU_DEVICE_CPU,
-	.num_resources		= ARRAY_SIZE(db8500_pmu_resources),
-	.resource		= db8500_pmu_resources,
-	.dev.platform_data	= &db8500_pmu_platdata,
-};
-
-static struct platform_device db8500_prcmu_device = {
-	.name			= "db8500-prcmu",
-};
-
-static struct platform_device *platform_devs[] __initdata = {
-	&u8500_dma40_device,
-	&db8500_pmu_device,
-	&db8500_prcmu_device,
-};
-
-static struct platform_device *of_platform_devs[] __initdata = {
-	&u8500_dma40_device,
-};
-
-static resource_size_t __initdata db8500_gpio_base[] = {
-	U8500_GPIOBANK0_BASE,
-	U8500_GPIOBANK1_BASE,
-	U8500_GPIOBANK2_BASE,
-	U8500_GPIOBANK3_BASE,
-	U8500_GPIOBANK4_BASE,
-	U8500_GPIOBANK5_BASE,
-	U8500_GPIOBANK6_BASE,
-	U8500_GPIOBANK7_BASE,
-	U8500_GPIOBANK8_BASE,
-};
-
-static void __init db8500_add_gpios(struct device *parent)
-{
-	struct nmk_gpio_platform_data pdata = {
-		.supports_sleepmode = true,
-	};
-
-	dbx500_add_gpios(parent, ARRAY_AND_SIZE(db8500_gpio_base),
-			 IRQ_DB8500_GPIO0, &pdata);
-	dbx500_add_pinctrl(parent, "pinctrl-db8500");
-}
-
-static int usb_db8500_rx_dma_cfg[] = {
-	DB8500_DMA_DEV38_USB_OTG_IEP_1_9,
-	DB8500_DMA_DEV37_USB_OTG_IEP_2_10,
-	DB8500_DMA_DEV36_USB_OTG_IEP_3_11,
-	DB8500_DMA_DEV19_USB_OTG_IEP_4_12,
-	DB8500_DMA_DEV18_USB_OTG_IEP_5_13,
-	DB8500_DMA_DEV17_USB_OTG_IEP_6_14,
-	DB8500_DMA_DEV16_USB_OTG_IEP_7_15,
-	DB8500_DMA_DEV39_USB_OTG_IEP_8
-};
-
-static int usb_db8500_tx_dma_cfg[] = {
-	DB8500_DMA_DEV38_USB_OTG_OEP_1_9,
-	DB8500_DMA_DEV37_USB_OTG_OEP_2_10,
-	DB8500_DMA_DEV36_USB_OTG_OEP_3_11,
-	DB8500_DMA_DEV19_USB_OTG_OEP_4_12,
-	DB8500_DMA_DEV18_USB_OTG_OEP_5_13,
-	DB8500_DMA_DEV17_USB_OTG_OEP_6_14,
-	DB8500_DMA_DEV16_USB_OTG_OEP_7_15,
-	DB8500_DMA_DEV39_USB_OTG_OEP_8
 };
 
 static const char *db8500_read_soc_id(void)
 {
-	void __iomem *uid = __io_address(U8500_BB_UID_BASE);
+	void __iomem *uid;
+	const char *retstr;
 
-	return kasprintf(GFP_KERNEL, "%08x%08x%08x%08x%08x",
-			 readl((u32 *)uid+1),
+	uid = ioremap(U8500_BB_UID_BASE, 0x20);
+	if (!uid)
+		return NULL;
+	/* Throw these device-specific numbers into the entropy pool */
+	add_device_randomness(uid, 0x14);
+	retstr = kasprintf(GFP_KERNEL, "%08x%08x%08x%08x%08x",
+			 readl((u32 *)uid+0),
 			 readl((u32 *)uid+1), readl((u32 *)uid+2),
 			 readl((u32 *)uid+3), readl((u32 *)uid+4));
+	iounmap(uid);
+	return retstr;
 }
 
 static struct device * __init db8500_soc_device_init(void)
@@ -204,56 +98,68 @@ static struct device * __init db8500_soc_device_init(void)
 	return ux500_soc_device_init(soc_id);
 }
 
-/*
- * This function is called from the board init
- */
-struct device * __init u8500_init_devices(struct ab8500_platform_data *ab8500)
+static struct of_dev_auxdata u8500_auxdata_lookup[] __initdata = {
+	/* Requires call-back bindings. */
+	OF_DEV_AUXDATA("arm,cortex-a9-pmu", 0, "arm-pmu", &db8500_pmu_platdata),
+	/* Requires DMA bindings. */
+	OF_DEV_AUXDATA("stericsson,ux500-msp-i2s", 0x80123000,
+		       "ux500-msp-i2s.0", &msp0_platform_data),
+	OF_DEV_AUXDATA("stericsson,ux500-msp-i2s", 0x80124000,
+		       "ux500-msp-i2s.1", &msp1_platform_data),
+	OF_DEV_AUXDATA("stericsson,ux500-msp-i2s", 0x80117000,
+		       "ux500-msp-i2s.2", &msp2_platform_data),
+	OF_DEV_AUXDATA("stericsson,ux500-msp-i2s", 0x80125000,
+		       "ux500-msp-i2s.3", &msp3_platform_data),
+	/* Requires non-DT:able platform data. */
+	OF_DEV_AUXDATA("stericsson,db8500-prcmu", 0x80157000, "db8500-prcmu",
+			&db8500_prcmu_pdata),
+	OF_DEV_AUXDATA("stericsson,ux500-cryp", 0xa03cb000, "cryp1", NULL),
+	OF_DEV_AUXDATA("stericsson,ux500-hash", 0xa03c2000, "hash1", NULL),
+	OF_DEV_AUXDATA("stericsson,snd-soc-mop500", 0, "snd-soc-mop500.0",
+			NULL),
+	{},
+};
+
+static struct of_dev_auxdata u8540_auxdata_lookup[] __initdata = {
+	OF_DEV_AUXDATA("stericsson,db8500-prcmu", 0x80157000, "db8500-prcmu",
+			&db8500_prcmu_pdata),
+	{},
+};
+
+static const struct of_device_id u8500_local_bus_nodes[] = {
+	/* only create devices below soc node */
+	{ .compatible = "stericsson,db8500", },
+	{ .compatible = "stericsson,db8500-prcmu", },
+	{ .compatible = "simple-bus"},
+	{ },
+};
+
+static void __init u8500_init_machine(void)
 {
-	struct device *parent;
-	int i;
+	struct device *parent = db8500_soc_device_init();
 
-	parent = db8500_soc_device_init();
-
-	db8500_add_rtc(parent);
-	db8500_add_gpios(parent);
-	db8500_add_usb(parent, usb_db8500_rx_dma_cfg, usb_db8500_tx_dma_cfg);
-
-	platform_device_register_data(parent,
-		"cpufreq-u8500", -1, NULL, 0);
-
-	for (i = 0; i < ARRAY_SIZE(platform_devs); i++)
-		platform_devs[i]->dev.parent = parent;
-
-	db8500_prcmu_device.dev.platform_data = ab8500;
-
-	platform_add_devices(platform_devs, ARRAY_SIZE(platform_devs));
-
-	return parent;
+	/* automatically probe child nodes of dbx5x0 devices */
+	if (of_machine_is_compatible("st-ericsson,u8540"))
+		of_platform_populate(NULL, u8500_local_bus_nodes,
+				     u8540_auxdata_lookup, parent);
+	else
+		of_platform_populate(NULL, u8500_local_bus_nodes,
+				     u8500_auxdata_lookup, parent);
 }
 
-/* TODO: Once all pieces are DT:ed, remove completely. */
-struct device * __init u8500_of_init_devices(void)
-{
-	struct device *parent;
-	int i;
+static const char * stericsson_dt_platform_compat[] = {
+	"st-ericsson,u8500",
+	"st-ericsson,u8540",
+	"st-ericsson,u9500",
+	"st-ericsson,u9540",
+	NULL,
+};
 
-	parent = db8500_soc_device_init();
-
-	db8500_add_usb(parent, usb_db8500_rx_dma_cfg, usb_db8500_tx_dma_cfg);
-
-	platform_device_register_data(parent,
-		"cpufreq-u8500", -1, NULL, 0);
-
-	for (i = 0; i < ARRAY_SIZE(of_platform_devs); i++)
-		of_platform_devs[i]->dev.parent = parent;
-
-	/*
-	 * Devices to be DT:ed:
-	 *   u8500_dma40_device  = todo
-	 *   db8500_pmu_device   = done
-	 *   db8500_prcmu_device = done
-	 */
-	platform_add_devices(of_platform_devs, ARRAY_SIZE(of_platform_devs));
-
-	return parent;
-}
+DT_MACHINE_START(U8500_DT, "ST-Ericsson Ux5x0 platform (Device Tree Support)")
+	.map_io		= u8500_map_io,
+	.init_irq	= ux500_init_irq,
+	.init_machine	= u8500_init_machine,
+	.init_late	= NULL,
+	.dt_compat      = stericsson_dt_platform_compat,
+	.restart        = ux500_restart,
+MACHINE_END

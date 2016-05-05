@@ -20,51 +20,55 @@
  *
  */
 
+#include <linux/err.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/io.h>
+#include <linux/of.h>
+
+#include <soc/tegra/ahb.h>
 
 #define DRV_NAME "tegra-ahb"
 
-#define AHB_ARBITRATION_DISABLE		0x00
-#define AHB_ARBITRATION_PRIORITY_CTRL	0x04
+#define AHB_ARBITRATION_DISABLE		0x04
+#define AHB_ARBITRATION_PRIORITY_CTRL	0x08
 #define   AHB_PRIORITY_WEIGHT(x)	(((x) & 0x7) << 29)
 #define   PRIORITY_SELECT_USB BIT(6)
 #define   PRIORITY_SELECT_USB2 BIT(18)
 #define   PRIORITY_SELECT_USB3 BIT(17)
 
-#define AHB_GIZMO_AHB_MEM		0x0c
+#define AHB_GIZMO_AHB_MEM		0x10
 #define   ENB_FAST_REARBITRATE BIT(2)
 #define   DONT_SPLIT_AHB_WR     BIT(7)
 
-#define AHB_GIZMO_APB_DMA		0x10
-#define AHB_GIZMO_IDE			0x18
-#define AHB_GIZMO_USB			0x1c
-#define AHB_GIZMO_AHB_XBAR_BRIDGE	0x20
-#define AHB_GIZMO_CPU_AHB_BRIDGE	0x24
-#define AHB_GIZMO_COP_AHB_BRIDGE	0x28
-#define AHB_GIZMO_XBAR_APB_CTLR		0x2c
-#define AHB_GIZMO_VCP_AHB_BRIDGE	0x30
-#define AHB_GIZMO_NAND			0x3c
-#define AHB_GIZMO_SDMMC4		0x44
-#define AHB_GIZMO_XIO			0x48
-#define AHB_GIZMO_BSEV			0x60
-#define AHB_GIZMO_BSEA			0x70
-#define AHB_GIZMO_NOR			0x74
-#define AHB_GIZMO_USB2			0x78
-#define AHB_GIZMO_USB3			0x7c
+#define AHB_GIZMO_APB_DMA		0x14
+#define AHB_GIZMO_IDE			0x1c
+#define AHB_GIZMO_USB			0x20
+#define AHB_GIZMO_AHB_XBAR_BRIDGE	0x24
+#define AHB_GIZMO_CPU_AHB_BRIDGE	0x28
+#define AHB_GIZMO_COP_AHB_BRIDGE	0x2c
+#define AHB_GIZMO_XBAR_APB_CTLR		0x30
+#define AHB_GIZMO_VCP_AHB_BRIDGE	0x34
+#define AHB_GIZMO_NAND			0x40
+#define AHB_GIZMO_SDMMC4		0x48
+#define AHB_GIZMO_XIO			0x4c
+#define AHB_GIZMO_BSEV			0x64
+#define AHB_GIZMO_BSEA			0x74
+#define AHB_GIZMO_NOR			0x78
+#define AHB_GIZMO_USB2			0x7c
+#define AHB_GIZMO_USB3			0x80
 #define   IMMEDIATE	BIT(18)
 
-#define AHB_GIZMO_SDMMC1		0x80
-#define AHB_GIZMO_SDMMC2		0x84
-#define AHB_GIZMO_SDMMC3		0x88
-#define AHB_MEM_PREFETCH_CFG_X		0xd8
-#define AHB_ARBITRATION_XBAR_CTRL	0xdc
-#define AHB_MEM_PREFETCH_CFG3		0xe0
-#define AHB_MEM_PREFETCH_CFG4		0xe4
-#define AHB_MEM_PREFETCH_CFG1		0xec
-#define AHB_MEM_PREFETCH_CFG2		0xf0
+#define AHB_GIZMO_SDMMC1		0x84
+#define AHB_GIZMO_SDMMC2		0x88
+#define AHB_GIZMO_SDMMC3		0x8c
+#define AHB_MEM_PREFETCH_CFG_X		0xdc
+#define AHB_ARBITRATION_XBAR_CTRL	0xe0
+#define AHB_MEM_PREFETCH_CFG3		0xe4
+#define AHB_MEM_PREFETCH_CFG4		0xe8
+#define AHB_MEM_PREFETCH_CFG1		0xf0
+#define AHB_MEM_PREFETCH_CFG2		0xf4
 #define   PREFETCH_ENB	BIT(31)
 #define   MST_ID(x)	(((x) & 0x1f) << 26)
 #define   AHBDMA_MST_ID	MST_ID(5)
@@ -74,9 +78,19 @@
 #define   ADDR_BNDRY(x)	(((x) & 0xf) << 21)
 #define   INACTIVITY_TIMEOUT(x)	(((x) & 0xffff) << 0)
 
-#define AHB_ARBITRATION_AHB_MEM_WRQUE_MST_ID	0xf8
+#define AHB_ARBITRATION_AHB_MEM_WRQUE_MST_ID	0xfc
 
 #define AHB_ARBITRATION_XBAR_CTRL_SMMU_INIT_DONE BIT(17)
+
+/*
+ * INCORRECT_BASE_ADDR_LOW_BYTE: Legacy kernel DT files for Tegra SoCs
+ * prior to Tegra124 generally use a physical base address ending in
+ * 0x4 for the AHB IP block.  According to the TRM, the low byte
+ * should be 0x0.  During device probing, this macro is used to detect
+ * whether the passed-in physical address is incorrect, and if so, to
+ * correct it.
+ */
+#define INCORRECT_BASE_ADDR_LOW_BYTE		0x4
 
 static struct platform_driver tegra_ahb_driver;
 
@@ -128,7 +142,7 @@ static inline void gizmo_writel(struct tegra_ahb *ahb, u32 value, u32 offset)
 	writel(value, ahb->regs + offset);
 }
 
-#ifdef CONFIG_ARCH_TEGRA_3x_SOC
+#ifdef CONFIG_TEGRA_IOMMU_SMMU
 static int tegra_ahb_match_by_smmu(struct device *dev, void *data)
 {
 	struct tegra_ahb *ahb = dev_get_drvdata(dev);
@@ -156,6 +170,7 @@ int tegra_ahb_enable_smmu(struct device_node *dn)
 EXPORT_SYMBOL(tegra_ahb_enable_smmu);
 #endif
 
+#ifdef CONFIG_PM
 static int tegra_ahb_suspend(struct device *dev)
 {
 	int i;
@@ -175,6 +190,7 @@ static int tegra_ahb_resume(struct device *dev)
 		gizmo_writel(ahb, ahb->ctx[i], tegra_ahb_gizmo[i]);
 	return 0;
 }
+#endif
 
 static UNIVERSAL_DEV_PM_OPS(tegra_ahb_pm,
 			    tegra_ahb_suspend,
@@ -240,7 +256,7 @@ static void tegra_ahb_gizmo_init(struct tegra_ahb *ahb)
 	gizmo_writel(ahb, val, AHB_MEM_PREFETCH_CFG4);
 }
 
-static int __devinit tegra_ahb_probe(struct platform_device *pdev)
+static int tegra_ahb_probe(struct platform_device *pdev)
 {
 	struct resource *res;
 	struct tegra_ahb *ahb;
@@ -252,11 +268,18 @@ static int __devinit tegra_ahb_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (!res)
-		return -ENODEV;
-	ahb->regs = devm_request_and_ioremap(&pdev->dev, res);
-	if (!ahb->regs)
-		return -EBUSY;
+
+	/* Correct the IP block base address if necessary */
+	if (res &&
+	    (res->start & INCORRECT_BASE_ADDR_LOW_BYTE) ==
+	    INCORRECT_BASE_ADDR_LOW_BYTE) {
+		dev_warn(&pdev->dev, "incorrect AHB base address in DT data - enabling workaround\n");
+		res->start -= INCORRECT_BASE_ADDR_LOW_BYTE;
+	}
+
+	ahb->regs = devm_ioremap_resource(&pdev->dev, res);
+	if (IS_ERR(ahb->regs))
+		return PTR_ERR(ahb->regs);
 
 	ahb->dev = &pdev->dev;
 	platform_set_drvdata(pdev, ahb);
@@ -264,7 +287,7 @@ static int __devinit tegra_ahb_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static const struct of_device_id tegra_ahb_of_match[] __devinitconst = {
+static const struct of_device_id tegra_ahb_of_match[] = {
 	{ .compatible = "nvidia,tegra30-ahb", },
 	{ .compatible = "nvidia,tegra20-ahb", },
 	{},
@@ -274,7 +297,6 @@ static struct platform_driver tegra_ahb_driver = {
 	.probe = tegra_ahb_probe,
 	.driver = {
 		.name = DRV_NAME,
-		.owner = THIS_MODULE,
 		.of_match_table = tegra_ahb_of_match,
 		.pm = &tegra_ahb_pm,
 	},

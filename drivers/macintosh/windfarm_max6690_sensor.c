@@ -95,7 +95,7 @@ static int wf_max6690_probe(struct i2c_client *client,
 	}
 
 	max->i2c = client;
-	max->sens.name = (char *)name; /* XXX fix constness in structure */
+	max->sens.name = name;
 	max->sens.ops = &wf_max6690_ops;
 	i2c_set_clientdata(client, max);
 
@@ -130,18 +130,7 @@ static struct i2c_driver wf_max6690_driver = {
 	.id_table	= wf_max6690_id,
 };
 
-static int __init wf_max6690_sensor_init(void)
-{
-	return i2c_add_driver(&wf_max6690_driver);
-}
-
-static void __exit wf_max6690_sensor_exit(void)
-{
-	i2c_del_driver(&wf_max6690_driver);
-}
-
-module_init(wf_max6690_sensor_init);
-module_exit(wf_max6690_sensor_exit);
+module_i2c_driver(wf_max6690_driver);
 
 MODULE_AUTHOR("Paul Mackerras <paulus@samba.org>");
 MODULE_DESCRIPTION("MAX6690 sensor objects for PowerMac thermal control");

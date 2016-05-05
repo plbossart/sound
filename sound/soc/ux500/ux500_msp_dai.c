@@ -17,17 +17,18 @@
 #include <linux/bitops.h>
 #include <linux/platform_device.h>
 #include <linux/clk.h>
+#include <linux/of.h>
 #include <linux/regulator/consumer.h>
 #include <linux/mfd/dbx500-prcmu.h>
-
-#include <mach/hardware.h>
-#include <mach/board-mop500-msp.h>
+#include <linux/platform_data/asoc-ux500-msp.h>
 
 #include <sound/soc.h>
 #include <sound/soc-dai.h>
+#include <sound/dmaengine_pcm.h>
 
 #include "ux500_msp_i2s.h"
 #include "ux500_msp_dai.h"
+#include "ux500_pcm.h"
 
 static int setup_pcm_multichan(struct snd_soc_dai *dai,
 			struct ux500_msp_config *msp_config)
@@ -398,11 +399,28 @@ static int ux500_msp_dai_startup(struct snd_pcm_substream *substream,
 		return ret;
 	}
 
-	/* Enable clock */
-	dev_dbg(dai->dev, "%s: Enabling MSP-clock.\n", __func__);
-	clk_enable(drvdata->clk);
+	/* Prepare and enable clocks */
+	dev_dbg(dai->dev, "%s: Enabling MSP-clocks.\n", __func__);
+	ret = clk_prepare_enable(drvdata->pclk);
+	if (ret) {
+		dev_err(drvdata->msp->dev,
+			"%s: Failed to prepare/enable pclk!\n", __func__);
+		goto err_pclk;
+	}
 
-	return 0;
+	ret = clk_prepare_enable(drvdata->clk);
+	if (ret) {
+		dev_err(drvdata->msp->dev,
+			"%s: Failed to prepare/enable clk!\n", __func__);
+		goto err_clk;
+	}
+
+	return ret;
+err_clk:
+	clk_disable_unprepare(drvdata->pclk);
+err_pclk:
+	regulator_disable(drvdata->reg_vape);
+	return ret;
 }
 
 static void ux500_msp_dai_shutdown(struct snd_pcm_substream *substream,
@@ -428,8 +446,9 @@ static void ux500_msp_dai_shutdown(struct snd_pcm_substream *substream,
 			__func__, dai->id, snd_pcm_stream_str(substream));
 	}
 
-	/* Disable clock */
-	clk_disable(drvdata->clk);
+	/* Disable and unprepare clocks */
+	clk_disable_unprepare(drvdata->clk);
+	clk_disable_unprepare(drvdata->pclk);
 
 	/* Disable regulator */
 	ret = regulator_disable(drvdata->reg_vape);
@@ -503,9 +522,9 @@ static int ux500_msp_dai_hw_params(struct snd_pcm_substream *substream,
 		slots_active = hweight32(mask);
 		dev_dbg(dai->dev, "TDM-slots active: %d", slots_active);
 
-		snd_pcm_hw_constraint_minmax(runtime,
+		snd_pcm_hw_constraint_single(runtime,
 				SNDRV_PCM_HW_PARAM_CHANNELS,
-				slots_active, slots_active);
+				slots_active);
 		break;
 
 	default:
@@ -637,19 +656,52 @@ static int ux500_msp_dai_trigger(struct snd_pcm_substream *substream,
 	return ret;
 }
 
+static int ux500_msp_dai_of_probe(struct snd_soc_dai *dai)
+{
+	struct ux500_msp_i2s_drvdata *drvdata = dev_get_drvdata(dai->dev);
+	struct snd_dmaengine_dai_dma_data *playback_dma_data;
+	struct snd_dmaengine_dai_dma_data *capture_dma_data;
+
+	playback_dma_data = devm_kzalloc(dai->dev,
+					 sizeof(*playback_dma_data),
+					 GFP_KERNEL);
+	if (!playback_dma_data)
+		return -ENOMEM;
+
+	capture_dma_data = devm_kzalloc(dai->dev,
+					sizeof(*capture_dma_data),
+					GFP_KERNEL);
+	if (!capture_dma_data)
+		return -ENOMEM;
+
+	playback_dma_data->addr = drvdata->msp->playback_dma_data.tx_rx_addr;
+	capture_dma_data->addr = drvdata->msp->capture_dma_data.tx_rx_addr;
+
+	playback_dma_data->maxburst = 4;
+	capture_dma_data->maxburst = 4;
+
+	snd_soc_dai_init_dma_data(dai, playback_dma_data, capture_dma_data);
+
+	return 0;
+}
+
 static int ux500_msp_dai_probe(struct snd_soc_dai *dai)
 {
 	struct ux500_msp_i2s_drvdata *drvdata = dev_get_drvdata(dai->dev);
+	struct msp_i2s_platform_data *pdata = dai->dev->platform_data;
+	int ret;
 
-	drvdata->playback_dma_data.dma_cfg = drvdata->msp->dma_cfg_tx;
-	drvdata->capture_dma_data.dma_cfg = drvdata->msp->dma_cfg_rx;
+	if (!pdata) {
+		ret = ux500_msp_dai_of_probe(dai);
+		return ret;
+	}
 
-	dai->playback_dma_data = &drvdata->playback_dma_data;
-	dai->capture_dma_data = &drvdata->capture_dma_data;
+	drvdata->msp->playback_dma_data.data_size = drvdata->slot_width;
+	drvdata->msp->capture_dma_data.data_size = drvdata->slot_width;
 
-	drvdata->playback_dma_data.data_size = drvdata->slot_width;
-	drvdata->capture_dma_data.data_size = drvdata->slot_width;
-
+	snd_soc_dai_init_dma_data(dai,
+				  &drvdata->msp->playback_dma_data,
+				  &drvdata->msp->capture_dma_data);
 	return 0;
 }
 
@@ -666,100 +718,44 @@ static struct snd_soc_dai_ops ux500_msp_dai_ops[] = {
 	}
 };
 
-static struct snd_soc_dai_driver ux500_msp_dai_drv[UX500_NBR_OF_DAI] = {
-	{
-		.name = "ux500-msp-i2s.0",
-		.probe = ux500_msp_dai_probe,
-		.id = 0,
-		.suspend = NULL,
-		.resume = NULL,
-		.playback = {
-			.channels_min = UX500_MSP_MIN_CHANNELS,
-			.channels_max = UX500_MSP_MAX_CHANNELS,
-			.rates = UX500_I2S_RATES,
-			.formats = UX500_I2S_FORMATS,
-		},
-		.capture = {
-			.channels_min = UX500_MSP_MIN_CHANNELS,
-			.channels_max = UX500_MSP_MAX_CHANNELS,
-			.rates = UX500_I2S_RATES,
-			.formats = UX500_I2S_FORMATS,
-		},
-		.ops = ux500_msp_dai_ops,
-	},
-	{
-		.name = "ux500-msp-i2s.1",
-		.probe = ux500_msp_dai_probe,
-		.id = 1,
-		.suspend = NULL,
-		.resume = NULL,
-		.playback = {
-			.channels_min = UX500_MSP_MIN_CHANNELS,
-			.channels_max = UX500_MSP_MAX_CHANNELS,
-			.rates = UX500_I2S_RATES,
-			.formats = UX500_I2S_FORMATS,
-		},
-		.capture = {
-			.channels_min = UX500_MSP_MIN_CHANNELS,
-			.channels_max = UX500_MSP_MAX_CHANNELS,
-			.rates = UX500_I2S_RATES,
-			.formats = UX500_I2S_FORMATS,
-		},
-		.ops = ux500_msp_dai_ops,
-	},
-	{
-		.name = "ux500-msp-i2s.2",
-		.id = 2,
-		.probe = ux500_msp_dai_probe,
-		.suspend = NULL,
-		.resume = NULL,
-		.playback = {
-			.channels_min = UX500_MSP_MIN_CHANNELS,
-			.channels_max = UX500_MSP_MAX_CHANNELS,
-			.rates = UX500_I2S_RATES,
-			.formats = UX500_I2S_FORMATS,
-		},
-		.capture = {
-			.channels_min = UX500_MSP_MIN_CHANNELS,
-			.channels_max = UX500_MSP_MAX_CHANNELS,
-			.rates = UX500_I2S_RATES,
-			.formats = UX500_I2S_FORMATS,
-		},
-		.ops = ux500_msp_dai_ops,
-	},
-	{
-		.name = "ux500-msp-i2s.3",
-		.probe = ux500_msp_dai_probe,
-		.id = 3,
-		.suspend = NULL,
-		.resume = NULL,
-		.playback = {
-			.channels_min = UX500_MSP_MIN_CHANNELS,
-			.channels_max = UX500_MSP_MAX_CHANNELS,
-			.rates = UX500_I2S_RATES,
-			.formats = UX500_I2S_FORMATS,
-		},
-		.capture = {
-			.channels_min = UX500_MSP_MIN_CHANNELS,
-			.channels_max = UX500_MSP_MAX_CHANNELS,
-			.rates = UX500_I2S_RATES,
-			.formats = UX500_I2S_FORMATS,
-		},
-		.ops = ux500_msp_dai_ops,
-	},
+static struct snd_soc_dai_driver ux500_msp_dai_drv = {
+	.probe                 = ux500_msp_dai_probe,
+	.suspend               = NULL,
+	.resume                = NULL,
+	.playback.channels_min = UX500_MSP_MIN_CHANNELS,
+	.playback.channels_max = UX500_MSP_MAX_CHANNELS,
+	.playback.rates        = UX500_I2S_RATES,
+	.playback.formats      = UX500_I2S_FORMATS,
+	.capture.channels_min  = UX500_MSP_MIN_CHANNELS,
+	.capture.channels_max  = UX500_MSP_MAX_CHANNELS,
+	.capture.rates         = UX500_I2S_RATES,
+	.capture.formats       = UX500_I2S_FORMATS,
+	.ops                   = ux500_msp_dai_ops,
 };
 
-static int __devinit ux500_msp_drv_probe(struct platform_device *pdev)
+static const struct snd_soc_component_driver ux500_msp_component = {
+	.name		= "ux500-msp",
+};
+
+
+static int ux500_msp_drv_probe(struct platform_device *pdev)
 {
 	struct ux500_msp_i2s_drvdata *drvdata;
+	struct msp_i2s_platform_data *pdata = pdev->dev.platform_data;
+	struct device_node *np = pdev->dev.of_node;
 	int ret = 0;
 
-	dev_dbg(&pdev->dev, "%s: Enter (pdev->name = %s).\n", __func__,
-		pdev->name);
+	if (!pdata && !np) {
+		dev_err(&pdev->dev, "No platform data or Device Tree found\n");
+		return -ENODEV;
+	}
 
 	drvdata = devm_kzalloc(&pdev->dev,
 				sizeof(struct ux500_msp_i2s_drvdata),
 				GFP_KERNEL);
+	if (!drvdata)
+		return -ENOMEM;
+
 	drvdata->fmt = 0;
 	drvdata->slots = 1;
 	drvdata->tx_mask = 0x01;
@@ -777,12 +773,22 @@ static int __devinit ux500_msp_drv_probe(struct platform_device *pdev)
 	}
 	prcmu_qos_add_requirement(PRCMU_QOS_APE_OPP, (char *)pdev->name, 50);
 
-	drvdata->clk = clk_get(&pdev->dev, NULL);
+	drvdata->pclk = devm_clk_get(&pdev->dev, "apb_pclk");
+	if (IS_ERR(drvdata->pclk)) {
+		ret = (int)PTR_ERR(drvdata->pclk);
+		dev_err(&pdev->dev,
+			"%s: ERROR: devm_clk_get of pclk failed (%d)!\n",
+			__func__, ret);
+		return ret;
+	}
+
+	drvdata->clk = devm_clk_get(&pdev->dev, NULL);
 	if (IS_ERR(drvdata->clk)) {
 		ret = (int)PTR_ERR(drvdata->clk);
-		dev_err(&pdev->dev, "%s: ERROR: clk_get failed (%d)!\n",
+		dev_err(&pdev->dev,
+			"%s: ERROR: devm_clk_get failed (%d)!\n",
 			__func__, ret);
-		goto err_clk;
+		return ret;
 	}
 
 	ret = ux500_msp_i2s_init_msp(pdev, &drvdata->msp,
@@ -791,49 +797,58 @@ static int __devinit ux500_msp_drv_probe(struct platform_device *pdev)
 		dev_err(&pdev->dev,
 			"%s: ERROR: Failed to init MSP-struct (%d)!",
 			__func__, ret);
-		goto err_init_msp;
+		return ret;
 	}
 	dev_set_drvdata(&pdev->dev, drvdata);
 
-	ret = snd_soc_register_dai(&pdev->dev,
-				&ux500_msp_dai_drv[drvdata->msp->id]);
+	ret = snd_soc_register_component(&pdev->dev, &ux500_msp_component,
+					 &ux500_msp_dai_drv, 1);
 	if (ret < 0) {
 		dev_err(&pdev->dev, "Error: %s: Failed to register MSP%d!\n",
 			__func__, drvdata->msp->id);
-		goto err_init_msp;
+		return ret;
+	}
+
+	ret = ux500_pcm_register_platform(pdev);
+	if (ret < 0) {
+		dev_err(&pdev->dev,
+			"Error: %s: Failed to register PCM platform device!\n",
+			__func__);
+		goto err_reg_plat;
 	}
 
 	return 0;
 
-err_init_msp:
-	clk_put(drvdata->clk);
-
-err_clk:
-	devm_regulator_put(drvdata->reg_vape);
-
+err_reg_plat:
+	snd_soc_unregister_component(&pdev->dev);
 	return ret;
 }
 
-static int __devexit ux500_msp_drv_remove(struct platform_device *pdev)
+static int ux500_msp_drv_remove(struct platform_device *pdev)
 {
 	struct ux500_msp_i2s_drvdata *drvdata = dev_get_drvdata(&pdev->dev);
 
-	snd_soc_unregister_dais(&pdev->dev, ARRAY_SIZE(ux500_msp_dai_drv));
+	ux500_pcm_unregister_platform(pdev);
 
-	devm_regulator_put(drvdata->reg_vape);
+	snd_soc_unregister_component(&pdev->dev);
+
 	prcmu_qos_remove_requirement(PRCMU_QOS_APE_OPP, "ux500_msp_i2s");
-
-	clk_put(drvdata->clk);
 
 	ux500_msp_i2s_cleanup_msp(pdev, drvdata->msp);
 
 	return 0;
 }
 
+static const struct of_device_id ux500_msp_i2s_match[] = {
+	{ .compatible = "stericsson,ux500-msp-i2s", },
+	{},
+};
+MODULE_DEVICE_TABLE(of, ux500_msp_i2s_match);
+
 static struct platform_driver msp_i2s_driver = {
 	.driver = {
 		.name = "ux500-msp-i2s",
-		.owner = THIS_MODULE,
+		.of_match_table = ux500_msp_i2s_match,
 	},
 	.probe = ux500_msp_drv_probe,
 	.remove = ux500_msp_drv_remove,

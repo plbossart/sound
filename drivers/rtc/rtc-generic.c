@@ -9,6 +9,8 @@
 #include <linux/platform_device.h>
 #include <linux/rtc.h>
 
+#if defined(CONFIG_M68K) || defined(CONFIG_PARISC) || \
+    defined(CONFIG_PPC) || defined(CONFIG_SUPERH32)
 #include <asm/rtc.h>
 
 static int generic_get_time(struct device *dev, struct rtc_time *tm)
@@ -33,13 +35,21 @@ static const struct rtc_class_ops generic_rtc_ops = {
 	.read_time = generic_get_time,
 	.set_time = generic_set_time,
 };
+#else
+#define generic_rtc_ops *(struct rtc_class_ops*)NULL
+#endif
 
 static int __init generic_rtc_probe(struct platform_device *dev)
 {
 	struct rtc_device *rtc;
+	const struct rtc_class_ops *ops;
 
-	rtc = rtc_device_register("rtc-generic", &dev->dev, &generic_rtc_ops,
-				  THIS_MODULE);
+	ops = dev_get_platdata(&dev->dev);
+	if (!ops)
+		ops = &generic_rtc_ops;
+
+	rtc = devm_rtc_device_register(&dev->dev, "rtc-generic",
+					ops, THIS_MODULE);
 	if (IS_ERR(rtc))
 		return PTR_ERR(rtc);
 
@@ -48,35 +58,13 @@ static int __init generic_rtc_probe(struct platform_device *dev)
 	return 0;
 }
 
-static int __exit generic_rtc_remove(struct platform_device *dev)
-{
-	struct rtc_device *rtc = platform_get_drvdata(dev);
-
-	rtc_device_unregister(rtc);
-
-	return 0;
-}
-
 static struct platform_driver generic_rtc_driver = {
 	.driver = {
 		.name = "rtc-generic",
-		.owner = THIS_MODULE,
 	},
-	.remove = __exit_p(generic_rtc_remove),
 };
 
-static int __init generic_rtc_init(void)
-{
-	return platform_driver_probe(&generic_rtc_driver, generic_rtc_probe);
-}
-
-static void __exit generic_rtc_fini(void)
-{
-	platform_driver_unregister(&generic_rtc_driver);
-}
-
-module_init(generic_rtc_init);
-module_exit(generic_rtc_fini);
+module_platform_driver_probe(generic_rtc_driver, generic_rtc_probe);
 
 MODULE_AUTHOR("Kyle McMartin <kyle@mcmartin.ca>");
 MODULE_LICENSE("GPL");

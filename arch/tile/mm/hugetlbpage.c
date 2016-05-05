@@ -49,38 +49,6 @@ int huge_shift[HUGE_SHIFT_ENTRIES] = {
 #endif
 };
 
-/*
- * This routine is a hybrid of pte_alloc_map() and pte_alloc_kernel().
- * It assumes that L2 PTEs are never in HIGHMEM (we don't support that).
- * It locks the user pagetable, and bumps up the mm->nr_ptes field,
- * but otherwise allocate the page table using the kernel versions.
- */
-static pte_t *pte_alloc_hugetlb(struct mm_struct *mm, pmd_t *pmd,
-				unsigned long address)
-{
-	pte_t *new;
-
-	if (pmd_none(*pmd)) {
-		new = pte_alloc_one_kernel(mm, address);
-		if (!new)
-			return NULL;
-
-		smp_wmb(); /* See comment in __pte_alloc */
-
-		spin_lock(&mm->page_table_lock);
-		if (likely(pmd_none(*pmd))) {  /* Has another populated it ? */
-			mm->nr_ptes++;
-			pmd_populate_kernel(mm, pmd, new);
-			new = NULL;
-		} else
-			VM_BUG_ON(pmd_trans_splitting(*pmd));
-		spin_unlock(&mm->page_table_lock);
-		if (new)
-			pte_free_kernel(mm, new);
-	}
-
-	return pte_offset_kernel(pmd, address);
-}
 #endif
 
 pte_t *huge_pte_alloc(struct mm_struct *mm,
@@ -109,7 +77,7 @@ pte_t *huge_pte_alloc(struct mm_struct *mm,
 		else {
 			if (sz != PAGE_SIZE << huge_shift[HUGE_SHIFT_PAGE])
 				panic("Unexpected page size %#lx\n", sz);
-			return pte_alloc_hugetlb(mm, pmd, addr);
+			return pte_alloc_map(mm, pmd, addr);
 		}
 	}
 #else
@@ -144,14 +112,14 @@ pte_t *huge_pte_offset(struct mm_struct *mm, unsigned long addr)
 
 	/* Get the top-level page table entry. */
 	pgd = (pgd_t *)get_pte((pte_t *)mm->pgd, pgd_index(addr), 0);
-	if (!pgd_present(*pgd))
-		return NULL;
 
 	/* We don't have four levels. */
 	pud = pud_offset(pgd, addr);
 #ifndef __PAGETABLE_PUD_FOLDED
 # error support fourth page table level
 #endif
+	if (!pud_present(*pud))
+		return NULL;
 
 	/* Check for an L0 huge PTE, if we have three levels. */
 #ifndef __PAGETABLE_PMD_FOLDED
@@ -182,12 +150,6 @@ pte_t *huge_pte_offset(struct mm_struct *mm, unsigned long addr)
 	return NULL;
 }
 
-struct page *follow_huge_addr(struct mm_struct *mm, unsigned long address,
-			      int write)
-{
-	return ERR_PTR(-EINVAL);
-}
-
 int pmd_huge(pmd_t pmd)
 {
 	return !!(pmd_val(pmd) & _PAGE_HUGE_PAGE);
@@ -198,75 +160,21 @@ int pud_huge(pud_t pud)
 	return !!(pud_val(pud) & _PAGE_HUGE_PAGE);
 }
 
-struct page *follow_huge_pmd(struct mm_struct *mm, unsigned long address,
-			     pmd_t *pmd, int write)
-{
-	struct page *page;
-
-	page = pte_page(*(pte_t *)pmd);
-	if (page)
-		page += ((address & ~PMD_MASK) >> PAGE_SHIFT);
-	return page;
-}
-
-struct page *follow_huge_pud(struct mm_struct *mm, unsigned long address,
-			     pud_t *pud, int write)
-{
-	struct page *page;
-
-	page = pte_page(*(pte_t *)pud);
-	if (page)
-		page += ((address & ~PUD_MASK) >> PAGE_SHIFT);
-	return page;
-}
-
-int huge_pmd_unshare(struct mm_struct *mm, unsigned long *addr, pte_t *ptep)
-{
-	return 0;
-}
-
 #ifdef HAVE_ARCH_HUGETLB_UNMAPPED_AREA
 static unsigned long hugetlb_get_unmapped_area_bottomup(struct file *file,
 		unsigned long addr, unsigned long len,
 		unsigned long pgoff, unsigned long flags)
 {
 	struct hstate *h = hstate_file(file);
-	struct mm_struct *mm = current->mm;
-	struct vm_area_struct *vma;
-	unsigned long start_addr;
+	struct vm_unmapped_area_info info;
 
-	if (len > mm->cached_hole_size) {
-		start_addr = mm->free_area_cache;
-	} else {
-		start_addr = TASK_UNMAPPED_BASE;
-		mm->cached_hole_size = 0;
-	}
-
-full_search:
-	addr = ALIGN(start_addr, huge_page_size(h));
-
-	for (vma = find_vma(mm, addr); ; vma = vma->vm_next) {
-		/* At this point:  (!vma || addr < vma->vm_end). */
-		if (TASK_SIZE - len < addr) {
-			/*
-			 * Start a new search - just in case we missed
-			 * some holes.
-			 */
-			if (start_addr != TASK_UNMAPPED_BASE) {
-				start_addr = TASK_UNMAPPED_BASE;
-				mm->cached_hole_size = 0;
-				goto full_search;
-			}
-			return -ENOMEM;
-		}
-		if (!vma || addr + len <= vma->vm_start) {
-			mm->free_area_cache = addr + len;
-			return addr;
-		}
-		if (addr + mm->cached_hole_size < vma->vm_start)
-			mm->cached_hole_size = vma->vm_start - addr;
-		addr = ALIGN(vma->vm_end, huge_page_size(h));
-	}
+	info.flags = 0;
+	info.length = len;
+	info.low_limit = TASK_UNMAPPED_BASE;
+	info.high_limit = TASK_SIZE;
+	info.align_mask = PAGE_MASK & ~huge_page_mask(h);
+	info.align_offset = 0;
+	return vm_unmapped_area(&info);
 }
 
 static unsigned long hugetlb_get_unmapped_area_topdown(struct file *file,
@@ -274,92 +182,30 @@ static unsigned long hugetlb_get_unmapped_area_topdown(struct file *file,
 		unsigned long pgoff, unsigned long flags)
 {
 	struct hstate *h = hstate_file(file);
-	struct mm_struct *mm = current->mm;
-	struct vm_area_struct *vma, *prev_vma;
-	unsigned long base = mm->mmap_base, addr = addr0;
-	unsigned long largest_hole = mm->cached_hole_size;
-	int first_time = 1;
+	struct vm_unmapped_area_info info;
+	unsigned long addr;
 
-	/* don't allow allocations above current base */
-	if (mm->free_area_cache > base)
-		mm->free_area_cache = base;
+	info.flags = VM_UNMAPPED_AREA_TOPDOWN;
+	info.length = len;
+	info.low_limit = PAGE_SIZE;
+	info.high_limit = current->mm->mmap_base;
+	info.align_mask = PAGE_MASK & ~huge_page_mask(h);
+	info.align_offset = 0;
+	addr = vm_unmapped_area(&info);
 
-	if (len <= largest_hole) {
-		largest_hole = 0;
-		mm->free_area_cache  = base;
-	}
-try_again:
-	/* make sure it can fit in the remaining address space */
-	if (mm->free_area_cache < len)
-		goto fail;
-
-	/* either no address requested or can't fit in requested address hole */
-	addr = (mm->free_area_cache - len) & huge_page_mask(h);
-	do {
-		/*
-		 * Lookup failure means no vma is above this address,
-		 * i.e. return with success:
-		 */
-		vma = find_vma_prev(mm, addr, &prev_vma);
-		if (!vma) {
-			return addr;
-			break;
-		}
-
-		/*
-		 * new region fits between prev_vma->vm_end and
-		 * vma->vm_start, use it:
-		 */
-		if (addr + len <= vma->vm_start &&
-			    (!prev_vma || (addr >= prev_vma->vm_end))) {
-			/* remember the address as a hint for next time */
-			mm->cached_hole_size = largest_hole;
-			mm->free_area_cache = addr;
-			return addr;
-		} else {
-			/* pull free_area_cache down to the first hole */
-			if (mm->free_area_cache == vma->vm_end) {
-				mm->free_area_cache = vma->vm_start;
-				mm->cached_hole_size = largest_hole;
-			}
-		}
-
-		/* remember the largest hole we saw so far */
-		if (addr + largest_hole < vma->vm_start)
-			largest_hole = vma->vm_start - addr;
-
-		/* try just below the current vma->vm_start */
-		addr = (vma->vm_start - len) & huge_page_mask(h);
-
-	} while (len <= vma->vm_start);
-
-fail:
-	/*
-	 * if hint left us with no space for the requested
-	 * mapping then try again:
-	 */
-	if (first_time) {
-		mm->free_area_cache = base;
-		largest_hole = 0;
-		first_time = 0;
-		goto try_again;
-	}
 	/*
 	 * A failed mmap() very likely causes application failure,
 	 * so fall back to the bottom-up function here. This scenario
 	 * can happen with large stack limits and large mmap()
 	 * allocations.
 	 */
-	mm->free_area_cache = TASK_UNMAPPED_BASE;
-	mm->cached_hole_size = ~0UL;
-	addr = hugetlb_get_unmapped_area_bottomup(file, addr0,
-			len, pgoff, flags);
-
-	/*
-	 * Restore the topdown base:
-	 */
-	mm->free_area_cache = base;
-	mm->cached_hole_size = ~0UL;
+	if (addr & ~PAGE_MASK) {
+		VM_BUG_ON(addr != -ENOMEM);
+		info.flags = 0;
+		info.low_limit = TASK_UNMAPPED_BASE;
+		info.high_limit = TASK_SIZE;
+		addr = vm_unmapped_area(&info);
+	}
 
 	return addr;
 }
@@ -405,22 +251,21 @@ static __init int __setup_hugepagesz(unsigned long ps)
 	int level, base_shift;
 
 	if ((1UL << log_ps) != ps || (log_ps & 1) != 0) {
-		pr_warn("Not enabling %ld byte huge pages;"
-			" must be a power of four.\n", ps);
+		pr_warn("Not enabling %ld byte huge pages; must be a power of four\n",
+			ps);
 		return -EINVAL;
 	}
 
 	if (ps > 64*1024*1024*1024UL) {
-		pr_warn("Not enabling %ld MB huge pages;"
-			" largest legal value is 64 GB .\n", ps >> 20);
+		pr_warn("Not enabling %ld MB huge pages; largest legal value is 64 GB\n",
+			ps >> 20);
 		return -EINVAL;
 	} else if (ps >= PUD_SIZE) {
 		static long hv_jpage_size;
 		if (hv_jpage_size == 0)
 			hv_jpage_size = hv_sysconf(HV_SYSCONF_PAGE_SIZE_JUMBO);
 		if (hv_jpage_size != PUD_SIZE) {
-			pr_warn("Not enabling >= %ld MB huge pages:"
-				" hypervisor reports size %ld\n",
+			pr_warn("Not enabling >= %ld MB huge pages: hypervisor reports size %ld\n",
 				PUD_SIZE >> 20, hv_jpage_size);
 			return -EINVAL;
 		}
@@ -441,14 +286,13 @@ static __init int __setup_hugepagesz(unsigned long ps)
 		int shift_val = log_ps - base_shift;
 		if (huge_shift[level] != 0) {
 			int old_shift = base_shift + huge_shift[level];
-			pr_warn("Not enabling %ld MB huge pages;"
-				" already have size %ld MB.\n",
+			pr_warn("Not enabling %ld MB huge pages; already have size %ld MB\n",
 				ps >> 20, (1UL << old_shift) >> 20);
 			return -EINVAL;
 		}
 		if (hv_set_pte_super_shift(level, shift_val) != 0) {
-			pr_warn("Not enabling %ld MB huge pages;"
-				" no hypervisor support.\n", ps >> 20);
+			pr_warn("Not enabling %ld MB huge pages; no hypervisor support\n",
+				ps >> 20);
 			return -EINVAL;
 		}
 		printk(KERN_DEBUG "Enabled %ld MB huge pages\n", ps >> 20);

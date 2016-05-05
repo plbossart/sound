@@ -1,5 +1,5 @@
 /*
- * net/sched/ipt.c     iptables target interface
+ * net/sched/act_ipt.c		iptables target interface
  *
  *TODO: Add other tables. For now we only support the ipv4 table targets
  *
@@ -8,7 +8,7 @@
  *		as published by the Free Software Foundation; either version
  *		2 of the License, or (at your option) any later version.
  *
- * Copyright:	Jamal Hadi Salim (2002-4)
+ * Copyright:	Jamal Hadi Salim (2002-13)
  */
 
 #include <linux/types.h>
@@ -29,15 +29,10 @@
 
 
 #define IPT_TAB_MASK     15
-static struct tcf_common *tcf_ipt_ht[IPT_TAB_MASK + 1];
-static u32 ipt_idx_gen;
-static DEFINE_RWLOCK(ipt_lock);
 
-static struct tcf_hashinfo ipt_hash_info = {
-	.htab	=	tcf_ipt_ht,
-	.hmask	=	IPT_TAB_MASK,
-	.lock	=	&ipt_lock,
-};
+static int ipt_net_id;
+
+static int xt_net_id;
 
 static int ipt_init_target(struct xt_entry_target *t, char *table, unsigned int hook)
 {
@@ -71,28 +66,19 @@ static void ipt_destroy_target(struct xt_entry_target *t)
 	struct xt_tgdtor_param par = {
 		.target   = t->u.kernel.target,
 		.targinfo = t->data,
+		.family   = NFPROTO_IPV4,
 	};
 	if (par.target->destroy != NULL)
 		par.target->destroy(&par);
 	module_put(par.target->me);
 }
 
-static int tcf_ipt_release(struct tcf_ipt *ipt, int bind)
+static void tcf_ipt_release(struct tc_action *a, int bind)
 {
-	int ret = 0;
-	if (ipt) {
-		if (bind)
-			ipt->tcf_bindcnt--;
-		ipt->tcf_refcnt--;
-		if (ipt->tcf_bindcnt <= 0 && ipt->tcf_refcnt <= 0) {
-			ipt_destroy_target(ipt->tcfi_t);
-			kfree(ipt->tcfi_tname);
-			kfree(ipt->tcfi_t);
-			tcf_hash_destroy(&ipt->common, &ipt_hash_info);
-			ret = ACT_P_DELETED;
-		}
-	}
-	return ret;
+	struct tcf_ipt *ipt = to_ipt(a);
+	ipt_destroy_target(ipt->tcfi_t);
+	kfree(ipt->tcfi_tname);
+	kfree(ipt->tcfi_t);
 }
 
 static const struct nla_policy ipt_policy[TCA_IPT_MAX + 1] = {
@@ -102,12 +88,12 @@ static const struct nla_policy ipt_policy[TCA_IPT_MAX + 1] = {
 	[TCA_IPT_TARG]	= { .len = sizeof(struct xt_entry_target) },
 };
 
-static int tcf_ipt_init(struct nlattr *nla, struct nlattr *est,
-			struct tc_action *a, int ovr, int bind)
+static int __tcf_ipt_init(struct tc_action_net *tn, struct nlattr *nla,
+			  struct nlattr *est, struct tc_action *a, int ovr,
+			  int bind)
 {
 	struct nlattr *tb[TCA_IPT_MAX + 1];
 	struct tcf_ipt *ipt;
-	struct tcf_common *pc;
 	struct xt_entry_target *td, *t;
 	char *tname;
 	int ret = 0, err;
@@ -133,20 +119,21 @@ static int tcf_ipt_init(struct nlattr *nla, struct nlattr *est,
 	if (tb[TCA_IPT_INDEX] != NULL)
 		index = nla_get_u32(tb[TCA_IPT_INDEX]);
 
-	pc = tcf_hash_check(index, a, bind, &ipt_hash_info);
-	if (!pc) {
-		pc = tcf_hash_create(index, est, a, sizeof(*ipt), bind,
-				     &ipt_idx_gen, &ipt_hash_info);
-		if (IS_ERR(pc))
-			return PTR_ERR(pc);
+	if (!tcf_hash_check(tn, index, a, bind)) {
+		ret = tcf_hash_create(tn, index, est, a, sizeof(*ipt), bind,
+				      false);
+		if (ret)
+			return ret;
 		ret = ACT_P_CREATED;
 	} else {
-		if (!ovr) {
-			tcf_ipt_release(to_ipt(pc), bind);
+		if (bind)/* dont override defaults */
+			return 0;
+		tcf_hash_release(a, bind);
+
+		if (!ovr)
 			return -EEXIST;
-		}
 	}
-	ipt = to_ipt(pc);
+	ipt = to_ipt(a);
 
 	hook = nla_get_u32(tb[TCA_IPT_HOOK]);
 
@@ -177,7 +164,7 @@ static int tcf_ipt_init(struct nlattr *nla, struct nlattr *est,
 	ipt->tcfi_hook  = hook;
 	spin_unlock_bh(&ipt->tcf_lock);
 	if (ret == ACT_P_CREATED)
-		tcf_hash_insert(pc, &ipt_hash_info);
+		tcf_hash_insert(tn, a);
 	return ret;
 
 err3:
@@ -185,14 +172,27 @@ err3:
 err2:
 	kfree(tname);
 err1:
-	kfree(pc);
+	if (ret == ACT_P_CREATED)
+		tcf_hash_cleanup(a, est);
 	return err;
 }
 
-static int tcf_ipt_cleanup(struct tc_action *a, int bind)
+static int tcf_ipt_init(struct net *net, struct nlattr *nla,
+			struct nlattr *est, struct tc_action *a, int ovr,
+			int bind)
 {
-	struct tcf_ipt *ipt = a->priv;
-	return tcf_ipt_release(ipt, bind);
+	struct tc_action_net *tn = net_generic(net, ipt_net_id);
+
+	return __tcf_ipt_init(tn, nla, est, a, ovr, bind);
+}
+
+static int tcf_xt_init(struct net *net, struct nlattr *nla,
+		       struct nlattr *est, struct tc_action *a, int ovr,
+		       int bind)
+{
+	struct tc_action_net *tn = net_generic(net, xt_net_id);
+
+	return __tcf_ipt_init(tn, nla, est, a, ovr, bind);
 }
 
 static int tcf_ipt(struct sk_buff *skb, const struct tc_action *a,
@@ -202,10 +202,8 @@ static int tcf_ipt(struct sk_buff *skb, const struct tc_action *a,
 	struct tcf_ipt *ipt = a->priv;
 	struct xt_action_param par;
 
-	if (skb_cloned(skb)) {
-		if (pskb_expand_head(skb, 0, 0, GFP_ATOMIC))
-			return TC_ACT_UNSPEC;
-	}
+	if (skb_unclone(skb, GFP_ATOMIC))
+		return TC_ACT_UNSPEC;
 
 	spin_lock(&ipt->tcf_lock);
 
@@ -216,11 +214,13 @@ static int tcf_ipt(struct sk_buff *skb, const struct tc_action *a,
 	 * worry later - danger - this API seems to have changed
 	 * from earlier kernels
 	 */
+	par.net	     = dev_net(skb->dev);
 	par.in       = skb->dev;
 	par.out      = NULL;
 	par.hooknum  = ipt->tcfi_hook;
 	par.target   = ipt->tcfi_t->u.kernel.target;
 	par.targinfo = ipt->tcfi_t->data;
+	par.family   = NFPROTO_IPV4;
 	ret = par.target->target(skb, &par);
 
 	switch (ret) {
@@ -286,32 +286,131 @@ nla_put_failure:
 	return -1;
 }
 
+static int tcf_ipt_walker(struct net *net, struct sk_buff *skb,
+			  struct netlink_callback *cb, int type,
+			  struct tc_action *a)
+{
+	struct tc_action_net *tn = net_generic(net, ipt_net_id);
+
+	return tcf_generic_walker(tn, skb, cb, type, a);
+}
+
+static int tcf_ipt_search(struct net *net, struct tc_action *a, u32 index)
+{
+	struct tc_action_net *tn = net_generic(net, ipt_net_id);
+
+	return tcf_hash_search(tn, a, index);
+}
+
 static struct tc_action_ops act_ipt_ops = {
 	.kind		=	"ipt",
-	.hinfo		=	&ipt_hash_info,
 	.type		=	TCA_ACT_IPT,
-	.capab		=	TCA_CAP_NONE,
 	.owner		=	THIS_MODULE,
 	.act		=	tcf_ipt,
 	.dump		=	tcf_ipt_dump,
-	.cleanup	=	tcf_ipt_cleanup,
-	.lookup		=	tcf_hash_search,
+	.cleanup	=	tcf_ipt_release,
 	.init		=	tcf_ipt_init,
-	.walk		=	tcf_generic_walker
+	.walk		=	tcf_ipt_walker,
+	.lookup		=	tcf_ipt_search,
 };
 
-MODULE_AUTHOR("Jamal Hadi Salim(2002-4)");
+static __net_init int ipt_init_net(struct net *net)
+{
+	struct tc_action_net *tn = net_generic(net, ipt_net_id);
+
+	return tc_action_net_init(tn, &act_ipt_ops, IPT_TAB_MASK);
+}
+
+static void __net_exit ipt_exit_net(struct net *net)
+{
+	struct tc_action_net *tn = net_generic(net, ipt_net_id);
+
+	tc_action_net_exit(tn);
+}
+
+static struct pernet_operations ipt_net_ops = {
+	.init = ipt_init_net,
+	.exit = ipt_exit_net,
+	.id   = &ipt_net_id,
+	.size = sizeof(struct tc_action_net),
+};
+
+static int tcf_xt_walker(struct net *net, struct sk_buff *skb,
+			 struct netlink_callback *cb, int type,
+			 struct tc_action *a)
+{
+	struct tc_action_net *tn = net_generic(net, xt_net_id);
+
+	return tcf_generic_walker(tn, skb, cb, type, a);
+}
+
+static int tcf_xt_search(struct net *net, struct tc_action *a, u32 index)
+{
+	struct tc_action_net *tn = net_generic(net, xt_net_id);
+
+	return tcf_hash_search(tn, a, index);
+}
+
+static struct tc_action_ops act_xt_ops = {
+	.kind		=	"xt",
+	.type		=	TCA_ACT_XT,
+	.owner		=	THIS_MODULE,
+	.act		=	tcf_ipt,
+	.dump		=	tcf_ipt_dump,
+	.cleanup	=	tcf_ipt_release,
+	.init		=	tcf_xt_init,
+	.walk		=	tcf_xt_walker,
+	.lookup		=	tcf_xt_search,
+};
+
+static __net_init int xt_init_net(struct net *net)
+{
+	struct tc_action_net *tn = net_generic(net, xt_net_id);
+
+	return tc_action_net_init(tn, &act_xt_ops, IPT_TAB_MASK);
+}
+
+static void __net_exit xt_exit_net(struct net *net)
+{
+	struct tc_action_net *tn = net_generic(net, xt_net_id);
+
+	tc_action_net_exit(tn);
+}
+
+static struct pernet_operations xt_net_ops = {
+	.init = xt_init_net,
+	.exit = xt_exit_net,
+	.id   = &xt_net_id,
+	.size = sizeof(struct tc_action_net),
+};
+
+MODULE_AUTHOR("Jamal Hadi Salim(2002-13)");
 MODULE_DESCRIPTION("Iptables target actions");
 MODULE_LICENSE("GPL");
+MODULE_ALIAS("act_xt");
 
 static int __init ipt_init_module(void)
 {
-	return tcf_register_action(&act_ipt_ops);
+	int ret1, ret2;
+
+	ret1 = tcf_register_action(&act_xt_ops, &xt_net_ops);
+	if (ret1 < 0)
+		pr_err("Failed to load xt action\n");
+
+	ret2 = tcf_register_action(&act_ipt_ops, &ipt_net_ops);
+	if (ret2 < 0)
+		pr_err("Failed to load ipt action\n");
+
+	if (ret1 < 0 && ret2 < 0) {
+		return ret1;
+	} else
+		return 0;
 }
 
 static void __exit ipt_cleanup_module(void)
 {
-	tcf_unregister_action(&act_ipt_ops);
+	tcf_unregister_action(&act_ipt_ops, &ipt_net_ops);
+	tcf_unregister_action(&act_xt_ops, &xt_net_ops);
 }
 
 module_init(ipt_init_module);

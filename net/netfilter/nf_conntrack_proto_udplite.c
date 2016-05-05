@@ -48,6 +48,7 @@ static inline struct udplite_net *udplite_pernet(struct net *net)
 
 static bool udplite_pkt_to_tuple(const struct sk_buff *skb,
 				 unsigned int dataoff,
+				 struct net *net,
 				 struct nf_conntrack_tuple *tuple)
 {
 	const struct udphdr *hp;
@@ -71,12 +72,12 @@ static bool udplite_invert_tuple(struct nf_conntrack_tuple *tuple,
 }
 
 /* Print out the per-protocol part of the tuple. */
-static int udplite_print_tuple(struct seq_file *s,
-			       const struct nf_conntrack_tuple *tuple)
+static void udplite_print_tuple(struct seq_file *s,
+				const struct nf_conntrack_tuple *tuple)
 {
-	return seq_printf(s, "sport=%hu dport=%hu ",
-			  ntohs(tuple->src.u.udp.port),
-			  ntohs(tuple->dst.u.udp.port));
+	seq_printf(s, "sport=%hu dport=%hu ",
+		   ntohs(tuple->src.u.udp.port),
+		   ntohs(tuple->dst.u.udp.port));
 }
 
 static unsigned int *udplite_get_timeouts(struct net *net)
@@ -131,7 +132,7 @@ static int udplite_error(struct net *net, struct nf_conn *tmpl,
 	hdr = skb_header_pointer(skb, dataoff, sizeof(_hdr), &_hdr);
 	if (hdr == NULL) {
 		if (LOG_INVALID(net, IPPROTO_UDPLITE))
-			nf_log_packet(pf, 0, skb, NULL, NULL, NULL,
+			nf_log_packet(net, pf, 0, skb, NULL, NULL, NULL,
 				      "nf_ct_udplite: short packet ");
 		return -NF_ACCEPT;
 	}
@@ -141,7 +142,7 @@ static int udplite_error(struct net *net, struct nf_conn *tmpl,
 		cscov = udplen;
 	else if (cscov < sizeof(*hdr) || cscov > udplen) {
 		if (LOG_INVALID(net, IPPROTO_UDPLITE))
-			nf_log_packet(pf, 0, skb, NULL, NULL, NULL,
+			nf_log_packet(net, pf, 0, skb, NULL, NULL, NULL,
 				"nf_ct_udplite: invalid checksum coverage ");
 		return -NF_ACCEPT;
 	}
@@ -149,7 +150,7 @@ static int udplite_error(struct net *net, struct nf_conn *tmpl,
 	/* UDPLITE mandates checksums */
 	if (!hdr->check) {
 		if (LOG_INVALID(net, IPPROTO_UDPLITE))
-			nf_log_packet(pf, 0, skb, NULL, NULL, NULL,
+			nf_log_packet(net, pf, 0, skb, NULL, NULL, NULL,
 				      "nf_ct_udplite: checksum missing ");
 		return -NF_ACCEPT;
 	}
@@ -159,7 +160,7 @@ static int udplite_error(struct net *net, struct nf_conn *tmpl,
 	    nf_checksum_partial(skb, hooknum, dataoff, cscov, IPPROTO_UDP,
 	    			pf)) {
 		if (LOG_INVALID(net, IPPROTO_UDPLITE))
-			nf_log_packet(pf, 0, skb, NULL, NULL, NULL,
+			nf_log_packet(net, pf, 0, skb, NULL, NULL, NULL,
 				      "nf_ct_udplite: bad UDPLite checksum ");
 		return -NF_ACCEPT;
 	}
@@ -336,30 +337,28 @@ static int udplite_net_init(struct net *net)
 {
 	int ret = 0;
 
-	ret = nf_conntrack_l4proto_register(net,
-					    &nf_conntrack_l4proto_udplite4);
+	ret = nf_ct_l4proto_pernet_register(net, &nf_conntrack_l4proto_udplite4);
 	if (ret < 0) {
-		pr_err("nf_conntrack_l4proto_udplite4 :protocol register failed.\n");
+		pr_err("nf_conntrack_udplite4: pernet registration failed.\n");
 		goto out;
 	}
-	ret = nf_conntrack_l4proto_register(net,
-					    &nf_conntrack_l4proto_udplite6);
+	ret = nf_ct_l4proto_pernet_register(net, &nf_conntrack_l4proto_udplite6);
 	if (ret < 0) {
-		pr_err("nf_conntrack_l4proto_udplite4 :protocol register failed.\n");
+		pr_err("nf_conntrack_udplite6: pernet registration failed.\n");
 		goto cleanup_udplite4;
 	}
 	return 0;
 
 cleanup_udplite4:
-	nf_conntrack_l4proto_unregister(net, &nf_conntrack_l4proto_udplite4);
+	nf_ct_l4proto_pernet_unregister(net, &nf_conntrack_l4proto_udplite4);
 out:
 	return ret;
 }
 
 static void udplite_net_exit(struct net *net)
 {
-	nf_conntrack_l4proto_unregister(net, &nf_conntrack_l4proto_udplite6);
-	nf_conntrack_l4proto_unregister(net, &nf_conntrack_l4proto_udplite4);
+	nf_ct_l4proto_pernet_unregister(net, &nf_conntrack_l4proto_udplite6);
+	nf_ct_l4proto_pernet_unregister(net, &nf_conntrack_l4proto_udplite4);
 }
 
 static struct pernet_operations udplite_net_ops = {
@@ -371,11 +370,33 @@ static struct pernet_operations udplite_net_ops = {
 
 static int __init nf_conntrack_proto_udplite_init(void)
 {
-	return register_pernet_subsys(&udplite_net_ops);
+	int ret;
+
+	ret = register_pernet_subsys(&udplite_net_ops);
+	if (ret < 0)
+		goto out_pernet;
+
+	ret = nf_ct_l4proto_register(&nf_conntrack_l4proto_udplite4);
+	if (ret < 0)
+		goto out_udplite4;
+
+	ret = nf_ct_l4proto_register(&nf_conntrack_l4proto_udplite6);
+	if (ret < 0)
+		goto out_udplite6;
+
+	return 0;
+out_udplite6:
+	nf_ct_l4proto_unregister(&nf_conntrack_l4proto_udplite4);
+out_udplite4:
+	unregister_pernet_subsys(&udplite_net_ops);
+out_pernet:
+	return ret;
 }
 
 static void __exit nf_conntrack_proto_udplite_exit(void)
 {
+	nf_ct_l4proto_unregister(&nf_conntrack_l4proto_udplite6);
+	nf_ct_l4proto_unregister(&nf_conntrack_l4proto_udplite4);
 	unregister_pernet_subsys(&udplite_net_ops);
 }
 

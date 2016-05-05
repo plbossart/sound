@@ -79,13 +79,13 @@
 	    <entry>Entity id, set by the application.</entry>
 	  </row>
 	  <row>
-	    <entry>struct &media-pad-desc;</entry>
+	    <entry>&media-pad-desc;</entry>
 	    <entry>*<structfield>pads</structfield></entry>
 	    <entry>Pointer to a pads array allocated by the application. Ignored
 	    if NULL.</entry>
 	  </row>
 	  <row>
-	    <entry>struct &media-link-desc;</entry>
+	    <entry>&media-link-desc;</entry>
 	    <entry>*<structfield>links</structfield></entry>
 	    <entry>Pointer to a links array allocated by the application. Ignored
 	    if NULL.</entry>
@@ -118,38 +118,18 @@
       </tgroup>
     </table>
 
-    <table frame="none" pgwide="1" id="media-pad-flag">
-      <title>Media pad flags</title>
-      <tgroup cols="2">
-        <colspec colname="c1"/>
-        <colspec colname="c2"/>
-	<tbody valign="top">
-	  <row>
-	    <entry><constant>MEDIA_PAD_FL_SINK</constant></entry>
-	    <entry>Input pad, relative to the entity. Input pads sink data and
-	    are targets of links.</entry>
-	  </row>
-	  <row>
-	    <entry><constant>MEDIA_PAD_FL_SOURCE</constant></entry>
-	    <entry>Output pad, relative to the entity. Output pads source data
-	    and are origins of links.</entry>
-	  </row>
-	</tbody>
-      </tgroup>
-    </table>
-
     <table pgwide="1" frame="none" id="media-link-desc">
       <title>struct <structname>media_link_desc</structname></title>
       <tgroup cols="3">
         &cs-str;
 	<tbody valign="top">
 	  <row>
-	    <entry>struct &media-pad-desc;</entry>
+	    <entry>&media-pad-desc;</entry>
 	    <entry><structfield>source</structfield></entry>
 	    <entry>Pad at the origin of this link.</entry>
 	  </row>
 	  <row>
-	    <entry>struct &media-pad-desc;</entry>
+	    <entry>&media-pad-desc;</entry>
 	    <entry><structfield>sink</structfield></entry>
 	    <entry>Pad at the target of this link.</entry>
 	  </row>
@@ -162,33 +142,6 @@
       </tgroup>
     </table>
 
-    <table frame="none" pgwide="1" id="media-link-flag">
-      <title>Media link flags</title>
-      <tgroup cols="2">
-        <colspec colname="c1"/>
-        <colspec colname="c2"/>
-	<tbody valign="top">
-	  <row>
-	    <entry><constant>MEDIA_LNK_FL_ENABLED</constant></entry>
-	    <entry>The link is enabled and can be used to transfer media data.
-	    When two or more links target a sink pad, only one of them can be
-	    enabled at a time.</entry>
-	  </row>
-	  <row>
-	    <entry><constant>MEDIA_LNK_FL_IMMUTABLE</constant></entry>
-	    <entry>The link enabled state can't be modified at runtime. An
-	    immutable link is always enabled.</entry>
-	  </row>
-	  <row>
-	    <entry><constant>MEDIA_LNK_FL_DYNAMIC</constant></entry>
-	    <entry>The link enabled state can be modified during streaming. This
-	    flag is set by drivers and is read-only for applications.</entry>
-	  </row>
-	</tbody>
-      </tgroup>
-    </table>
-    <para>One and only one of <constant>MEDIA_PAD_FL_SINK</constant> and
-    <constant>MEDIA_PAD_FL_SOURCE</constant> must be set for every pad.</para>
   </refsect1>
 
   <refsect1>

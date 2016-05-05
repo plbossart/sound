@@ -21,9 +21,9 @@
 #include <linux/spi/pxa2xx_spi.h>
 #include <linux/spi/libertas_spi.h>
 
-#include <mach/pxa27x.h>
-#include <mach/ohci.h>
-#include <mach/mmc.h>
+#include "pxa27x.h"
+#include <linux/platform_data/usb-ohci-pxa27x.h>
+#include <linux/platform_data/mmc-pxamci.h>
 
 #include "generic.h"
 

@@ -8,7 +8,6 @@
  */
 
 #include <linux/kernel.h>
-#include <linux/init.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/leds.h>
@@ -47,37 +46,37 @@ static struct ot200_led leds[] = {
 	{
 		.name = "led_1",
 		.port = 0x49,
-		.mask = BIT(7),
+		.mask = BIT(6),
 	},
 	{
 		.name = "led_2",
 		.port = 0x49,
-		.mask = BIT(6),
+		.mask = BIT(5),
 	},
 	{
 		.name = "led_3",
 		.port = 0x49,
-		.mask = BIT(5),
+		.mask = BIT(4),
 	},
 	{
 		.name = "led_4",
 		.port = 0x49,
-		.mask = BIT(4),
+		.mask = BIT(3),
 	},
 	{
 		.name = "led_5",
 		.port = 0x49,
-		.mask = BIT(3),
+		.mask = BIT(2),
 	},
 	{
 		.name = "led_6",
 		.port = 0x49,
-		.mask = BIT(2),
+		.mask = BIT(1),
 	},
 	{
 		.name = "led_7",
 		.port = 0x49,
-		.mask = BIT(1),
+		.mask = BIT(0),
 	}
 };
 
@@ -115,7 +114,7 @@ static void ot200_led_brightness_set(struct led_classdev *led_cdev,
 	spin_unlock_irqrestore(&value_lock, flags);
 }
 
-static int __devinit ot200_led_probe(struct platform_device *pdev)
+static int ot200_led_probe(struct platform_device *pdev)
 {
 	int i;
 	int ret;
@@ -125,9 +124,9 @@ static int __devinit ot200_led_probe(struct platform_device *pdev)
 		leds[i].cdev.name = leds[i].name;
 		leds[i].cdev.brightness_set = ot200_led_brightness_set;
 
-		ret = led_classdev_register(&pdev->dev, &leds[i].cdev);
+		ret = devm_led_classdev_register(&pdev->dev, &leds[i].cdev);
 		if (ret < 0)
-			goto err;
+			return ret;
 	}
 
 	leds_front = 0;		/* turn off all front leds */
@@ -136,30 +135,12 @@ static int __devinit ot200_led_probe(struct platform_device *pdev)
 	outb(leds_back, 0x5a);
 
 	return 0;
-
-err:
-	for (i = i - 1; i >= 0; i--)
-		led_classdev_unregister(&leds[i].cdev);
-
-	return ret;
-}
-
-static int __devexit ot200_led_remove(struct platform_device *pdev)
-{
-	int i;
-
-	for (i = 0; i < ARRAY_SIZE(leds); i++)
-		led_classdev_unregister(&leds[i].cdev);
-
-	return 0;
 }
 
 static struct platform_driver ot200_led_driver = {
 	.probe		= ot200_led_probe,
-	.remove		= __devexit_p(ot200_led_remove),
 	.driver		= {
 		.name	= "leds-ot200",
-		.owner	= THIS_MODULE,
 	},
 };
 

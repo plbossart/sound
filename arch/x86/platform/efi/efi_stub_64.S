@@ -7,6 +7,11 @@
  */
 
 #include <linux/linkage.h>
+#include <asm/segment.h>
+#include <asm/msr.h>
+#include <asm/processor-flags.h>
+#include <asm/page_types.h>
+#include <asm/frame.h>
 
 #define SAVE_XMM			\
 	mov %rsp, %rax;			\
@@ -34,72 +39,8 @@
 	mov %rsi, %cr0;			\
 	mov (%rsp), %rsp
 
-ENTRY(efi_call0)
-	SAVE_XMM
-	subq $32, %rsp
-	call *%rdi
-	addq $32, %rsp
-	RESTORE_XMM
-	ret
-ENDPROC(efi_call0)
-
-ENTRY(efi_call1)
-	SAVE_XMM
-	subq $32, %rsp
-	mov  %rsi, %rcx
-	call *%rdi
-	addq $32, %rsp
-	RESTORE_XMM
-	ret
-ENDPROC(efi_call1)
-
-ENTRY(efi_call2)
-	SAVE_XMM
-	subq $32, %rsp
-	mov  %rsi, %rcx
-	call *%rdi
-	addq $32, %rsp
-	RESTORE_XMM
-	ret
-ENDPROC(efi_call2)
-
-ENTRY(efi_call3)
-	SAVE_XMM
-	subq $32, %rsp
-	mov  %rcx, %r8
-	mov  %rsi, %rcx
-	call *%rdi
-	addq $32, %rsp
-	RESTORE_XMM
-	ret
-ENDPROC(efi_call3)
-
-ENTRY(efi_call4)
-	SAVE_XMM
-	subq $32, %rsp
-	mov %r8, %r9
-	mov %rcx, %r8
-	mov %rsi, %rcx
-	call *%rdi
-	addq $32, %rsp
-	RESTORE_XMM
-	ret
-ENDPROC(efi_call4)
-
-ENTRY(efi_call5)
-	SAVE_XMM
-	subq $48, %rsp
-	mov %r9, 32(%rsp)
-	mov %r8, %r9
-	mov %rcx, %r8
-	mov %rsi, %rcx
-	call *%rdi
-	addq $48, %rsp
-	RESTORE_XMM
-	ret
-ENDPROC(efi_call5)
-
-ENTRY(efi_call6)
+ENTRY(efi_call)
+	FRAME_BEGIN
 	SAVE_XMM
 	mov (%rsp), %rax
 	mov 8(%rax), %rax
@@ -112,5 +53,6 @@ ENTRY(efi_call6)
 	call *%rdi
 	addq $48, %rsp
 	RESTORE_XMM
+	FRAME_END
 	ret
-ENDPROC(efi_call6)
+ENDPROC(efi_call)

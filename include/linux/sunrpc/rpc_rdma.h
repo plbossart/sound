@@ -42,6 +42,9 @@
 
 #include <linux/types.h>
 
+#define RPCRDMA_VERSION		1
+#define rpcrdma_version		cpu_to_be32(RPCRDMA_VERSION)
+
 struct rpcrdma_segment {
 	__be32 rs_handle;	/* Registered memory handle */
 	__be32 rs_length;	/* Length of the chunk in bytes */
@@ -90,21 +93,26 @@ struct rpcrdma_msg {
 			__be32 rm_pempty[3];	/* 3 empty chunk lists */
 		} rm_padded;
 
+		struct {
+			__be32 rm_err;
+			__be32 rm_vers_low;
+			__be32 rm_vers_high;
+		} rm_error;
+
 		__be32 rm_chunks[0];	/* read, write and reply chunks */
 
 	} rm_body;
 };
 
-#define RPCRDMA_HDRLEN_MIN	28
+/*
+ * Smallest RPC/RDMA header: rm_xid through rm_type, then rm_nochunks
+ */
+#define RPCRDMA_HDRLEN_MIN	(sizeof(__be32) * 7)
+#define RPCRDMA_HDRLEN_ERR	(sizeof(__be32) * 5)
 
 enum rpcrdma_errcode {
 	ERR_VERS = 1,
 	ERR_CHUNK = 2
-};
-
-struct rpcrdma_err_vers {
-	uint32_t rdma_vers_low;	/* Version range supported by peer */
-	uint32_t rdma_vers_high;
 };
 
 enum rpcrdma_proc {
@@ -114,5 +122,11 @@ enum rpcrdma_proc {
 	RDMA_DONE = 3,		/* Client signals reply completion */
 	RDMA_ERROR = 4		/* An RPC RDMA encoding error */
 };
+
+#define rdma_msg	cpu_to_be32(RDMA_MSG)
+#define rdma_nomsg	cpu_to_be32(RDMA_NOMSG)
+#define rdma_msgp	cpu_to_be32(RDMA_MSGP)
+#define rdma_done	cpu_to_be32(RDMA_DONE)
+#define rdma_error	cpu_to_be32(RDMA_ERROR)
 
 #endif				/* _LINUX_SUNRPC_RPC_RDMA_H */

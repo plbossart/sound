@@ -21,13 +21,12 @@
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/workqueue.h>
-#include <acpi/acpi_drivers.h>
+#include <linux/acpi.h>
 #include <linux/backlight.h>
 #include <linux/input.h>
 #include <linux/rfkill.h>
 
 MODULE_LICENSE("GPL");
-
 
 struct cmpc_accel {
 	int sensitivity;
@@ -350,6 +349,7 @@ static void cmpc_accel_idev_init_v4(struct input_dev *inputdev)
 	inputdev->close = cmpc_accel_close_v4;
 }
 
+#ifdef CONFIG_PM_SLEEP
 static int cmpc_accel_suspend_v4(struct device *dev)
 {
 	struct input_dev *inputdev;
@@ -384,6 +384,7 @@ static int cmpc_accel_resume_v4(struct device *dev)
 
 	return 0;
 }
+#endif
 
 static int cmpc_accel_add_v4(struct acpi_device *acpi)
 {
@@ -430,7 +431,7 @@ failed_sensitivity:
 	return error;
 }
 
-static int cmpc_accel_remove_v4(struct acpi_device *acpi, int type)
+static int cmpc_accel_remove_v4(struct acpi_device *acpi)
 {
 	struct input_dev *inputdev;
 	struct cmpc_accel *accel;
@@ -519,7 +520,7 @@ static acpi_status cmpc_get_accel(acpi_handle handle,
 {
 	union acpi_object param[2];
 	struct acpi_object_list input;
-	struct acpi_buffer output = { ACPI_ALLOCATE_BUFFER, 0 };
+	struct acpi_buffer output = { ACPI_ALLOCATE_BUFFER, NULL };
 	unsigned char *locs;
 	acpi_status status;
 
@@ -588,7 +589,7 @@ static ssize_t cmpc_accel_sensitivity_store(struct device *dev,
 	inputdev = dev_get_drvdata(&acpi->dev);
 	accel = dev_get_drvdata(&inputdev->dev);
 
-	r = strict_strtoul(buf, 0, &sensitivity);
+	r = kstrtoul(buf, 0, &sensitivity);
 	if (r)
 		return r;
 
@@ -666,7 +667,7 @@ failed_file:
 	return error;
 }
 
-static int cmpc_accel_remove(struct acpi_device *acpi, int type)
+static int cmpc_accel_remove(struct acpi_device *acpi)
 {
 	struct input_dev *inputdev;
 	struct cmpc_accel *accel;
@@ -723,8 +724,10 @@ static void cmpc_tablet_handler(struct acpi_device *dev, u32 event)
 	struct input_dev *inputdev = dev_get_drvdata(&dev->dev);
 
 	if (event == 0x81) {
-		if (ACPI_SUCCESS(cmpc_get_tablet(dev->handle, &val)))
+		if (ACPI_SUCCESS(cmpc_get_tablet(dev->handle, &val))) {
 			input_report_switch(inputdev, SW_TABLET_MODE, !val);
+			input_sync(inputdev);
+		}
 	}
 }
 
@@ -737,8 +740,10 @@ static void cmpc_tablet_idev_init(struct input_dev *inputdev)
 	set_bit(SW_TABLET_MODE, inputdev->swbit);
 
 	acpi = to_acpi_device(inputdev->dev.parent);
-	if (ACPI_SUCCESS(cmpc_get_tablet(acpi->handle, &val)))
+	if (ACPI_SUCCESS(cmpc_get_tablet(acpi->handle, &val))) {
 		input_report_switch(inputdev, SW_TABLET_MODE, !val);
+		input_sync(inputdev);
+	}
 }
 
 static int cmpc_tablet_add(struct acpi_device *acpi)
@@ -747,20 +752,24 @@ static int cmpc_tablet_add(struct acpi_device *acpi)
 					   cmpc_tablet_idev_init);
 }
 
-static int cmpc_tablet_remove(struct acpi_device *acpi, int type)
+static int cmpc_tablet_remove(struct acpi_device *acpi)
 {
 	return cmpc_remove_acpi_notify_device(acpi);
 }
 
+#ifdef CONFIG_PM_SLEEP
 static int cmpc_tablet_resume(struct device *dev)
 {
 	struct input_dev *inputdev = dev_get_drvdata(dev);
 
 	unsigned long long val = 0;
-	if (ACPI_SUCCESS(cmpc_get_tablet(to_acpi_device(dev)->handle, &val)))
+	if (ACPI_SUCCESS(cmpc_get_tablet(to_acpi_device(dev)->handle, &val))) {
 		input_report_switch(inputdev, SW_TABLET_MODE, !val);
+		input_sync(inputdev);
+	}
 	return 0;
 }
+#endif
 
 static SIMPLE_DEV_PM_OPS(cmpc_tablet_pm, NULL, cmpc_tablet_resume);
 
@@ -990,7 +999,7 @@ out_bd:
 	return retval;
 }
 
-static int cmpc_ipml_remove(struct acpi_device *acpi, int type)
+static int cmpc_ipml_remove(struct acpi_device *acpi)
 {
 	struct ipml200_dev *ipml;
 
@@ -1069,7 +1078,7 @@ static int cmpc_keys_add(struct acpi_device *acpi)
 					   cmpc_keys_idev_init);
 }
 
-static int cmpc_keys_remove(struct acpi_device *acpi, int type)
+static int cmpc_keys_remove(struct acpi_device *acpi)
 {
 	return cmpc_remove_acpi_notify_device(acpi);
 }

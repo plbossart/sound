@@ -74,7 +74,14 @@ static void wl1271_rx_status(struct wl1271 *wl,
 	if (desc->rate <= wl->hw_min_ht_rate)
 		status->flag |= RX_FLAG_HT;
 
-	status->signal = desc->rssi;
+	/*
+	* Read the signal level and antenna diversity indication.
+	* The msb in the signal level is always set as it is a
+	* negative number.
+	* The antenna indication is the msb of the rssi.
+	*/
+	status->signal = ((desc->rssi & RSSI_LEVEL_BITMASK) | BIT(7));
+	status->antenna = ((desc->rssi & ANT_DIVERSITY_BITMASK) >> 7);
 
 	/*
 	 * FIXME: In wl1251, the SNR should be divided by two.  In wl1271 we
@@ -92,11 +99,16 @@ static void wl1271_rx_status(struct wl1271 *wl,
 		status->flag |= RX_FLAG_IV_STRIPPED | RX_FLAG_MMIC_STRIPPED |
 				RX_FLAG_DECRYPTED;
 
-		if (unlikely(desc_err_code == WL1271_RX_DESC_MIC_FAIL)) {
+		if (unlikely(desc_err_code & WL1271_RX_DESC_MIC_FAIL)) {
 			status->flag |= RX_FLAG_MMIC_ERROR;
-			wl1271_warning("Michael MIC error");
+			wl1271_warning("Michael MIC error. Desc: 0x%x",
+				       desc_err_code);
 		}
 	}
+
+	if (beacon)
+		wlcore_set_pending_regdomain_ch(wl, (u16)desc->channel,
+						status->band);
 }
 
 static int wl1271_rx_handle_data(struct wl1271 *wl, u8 *data, u32 length,
@@ -108,7 +120,7 @@ static int wl1271_rx_handle_data(struct wl1271 *wl, u8 *data, u32 length,
 	u8 *buf;
 	u8 beacon = 0;
 	u8 is_data = 0;
-	u8 reserved = 0;
+	u8 reserved = 0, offset_to_data = 0;
 	u16 seq_num;
 	u32 pkt_data_len;
 
@@ -128,6 +140,8 @@ static int wl1271_rx_handle_data(struct wl1271 *wl, u8 *data, u32 length,
 
 	if (rx_align == WLCORE_RX_BUF_UNALIGNED)
 		reserved = RX_BUF_ALIGN;
+	else if (rx_align == WLCORE_RX_BUF_PADDED)
+		offset_to_data = RX_BUF_ALIGN;
 
 	/* the data read starts with the descriptor */
 	desc = (struct wl1271_rx_descriptor *) data;
@@ -135,23 +149,18 @@ static int wl1271_rx_handle_data(struct wl1271 *wl, u8 *data, u32 length,
 	if (desc->packet_class == WL12XX_RX_CLASS_LOGGER) {
 		size_t len = length - sizeof(*desc);
 		wl12xx_copy_fwlog(wl, data + sizeof(*desc), len);
-		wake_up_interruptible(&wl->fwlog_waitq);
 		return 0;
 	}
 
-	switch (desc->status & WL1271_RX_DESC_STATUS_MASK) {
 	/* discard corrupted packets */
-	case WL1271_RX_DESC_DRIVER_RX_Q_FAIL:
-	case WL1271_RX_DESC_DECRYPT_FAIL:
-		wl1271_warning("corrupted packet in RX with status: 0x%x",
-			       desc->status & WL1271_RX_DESC_STATUS_MASK);
-		return -EINVAL;
-	case WL1271_RX_DESC_SUCCESS:
-	case WL1271_RX_DESC_MIC_FAIL:
-		break;
-	default:
-		wl1271_error("invalid RX descriptor status: 0x%x",
-			     desc->status & WL1271_RX_DESC_STATUS_MASK);
+	if (desc->status & WL1271_RX_DESC_DECRYPT_FAIL) {
+		hdr = (void *)(data + sizeof(*desc) + offset_to_data);
+		wl1271_warning("corrupted packet in RX: status: 0x%x len: %d",
+			       desc->status & WL1271_RX_DESC_STATUS_MASK,
+			       pkt_data_len);
+		wl1271_dump((DEBUG_RX|DEBUG_CMD), "PKT: ", data + sizeof(*desc),
+			    min(pkt_data_len,
+				ieee80211_hdrlen(hdr->frame_control)));
 		return -EINVAL;
 	}
 
@@ -200,9 +209,9 @@ static int wl1271_rx_handle_data(struct wl1271 *wl, u8 *data, u32 length,
 	return is_data;
 }
 
-int wlcore_rx(struct wl1271 *wl, struct wl_fw_status_1 *status)
+int wlcore_rx(struct wl1271 *wl, struct wl_fw_status *status)
 {
-	unsigned long active_hlids[BITS_TO_LONGS(WL12XX_MAX_LINKS)] = {0};
+	unsigned long active_hlids[BITS_TO_LONGS(WLCORE_MAX_LINKS)] = {0};
 	u32 buf_size;
 	u32 fw_rx_counter = status->fw_rx_counter % wl->num_rx_desc;
 	u32 drv_rx_counter = wl->rx_counter % wl->num_rx_desc;
@@ -221,7 +230,7 @@ int wlcore_rx(struct wl1271 *wl, struct wl_fw_status_1 *status)
 			pkt_len = wlcore_rx_get_buf_size(wl, des);
 			align_pkt_len = wlcore_rx_get_align_buf_size(wl,
 								     pkt_len);
-			if (buf_size + align_pkt_len > WL1271_AGGR_BUFFER_SIZE)
+			if (buf_size + align_pkt_len > wl->aggr_buf_size)
 				break;
 			buf_size += align_pkt_len;
 			rx_counter++;
@@ -260,12 +269,12 @@ int wlcore_rx(struct wl1271 *wl, struct wl_fw_status_1 *status)
 						  wl->aggr_buf + pkt_offset,
 						  pkt_len, rx_align,
 						  &hlid) == 1) {
-				if (hlid < WL12XX_MAX_LINKS)
+				if (hlid < wl->num_links)
 					__set_bit(hlid, active_hlids);
 				else
 					WARN(1,
-					     "hlid exceeded WL12XX_MAX_LINKS "
-					     "(%d)\n", hlid);
+					     "hlid (%d) exceeded MAX_LINKS\n",
+					     hlid);
 			}
 
 			wl->rx_counter++;
@@ -299,7 +308,7 @@ int wl1271_rx_filter_enable(struct wl1271 *wl,
 {
 	int ret;
 
-	if (wl->rx_filter_enabled[index] == enable) {
+	if (!!test_bit(index, wl->rx_filter_enabled) == enable) {
 		wl1271_warning("Request to enable an already "
 			     "enabled rx filter %d", index);
 		return 0;
@@ -313,7 +322,10 @@ int wl1271_rx_filter_enable(struct wl1271 *wl,
 		return ret;
 	}
 
-	wl->rx_filter_enabled[index] = enable;
+	if (enable)
+		__set_bit(index, wl->rx_filter_enabled);
+	else
+		__clear_bit(index, wl->rx_filter_enabled);
 
 	return 0;
 }
@@ -323,7 +335,7 @@ int wl1271_rx_filter_clear_all(struct wl1271 *wl)
 	int i, ret = 0;
 
 	for (i = 0; i < WL1271_MAX_RX_FILTERS; i++) {
-		if (!wl->rx_filter_enabled[i])
+		if (!test_bit(i, wl->rx_filter_enabled))
 			continue;
 		ret = wl1271_rx_filter_enable(wl, i, 0, NULL);
 		if (ret)

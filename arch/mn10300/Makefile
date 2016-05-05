@@ -26,7 +26,7 @@ CHECKFLAGS	+=
 PROCESSOR	:= unset
 UNIT		:= unset
 
-KBUILD_CFLAGS	+= -mam33 -mmem-funcs -DCPU=AM33
+KBUILD_CFLAGS	+= -mam33 -DCPU=AM33 $(call cc-option,-mmem-funcs,)
 KBUILD_AFLAGS	+= -mam33 -DCPU=AM33
 
 ifeq ($(CONFIG_MN10300_CURRENT_IN_E2),y)
@@ -91,14 +91,6 @@ archclean:
 define archhelp
   echo  '* zImage        - Compressed kernel image (arch/$(ARCH)/boot/zImage)'
 endef
-
-# If you make sure the .S files get compiled with debug info,
-# uncomment the following to disable optimisations
-# that are unhelpful whilst debugging.
-ifdef CONFIG_DEBUG_INFO
-#KBUILD_CFLAGS	+= -O1
-KBUILD_AFLAGS	+= -Wa,--gdwarf2
-endif
 
 #
 # include the appropriate processor- and unit-specific headers

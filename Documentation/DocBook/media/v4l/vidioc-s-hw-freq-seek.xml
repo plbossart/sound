@@ -75,6 +75,9 @@ seek is started.</para>
 
     <para>This ioctl is supported if the <constant>V4L2_CAP_HW_FREQ_SEEK</constant> capability is set.</para>
 
+    <para>If this ioctl is called from a non-blocking filehandle, then &EAGAIN; is
+    returned and no seek takes place.</para>
+
     <table pgwide="1" frame="none" id="v4l2-hw-freq-seek">
       <title>struct <structname>v4l2_hw_freq_seek</structname></title>
       <tgroup cols="3">
@@ -118,7 +121,9 @@ field and the &v4l2-tuner; <structfield>index</structfield> field.</entry>
 	    <entry>If non-zero, the lowest tunable frequency of the band to
 search in units of 62.5 kHz, or if the &v4l2-tuner;
 <structfield>capability</structfield> field has the
-<constant>V4L2_TUNER_CAP_LOW</constant> flag set, in units of 62.5 Hz.
+<constant>V4L2_TUNER_CAP_LOW</constant> flag set, in units of 62.5 Hz or if the &v4l2-tuner;
+<structfield>capability</structfield> field has the
+<constant>V4L2_TUNER_CAP_1HZ</constant> flag set, in units of 1 Hz.
 If <structfield>rangelow</structfield> is zero a reasonable default value
 is used.</entry>
 	  </row>
@@ -128,7 +133,9 @@ is used.</entry>
 	    <entry>If non-zero, the highest tunable frequency of the band to
 search in units of 62.5 kHz, or if the &v4l2-tuner;
 <structfield>capability</structfield> field has the
-<constant>V4L2_TUNER_CAP_LOW</constant> flag set, in units of 62.5 Hz.
+<constant>V4L2_TUNER_CAP_LOW</constant> flag set, in units of 62.5 Hz or if the &v4l2-tuner;
+<structfield>capability</structfield> field has the
+<constant>V4L2_TUNER_CAP_1HZ</constant> flag set, in units of 1 Hz.
 If <structfield>rangehigh</structfield> is zero a reasonable default value
 is used.</entry>
 	  </row>
@@ -155,6 +162,13 @@ bounds, the <structfield>wrap_around</structfield> value is not supported or
 one of the values in the <structfield>type</structfield>,
 <structfield>rangelow</structfield> or <structfield>rangehigh</structfield>
 fields is wrong.</para>
+	</listitem>
+      </varlistentry>
+      <varlistentry>
+	<term><errorcode>EAGAIN</errorcode></term>
+	<listitem>
+	  <para>Attempted to call <constant>VIDIOC_S_HW_FREQ_SEEK</constant>
+	  with the filehandle in non-blocking mode.</para>
 	</listitem>
       </varlistentry>
       <varlistentry>

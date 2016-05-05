@@ -23,32 +23,40 @@
 #include <linux/regulator/machine.h>
 #include <linux/gpio.h>
 #include <linux/gpio_keys.h>
+#include <linux/gpio/machine.h>
+#include <linux/omap-gpmc.h>
 #include <linux/mmc/host.h>
 #include <linux/power/isp1704_charger.h>
+#include <linux/platform_data/spi-omap2-mcspi.h>
+#include <linux/platform_data/mtd-onenand-omap2.h>
+
 #include <asm/system_info.h>
 
-#include <plat/mcspi.h>
-#include <plat/board.h>
 #include "common.h"
-#include <plat/dma.h>
-#include <plat/gpmc.h>
-#include <plat/onenand.h>
-#include <plat/gpmc-smc91x.h>
+#include <linux/omap-dma.h>
 
-#include <mach/board-rx51.h>
+#include "board-rx51.h"
 
 #include <sound/tlv320aic3x.h>
 #include <sound/tpa6130a2-plat.h>
-#include <media/radio-si4713.h>
-#include <media/si4713.h>
-#include <linux/leds-lp5523.h>
+#include <linux/platform_data/media/si4713.h>
+#include <linux/platform_data/leds-lp55xx.h>
 
-#include <../drivers/staging/iio/light/tsl2563.h>
+#include <linux/platform_data/tsl2563.h>
 #include <linux/lis3lv02d.h>
 
+#include <video/omap-panel-data.h>
+
+#if defined(CONFIG_IR_RX51) || defined(CONFIG_IR_RX51_MODULE)
+#include <linux/platform_data/media/ir-rx51.h>
+#endif
+
 #include "mux.h"
+#include "omap-pm.h"
 #include "hsmmc.h"
 #include "common-board-devices.h"
+#include "soc.h"
+#include "omap-secure.h"
 
 #define SYSTEM_REV_B_USES_VAUX3	0x1699
 #define SYSTEM_REV_S_USES_VAUX3 0x8
@@ -67,14 +75,14 @@
 #define LIS302_IRQ1_GPIO 181
 #define LIS302_IRQ2_GPIO 180  /* Not yet in use */
 
-/* list all spi devices here */
+/* List all SPI devices here. Note that the list/probe order seems to matter! */
 enum {
 	RX51_SPI_WL1251,
-	RX51_SPI_MIPID,		/* LCD panel */
 	RX51_SPI_TSC2005,	/* Touch Controller */
+	RX51_SPI_MIPID,		/* LCD panel */
 };
 
-static struct wl12xx_platform_data wl1251_pdata;
+static struct wl1251_platform_data wl1251_pdata;
 static struct tsc2005_platform_data tsc2005_pdata;
 
 #if defined(CONFIG_SENSORS_LIS3_I2C) || defined(CONFIG_SENSORS_LIS3_I2C_MODULE)
@@ -154,62 +162,71 @@ static struct tsl2563_platform_data rx51_tsl2563_platform_data = {
 #endif
 
 #if defined(CONFIG_LEDS_LP5523) || defined(CONFIG_LEDS_LP5523_MODULE)
-static struct lp5523_led_config rx51_lp5523_led_config[] = {
+static struct lp55xx_led_config rx51_lp5523_led_config[] = {
 	{
+		.name		= "lp5523:kb1",
 		.chan_nr	= 0,
 		.led_current	= 50,
+		.max_current	= 100,
 	}, {
+		.name		= "lp5523:kb2",
 		.chan_nr	= 1,
 		.led_current	= 50,
+		.max_current	= 100,
 	}, {
+		.name		= "lp5523:kb3",
 		.chan_nr	= 2,
 		.led_current	= 50,
+		.max_current	= 100,
 	}, {
+		.name		= "lp5523:kb4",
 		.chan_nr	= 3,
 		.led_current	= 50,
+		.max_current	= 100,
 	}, {
+		.name		= "lp5523:b",
 		.chan_nr	= 4,
 		.led_current	= 50,
+		.max_current	= 100,
 	}, {
+		.name		= "lp5523:g",
 		.chan_nr	= 5,
 		.led_current	= 50,
+		.max_current	= 100,
 	}, {
+		.name		= "lp5523:r",
 		.chan_nr	= 6,
 		.led_current	= 50,
+		.max_current	= 100,
 	}, {
+		.name		= "lp5523:kb5",
 		.chan_nr	= 7,
 		.led_current	= 50,
+		.max_current	= 100,
 	}, {
+		.name		= "lp5523:kb6",
 		.chan_nr	= 8,
 		.led_current	= 50,
+		.max_current	= 100,
 	}
 };
 
-static int rx51_lp5523_setup(void)
-{
-	return gpio_request_one(RX51_LP5523_CHIP_EN_GPIO, GPIOF_DIR_OUT,
-			"lp5523_enable");
-}
-
-static void rx51_lp5523_release(void)
-{
-	gpio_free(RX51_LP5523_CHIP_EN_GPIO);
-}
-
-static void rx51_lp5523_enable(bool state)
-{
-	gpio_set_value(RX51_LP5523_CHIP_EN_GPIO, !!state);
-}
-
-static struct lp5523_platform_data rx51_lp5523_platform_data = {
+static struct lp55xx_platform_data rx51_lp5523_platform_data = {
 	.led_config		= rx51_lp5523_led_config,
 	.num_channels		= ARRAY_SIZE(rx51_lp5523_led_config),
-	.clock_mode		= LP5523_CLOCK_AUTO,
-	.setup_resources	= rx51_lp5523_setup,
-	.release_resources	= rx51_lp5523_release,
-	.enable			= rx51_lp5523_enable,
+	.clock_mode		= LP55XX_CLOCK_AUTO,
+	.enable_gpio		= RX51_LP5523_CHIP_EN_GPIO,
 };
 #endif
+
+#define RX51_LCD_RESET_GPIO	90
+
+static struct panel_acx565akm_platform_data acx_pdata = {
+	.name		= "lcd",
+	.source		= "sdi.0",
+	.reset_gpio	= RX51_LCD_RESET_GPIO,
+	.datapairs	= 2,
+};
 
 static struct omap2_mcspi_device_config wl1251_mcspi_config = {
 	.turbo_mode	= 0,
@@ -239,6 +256,7 @@ static struct spi_board_info rx51_peripherals_spi_board_info[] __initdata = {
 		.chip_select		= 2,
 		.max_speed_hz		= 6000000,
 		.controller_data	= &mipid_mcspi_config,
+		.platform_data		= &acx_pdata,
 	},
 	[RX51_SPI_TSC2005] = {
 		.modalias		= "tsc2005",
@@ -248,6 +266,11 @@ static struct spi_board_info rx51_peripherals_spi_board_info[] __initdata = {
 		.controller_data	= &tsc2005_mcspi_config,
 		.platform_data		= &tsc2005_pdata,
 	},
+};
+
+static struct platform_device rx51_battery_device = {
+	.name	= "rx51-battery",
+	.id	= -1,
 };
 
 static void rx51_charger_set_power(bool on)
@@ -271,6 +294,7 @@ static void __init rx51_charger_init(void)
 	WARN_ON(gpio_request_one(RX51_USB_TRANSCEIVER_RST_GPIO,
 		GPIOF_OUT_INIT_HIGH, "isp1704_reset"));
 
+	platform_device_register(&rx51_battery_device);
 	platform_device_register(&rx51_charger_device);
 }
 
@@ -458,7 +482,7 @@ static struct omap_mux_partition *partition;
  * Current flows to eMMC when eMMC is off and the data lines are pulled up,
  * so pull them down. N.B. we pull 8 lines because we are using 8 lines.
  */
-static void rx51_mmc2_remux(struct device *dev, int slot, int power_on)
+static void rx51_mmc2_remux(struct device *dev, int power_on)
 {
 	if (power_on)
 		omap_mux_write_array(partition, rx51_mmc2_on_mux);
@@ -474,7 +498,6 @@ static struct omap2_hsmmc_info mmc[] __initdata = {
 		.cover_only	= true,
 		.gpio_cd	= 160,
 		.gpio_wp	= -EINVAL,
-		.power_saving	= true,
 	},
 	{
 		.name		= "internal",
@@ -484,7 +507,6 @@ static struct omap2_hsmmc_info mmc[] __initdata = {
 		.gpio_cd	= -EINVAL,
 		.gpio_wp	= -EINVAL,
 		.nonremovable	= true,
-		.power_saving	= true,
 		.remux		= rx51_mmc2_remux,
 	},
 	{}	/* Terminator */
@@ -526,12 +548,17 @@ static struct regulator_consumer_supply rx51_vio_supplies[] = {
 	REGULATOR_SUPPLY("DVDD", "2-0019"),
 	/* Si4713 IO supply */
 	REGULATOR_SUPPLY("vio", "2-0063"),
+	/* lis3lv02d */
+	REGULATOR_SUPPLY("Vdd_IO", "3-001d"),
 };
 
 static struct regulator_consumer_supply rx51_vaux1_consumers[] = {
 	REGULATOR_SUPPLY("vdds_sdi", "omapdss"),
+	REGULATOR_SUPPLY("vdds_sdi", "omapdss_sdi.0"),
 	/* Si4713 supply */
 	REGULATOR_SUPPLY("vdd", "2-0063"),
+	/* lis3lv02d */
+	REGULATOR_SUPPLY("Vdd", "3-001d"),
 };
 
 static struct regulator_init_data rx51_vaux1 = {
@@ -729,39 +756,17 @@ static struct regulator_init_data rx51_vintdig = {
 	},
 };
 
-static struct si4713_platform_data rx51_si4713_i2c_data __initdata_or_module = {
-	.gpio_reset	= RX51_FMTX_RESET_GPIO,
-};
-
-static struct i2c_board_info rx51_si4713_board_info __initdata_or_module = {
-	I2C_BOARD_INFO("si4713", SI4713_I2C_ADDR_BUSEN_HIGH),
-	.platform_data	= &rx51_si4713_i2c_data,
-};
-
-static struct radio_si4713_platform_data rx51_si4713_data __initdata_or_module = {
-	.i2c_bus	= 2,
-	.subdev_board_info = &rx51_si4713_board_info,
-};
-
-static struct platform_device rx51_si4713_dev = {
-	.name	= "radio-si4713",
-	.id	= -1,
-	.dev	= {
-		.platform_data	= &rx51_si4713_data,
+static struct gpiod_lookup_table rx51_fmtx_gpios_table = {
+	.dev_id = "2-0063",
+	.table = {
+		GPIO_LOOKUP("gpio.6", 3, "reset", GPIO_ACTIVE_HIGH), /* 163 */
+		{ },
 	},
 };
 
-static __init void rx51_init_si4713(void)
+static __init void rx51_gpio_init(void)
 {
-	int err;
-
-	err = gpio_request_one(RX51_FMTX_IRQ, GPIOF_DIR_IN, "si4713 irq");
-	if (err) {
-		printk(KERN_ERR "Cannot request si4713 irq gpio. %d\n", err);
-		return;
-	}
-	rx51_si4713_board_info.irq = gpio_to_irq(RX51_FMTX_IRQ);
-	platform_device_register(&rx51_si4713_dev);
+	gpiod_add_lookup_table(&rx51_fmtx_gpios_table);
 }
 
 static int rx51_twlgpio_setup(struct device *dev, unsigned gpio, unsigned n)
@@ -774,9 +779,6 @@ static int rx51_twlgpio_setup(struct device *dev, unsigned gpio, unsigned n)
 }
 
 static struct twl4030_gpio_platform_data rx51_gpio_data = {
-	.gpio_base		= OMAP_MAX_GPIO_LINES,
-	.irq_base		= TWL4030_GPIO_IRQ_BASE,
-	.irq_end		= TWL4030_GPIO_IRQ_END,
 	.pulldowns		= BIT(0) | BIT(1) | BIT(2) | BIT(3)
 				| BIT(4) | BIT(5)
 				| BIT(8) | BIT(9) | BIT(10) | BIT(11)
@@ -994,7 +996,19 @@ static struct aic3x_pdata rx51_aic3x_data2 = {
 	.gpio_reset = 60,
 };
 
+#if IS_ENABLED(CONFIG_I2C_SI4713) && IS_ENABLED(CONFIG_PLATFORM_SI4713)
+static struct si4713_platform_data rx51_si4713_platform_data = {
+	.is_platform_device = true
+};
+#endif
+
 static struct i2c_board_info __initdata rx51_peripherals_i2c_board_info_2[] = {
+#if IS_ENABLED(CONFIG_I2C_SI4713) && IS_ENABLED(CONFIG_PLATFORM_SI4713)
+	{
+		I2C_BOARD_INFO("si4713", 0x63),
+		.platform_data = &rx51_si4713_platform_data,
+	},
+#endif
 	{
 		I2C_BOARD_INFO("tlv320aic3x", 0x18),
 		.platform_data = &rx51_aic3x_data,
@@ -1035,6 +1049,10 @@ static struct i2c_board_info __initdata rx51_peripherals_i2c_board_info_3[] = {
 
 static int __init rx51_i2c_init(void)
 {
+#if IS_ENABLED(CONFIG_I2C_SI4713) && IS_ENABLED(CONFIG_PLATFORM_SI4713)
+	int err;
+#endif
+
 	if ((system_rev >= SYSTEM_REV_S_USES_VAUX3 && system_rev < 0x100) ||
 	    system_rev >= SYSTEM_REV_B_USES_VAUX3) {
 		rx51_twldata.vaux3 = &rx51_vaux3_mmc;
@@ -1051,7 +1069,15 @@ static int __init rx51_i2c_init(void)
 	rx51_twldata.vdac->constraints.apply_uV = true;
 	rx51_twldata.vdac->constraints.name = "VDAC";
 
-	omap_pmic_init(1, 2200, "twl5030", INT_34XX_SYS_NIRQ, &rx51_twldata);
+	omap_pmic_init(1, 2200, "twl5030", 7 + OMAP_INTC_START, &rx51_twldata);
+#if IS_ENABLED(CONFIG_I2C_SI4713) && IS_ENABLED(CONFIG_PLATFORM_SI4713)
+	err = gpio_request_one(RX51_FMTX_IRQ, GPIOF_DIR_IN, "si4713 irq");
+	if (err) {
+		printk(KERN_ERR "Cannot request si4713 irq gpio. %d\n", err);
+		return err;
+	}
+	rx51_peripherals_i2c_board_info_2[0].irq = gpio_to_irq(RX51_FMTX_IRQ);
+#endif
 	omap_register_i2c_bus(2, 100, rx51_peripherals_i2c_board_info_2,
 			      ARRAY_SIZE(rx51_peripherals_i2c_board_info_2));
 #if defined(CONFIG_SENSORS_LIS3_I2C) || defined(CONFIG_SENSORS_LIS3_I2C_MODULE)
@@ -1111,40 +1137,7 @@ static struct omap_onenand_platform_data board_onenand_data[] = {
 };
 #endif
 
-#if defined(CONFIG_SMC91X) || defined(CONFIG_SMC91X_MODULE)
-
-static struct omap_smc91x_platform_data board_smc91x_data = {
-	.cs		= 1,
-	.gpio_irq	= 54,
-	.gpio_pwrdwn	= 86,
-	.gpio_reset	= 164,
-	.flags		= GPMC_TIMINGS_SMC91C96 | IORESOURCE_IRQ_HIGHLEVEL,
-};
-
-static void __init board_smc91x_init(void)
-{
-	omap_mux_init_gpio(54, OMAP_PIN_INPUT_PULLDOWN);
-	omap_mux_init_gpio(86, OMAP_PIN_OUTPUT);
-	omap_mux_init_gpio(164, OMAP_PIN_OUTPUT);
-
-	gpmc_smc91x_init(&board_smc91x_data);
-}
-
-#else
-
-static inline void board_smc91x_init(void)
-{
-}
-
-#endif
-
-static void rx51_wl1251_set_power(bool enable)
-{
-	gpio_set_value(RX51_WL1251_POWER_GPIO, enable);
-}
-
 static struct gpio rx51_wl1251_gpios[] __initdata = {
-	{ RX51_WL1251_POWER_GPIO, GPIOF_OUT_INIT_LOW,	"wl1251 power"	},
 	{ RX51_WL1251_IRQ_GPIO,	  GPIOF_IN,		"wl1251 irq"	},
 };
 
@@ -1161,17 +1154,16 @@ static void __init rx51_init_wl1251(void)
 	if (irq < 0)
 		goto err_irq;
 
-	wl1251_pdata.set_power = rx51_wl1251_set_power;
+	wl1251_pdata.power_gpio = RX51_WL1251_POWER_GPIO;
 	rx51_peripherals_spi_board_info[RX51_SPI_WL1251].irq = irq;
 
 	return;
 
 err_irq:
 	gpio_free(RX51_WL1251_IRQ_GPIO);
-	gpio_free(RX51_WL1251_POWER_GPIO);
 error:
 	printk(KERN_ERR "wl1251 board initialisation failed\n");
-	wl1251_pdata.set_power = NULL;
+	wl1251_pdata.power_gpio = -1;
 
 	/*
 	 * Now rx51_peripherals_spi_board_info[1].irq is zero and
@@ -1220,16 +1212,66 @@ static void __init rx51_init_tsc2005(void)
 				gpio_to_irq(RX51_TSC2005_IRQ_GPIO);
 }
 
+#if defined(CONFIG_IR_RX51) || defined(CONFIG_IR_RX51_MODULE)
+static struct lirc_rx51_platform_data rx51_lirc_data = {
+	.set_max_mpu_wakeup_lat = omap_pm_set_max_mpu_wakeup_lat,
+	.pwm_timer = 9, /* Use GPT 9 for CIR */
+};
+
+static struct platform_device rx51_lirc_device = {
+	.name           = "lirc_rx51",
+	.id             = -1,
+	.dev            = {
+		.platform_data = &rx51_lirc_data,
+	},
+};
+
+static void __init rx51_init_lirc(void)
+{
+	platform_device_register(&rx51_lirc_device);
+}
+#else
+static void __init rx51_init_lirc(void)
+{
+}
+#endif
+
+static struct platform_device madc_hwmon = {
+	.name	= "twl4030_madc_hwmon",
+	.id	= -1,
+};
+
+static void __init rx51_init_twl4030_hwmon(void)
+{
+	platform_device_register(&madc_hwmon);
+}
+
+static struct platform_device omap3_rom_rng_device = {
+	.name		= "omap3-rom-rng",
+	.id		= -1,
+	.dev	= {
+		.platform_data	= rx51_secure_rng_call,
+	},
+};
+
+static void __init rx51_init_omap3_rom_rng(void)
+{
+	if (omap_type() == OMAP2_DEVICE_TYPE_SEC) {
+		pr_info("RX-51: Registering OMAP3 HWRNG device\n");
+		platform_device_register(&omap3_rom_rng_device);
+	}
+}
+
 void __init rx51_peripherals_init(void)
 {
+	rx51_gpio_init();
 	rx51_i2c_init();
 	regulator_has_full_constraints();
 	gpmc_onenand_init(board_onenand_data);
-	board_smc91x_init();
 	rx51_add_gpio_keys();
 	rx51_init_wl1251();
 	rx51_init_tsc2005();
-	rx51_init_si4713();
+	rx51_init_lirc();
 	spi_register_board_info(rx51_peripherals_spi_board_info,
 				ARRAY_SIZE(rx51_peripherals_spi_board_info));
 
@@ -1238,5 +1280,7 @@ void __init rx51_peripherals_init(void)
 		omap_hsmmc_init(mmc);
 
 	rx51_charger_init();
+	rx51_init_twl4030_hwmon();
+	rx51_init_omap3_rom_rng();
 }
 

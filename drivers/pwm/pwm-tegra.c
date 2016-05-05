@@ -87,7 +87,7 @@ static int tegra_pwm_config(struct pwm_chip *chip, struct pwm_device *pwm,
 	 * cycles at the PWM clock rate will take period_ns nanoseconds.
 	 */
 	rate = clk_get_rate(pc->clk) >> PWM_DUTY_WIDTH;
-	hz = 1000000000ul / period_ns;
+	hz = NSEC_PER_SEC / period_ns;
 
 	rate = (rate + (hz / 2)) / hz;
 
@@ -112,7 +112,7 @@ static int tegra_pwm_config(struct pwm_chip *chip, struct pwm_device *pwm,
 	 * If the PWM channel is disabled, make sure to turn on the clock
 	 * before writing the register. Otherwise, keep it enabled.
 	 */
-	if (!test_bit(PWMF_ENABLED, &pwm->flags)) {
+	if (!pwm_is_enabled(pwm)) {
 		err = clk_prepare_enable(pc->clk);
 		if (err < 0)
 			return err;
@@ -124,7 +124,7 @@ static int tegra_pwm_config(struct pwm_chip *chip, struct pwm_device *pwm,
 	/*
 	 * If the PWM is not enabled, turn the clock off again to save power.
 	 */
-	if (!test_bit(PWMF_ENABLED, &pwm->flags))
+	if (!pwm_is_enabled(pwm))
 		clk_disable_unprepare(pc->clk);
 
 	return 0;
@@ -173,24 +173,15 @@ static int tegra_pwm_probe(struct platform_device *pdev)
 	int ret;
 
 	pwm = devm_kzalloc(&pdev->dev, sizeof(*pwm), GFP_KERNEL);
-	if (!pwm) {
-		dev_err(&pdev->dev, "failed to allocate memory\n");
+	if (!pwm)
 		return -ENOMEM;
-	}
 
 	pwm->dev = &pdev->dev;
 
 	r = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (!r) {
-		dev_err(&pdev->dev, "no memory resources defined\n");
-		return -ENODEV;
-	}
-
-	pwm->mmio_base = devm_request_and_ioremap(&pdev->dev, r);
-	if (!pwm->mmio_base) {
-		dev_err(&pdev->dev, "failed to ioremap() region\n");
-		return -EADDRNOTAVAIL;
-	}
+	pwm->mmio_base = devm_ioremap_resource(&pdev->dev, r);
+	if (IS_ERR(pwm->mmio_base))
+		return PTR_ERR(pwm->mmio_base);
 
 	platform_set_drvdata(pdev, pwm);
 
@@ -212,7 +203,7 @@ static int tegra_pwm_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int __devexit tegra_pwm_remove(struct platform_device *pdev)
+static int tegra_pwm_remove(struct platform_device *pdev)
 {
 	struct tegra_pwm_chip *pc = platform_get_drvdata(pdev);
 	int i;
@@ -223,7 +214,7 @@ static int __devexit tegra_pwm_remove(struct platform_device *pdev)
 	for (i = 0; i < NUM_PWM; i++) {
 		struct pwm_device *pwm = &pc->chip.pwms[i];
 
-		if (!test_bit(PWMF_ENABLED, &pwm->flags))
+		if (!pwm_is_enabled(pwm))
 			if (clk_prepare_enable(pc->clk) < 0)
 				continue;
 
@@ -235,23 +226,21 @@ static int __devexit tegra_pwm_remove(struct platform_device *pdev)
 	return pwmchip_remove(&pc->chip);
 }
 
-#ifdef CONFIG_OF
-static struct of_device_id tegra_pwm_of_match[] = {
+static const struct of_device_id tegra_pwm_of_match[] = {
 	{ .compatible = "nvidia,tegra20-pwm" },
 	{ .compatible = "nvidia,tegra30-pwm" },
 	{ }
 };
 
 MODULE_DEVICE_TABLE(of, tegra_pwm_of_match);
-#endif
 
 static struct platform_driver tegra_pwm_driver = {
 	.driver = {
 		.name = "tegra-pwm",
-		.of_match_table = of_match_ptr(tegra_pwm_of_match),
+		.of_match_table = tegra_pwm_of_match,
 	},
 	.probe = tegra_pwm_probe,
-	.remove = __devexit_p(tegra_pwm_remove),
+	.remove = tegra_pwm_remove,
 };
 
 module_platform_driver(tegra_pwm_driver);

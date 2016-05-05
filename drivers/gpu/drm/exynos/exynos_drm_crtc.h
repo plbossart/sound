@@ -6,31 +6,42 @@
  *	Joonyoung Shim <jy0922.shim@samsung.com>
  *	Seung-Woo Kim <sw0312.kim@samsung.com>
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * VA LINUX SYSTEMS AND/OR ITS SUPPLIERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
+ * This program is free software; you can redistribute  it and/or modify it
+ * under  the terms of  the GNU General  Public License as published by the
+ * Free Software Foundation;  either version 2 of the  License, or (at your
+ * option) any later version.
  */
 
 #ifndef _EXYNOS_DRM_CRTC_H_
 #define _EXYNOS_DRM_CRTC_H_
 
-int exynos_drm_crtc_create(struct drm_device *dev, unsigned int nr);
-int exynos_drm_crtc_enable_vblank(struct drm_device *dev, int crtc);
-void exynos_drm_crtc_disable_vblank(struct drm_device *dev, int crtc);
+#include "exynos_drm_drv.h"
+
+struct exynos_drm_crtc *exynos_drm_crtc_create(struct drm_device *drm_dev,
+					struct drm_plane *plane,
+					int pipe,
+					enum exynos_drm_output_type type,
+					const struct exynos_drm_crtc_ops *ops,
+					void *context);
+int exynos_drm_crtc_enable_vblank(struct drm_device *dev, unsigned int pipe);
+void exynos_drm_crtc_disable_vblank(struct drm_device *dev, unsigned int pipe);
+void exynos_drm_crtc_wait_pending_update(struct exynos_drm_crtc *exynos_crtc);
+void exynos_drm_crtc_finish_update(struct exynos_drm_crtc *exynos_crtc,
+				   struct exynos_drm_plane *exynos_plane);
+
+/* This function gets pipe value to crtc device matched with out_type. */
+int exynos_drm_crtc_get_pipe_from_type(struct drm_device *drm_dev,
+				       enum exynos_drm_output_type out_type);
+
+/*
+ * This function calls the crtc device(manager)'s te_handler() callback
+ * to trigger to transfer video image at the tearing effect synchronization
+ * signal.
+ */
+void exynos_drm_crtc_te_handler(struct drm_crtc *crtc);
+
+/* This function cancels a page flip request. */
+void exynos_drm_crtc_cancel_page_flip(struct drm_crtc *crtc,
+					struct drm_file *file);
 
 #endif

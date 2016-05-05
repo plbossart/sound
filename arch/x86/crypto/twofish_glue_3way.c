@@ -62,15 +62,15 @@ void twofish_dec_blk_cbc_3way(void *ctx, u128 *dst, const u128 *src)
 }
 EXPORT_SYMBOL_GPL(twofish_dec_blk_cbc_3way);
 
-void twofish_enc_blk_ctr(void *ctx, u128 *dst, const u128 *src, u128 *iv)
+void twofish_enc_blk_ctr(void *ctx, u128 *dst, const u128 *src, le128 *iv)
 {
 	be128 ctrblk;
 
 	if (dst != src)
 		*dst = *src;
 
-	u128_to_be128(&ctrblk, iv);
-	u128_inc(iv);
+	le128_to_be128(&ctrblk, iv);
+	le128_inc(iv);
 
 	twofish_enc_blk(ctx, (u8 *)&ctrblk, (u8 *)&ctrblk);
 	u128_xor(dst, dst, (u128 *)&ctrblk);
@@ -78,7 +78,7 @@ void twofish_enc_blk_ctr(void *ctx, u128 *dst, const u128 *src, u128 *iv)
 EXPORT_SYMBOL_GPL(twofish_enc_blk_ctr);
 
 void twofish_enc_blk_ctr_3way(void *ctx, u128 *dst, const u128 *src,
-				     u128 *iv)
+			      le128 *iv)
 {
 	be128 ctrblks[3];
 
@@ -88,12 +88,12 @@ void twofish_enc_blk_ctr_3way(void *ctx, u128 *dst, const u128 *src,
 		dst[2] = src[2];
 	}
 
-	u128_to_be128(&ctrblks[0], iv);
-	u128_inc(iv);
-	u128_to_be128(&ctrblks[1], iv);
-	u128_inc(iv);
-	u128_to_be128(&ctrblks[2], iv);
-	u128_inc(iv);
+	le128_to_be128(&ctrblks[0], iv);
+	le128_inc(iv);
+	le128_to_be128(&ctrblks[1], iv);
+	le128_inc(iv);
+	le128_to_be128(&ctrblks[2], iv);
+	le128_inc(iv);
 
 	twofish_enc_blk_xor_3way(ctx, (u8 *)dst, (u8 *)ctrblks);
 }
@@ -277,13 +277,9 @@ int xts_twofish_setkey(struct crypto_tfm *tfm, const u8 *key,
 	u32 *flags = &tfm->crt_flags;
 	int err;
 
-	/* key consists of keys of equal size concatenated, therefore
-	 * the length must be even
-	 */
-	if (keylen % 2) {
-		*flags |= CRYPTO_TFM_RES_BAD_KEY_LEN;
-		return -EINVAL;
-	}
+	err = xts_check_key(tfm, key, keylen);
+	if (err)
+		return err;
 
 	/* first half of xts-key is for crypt */
 	err = __twofish_setkey(&ctx->crypt_ctx, key, keylen / 2, flags);
@@ -342,7 +338,6 @@ static struct crypto_alg tf_algs[5] = { {
 	.cra_alignmask		= 0,
 	.cra_type		= &crypto_blkcipher_type,
 	.cra_module		= THIS_MODULE,
-	.cra_list		= LIST_HEAD_INIT(tf_algs[0].cra_list),
 	.cra_u = {
 		.blkcipher = {
 			.min_keysize	= TF_MIN_KEY_SIZE,
@@ -362,7 +357,6 @@ static struct crypto_alg tf_algs[5] = { {
 	.cra_alignmask		= 0,
 	.cra_type		= &crypto_blkcipher_type,
 	.cra_module		= THIS_MODULE,
-	.cra_list		= LIST_HEAD_INIT(tf_algs[1].cra_list),
 	.cra_u = {
 		.blkcipher = {
 			.min_keysize	= TF_MIN_KEY_SIZE,
@@ -383,7 +377,6 @@ static struct crypto_alg tf_algs[5] = { {
 	.cra_alignmask		= 0,
 	.cra_type		= &crypto_blkcipher_type,
 	.cra_module		= THIS_MODULE,
-	.cra_list		= LIST_HEAD_INIT(tf_algs[2].cra_list),
 	.cra_u = {
 		.blkcipher = {
 			.min_keysize	= TF_MIN_KEY_SIZE,
@@ -404,7 +397,6 @@ static struct crypto_alg tf_algs[5] = { {
 	.cra_alignmask		= 0,
 	.cra_type		= &crypto_blkcipher_type,
 	.cra_module		= THIS_MODULE,
-	.cra_list		= LIST_HEAD_INIT(tf_algs[3].cra_list),
 	.cra_exit		= lrw_twofish_exit_tfm,
 	.cra_u = {
 		.blkcipher = {
@@ -426,7 +418,6 @@ static struct crypto_alg tf_algs[5] = { {
 	.cra_alignmask		= 0,
 	.cra_type		= &crypto_blkcipher_type,
 	.cra_module		= THIS_MODULE,
-	.cra_list		= LIST_HEAD_INIT(tf_algs[4].cra_list),
 	.cra_u = {
 		.blkcipher = {
 			.min_keysize	= TF_MIN_KEY_SIZE * 2,
@@ -500,5 +491,5 @@ module_exit(fini);
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Twofish Cipher Algorithm, 3-way parallel asm optimized");
-MODULE_ALIAS("twofish");
-MODULE_ALIAS("twofish-asm");
+MODULE_ALIAS_CRYPTO("twofish");
+MODULE_ALIAS_CRYPTO("twofish-asm");

@@ -24,7 +24,7 @@
 #include <asm/unistd.h>
 
 #include "entry.h"
-#include "paravirt_inst.h"
+#include <asm/native/inst.h>
 
 /*
  * See Documentation/ia64/fsys.txt for details on fsyscalls.
@@ -89,53 +89,6 @@ ENTRY(fsys_getpid)
 (p8)	br.spnt.many fsys_fallback_syscall
 	FSYS_RETURN
 END(fsys_getpid)
-
-ENTRY(fsys_getppid)
-	.prologue
-	.altrp b6
-	.body
-	add r17=IA64_TASK_GROUP_LEADER_OFFSET,r16
-	;;
-	ld8 r17=[r17]				// r17 = current->group_leader
-	add r9=TI_FLAGS+IA64_TASK_SIZE,r16
-	;;
-
-	ld4 r9=[r9]
-	add r17=IA64_TASK_REAL_PARENT_OFFSET,r17 // r17 = &current->group_leader->real_parent
-	;;
-	and r9=TIF_ALLWORK_MASK,r9
-
-1:	ld8 r18=[r17]				// r18 = current->group_leader->real_parent
-	;;
-	cmp.ne p8,p0=0,r9
-	add r8=IA64_TASK_TGID_OFFSET,r18	// r8 = &current->group_leader->real_parent->tgid
-	;;
-
-	/*
-	 * The .acq is needed to ensure that the read of tgid has returned its data before
-	 * we re-check "real_parent".
-	 */
-	ld4.acq r8=[r8]				// r8 = current->group_leader->real_parent->tgid
-#ifdef CONFIG_SMP
-	/*
-	 * Re-read current->group_leader->real_parent.
-	 */
-	ld8 r19=[r17]				// r19 = current->group_leader->real_parent
-(p8)	br.spnt.many fsys_fallback_syscall
-	;;
-	cmp.ne p6,p0=r18,r19			// did real_parent change?
-	mov r19=0			// i must not leak kernel bits...
-(p6)	br.cond.spnt.few 1b			// yes -> redo the read of tgid and the check
-	;;
-	mov r17=0			// i must not leak kernel bits...
-	mov r18=0			// i must not leak kernel bits...
-#else
-	mov r17=0			// i must not leak kernel bits...
-	mov r18=0			// i must not leak kernel bits...
-	mov r19=0			// i must not leak kernel bits...
-#endif
-	FSYS_RETURN
-END(fsys_getppid)
 
 ENTRY(fsys_set_tid_address)
 	.prologue
@@ -449,7 +402,7 @@ ENTRY(fsys_fallback_syscall)
 	mov r26=ar.pfs
 END(fsys_fallback_syscall)
 	/* FALL THROUGH */
-GLOBAL_ENTRY(paravirt_fsys_bubble_down)
+GLOBAL_ENTRY(fsys_bubble_down)
 	.prologue
 	.altrp b6
 	.body
@@ -487,7 +440,7 @@ GLOBAL_ENTRY(paravirt_fsys_bubble_down)
 	 *
 	 * PSR.BE : already is turned off in __kernel_syscall_via_epc()
 	 * PSR.AC : don't care (kernel normally turns PSR.AC on)
-	 * PSR.I  : already turned off by the time paravirt_fsys_bubble_down gets
+	 * PSR.I  : already turned off by the time fsys_bubble_down gets
 	 *	    invoked
 	 * PSR.DFL: always 0 (kernel never turns it on)
 	 * PSR.DFH: don't care --- kernel never touches f32-f127 on its own
@@ -497,7 +450,7 @@ GLOBAL_ENTRY(paravirt_fsys_bubble_down)
 	 * PSR.DB : don't care --- kernel never enables kernel-level
 	 *	    breakpoints
 	 * PSR.TB : must be 0 already; if it wasn't zero on entry to
-	 *          __kernel_syscall_via_epc, the branch to paravirt_fsys_bubble_down
+	 *          __kernel_syscall_via_epc, the branch to fsys_bubble_down
 	 *          will trigger a taken branch; the taken-trap-handler then
 	 *          converts the syscall into a break-based system-call.
 	 */
@@ -529,7 +482,7 @@ GLOBAL_ENTRY(paravirt_fsys_bubble_down)
 	nop.i 0
 	;;
 	mov ar.rsc=0				// M2   set enforced lazy mode, pl 0, LE, loadrs=0
-#ifdef CONFIG_VIRT_CPU_ACCOUNTING
+#ifdef CONFIG_VIRT_CPU_ACCOUNTING_NATIVE
 	MOV_FROM_ITC(p0, p6, r30, r23)		// M    get cycle for accounting
 #else
 	nop.m 0
@@ -555,7 +508,7 @@ GLOBAL_ENTRY(paravirt_fsys_bubble_down)
 	cmp.ne pKStk,pUStk=r0,r0		// A    set pKStk <- 0, pUStk <- 1
 	br.call.sptk.many b7=ia64_syscall_setup	// B
 	;;
-#ifdef CONFIG_VIRT_CPU_ACCOUNTING
+#ifdef CONFIG_VIRT_CPU_ACCOUNTING_NATIVE
 	// mov.m r30=ar.itc is called in advance
 	add r16=TI_AC_STAMP+IA64_TASK_SIZE,r2
 	add r17=TI_AC_LEAVE+IA64_TASK_SIZE,r2
@@ -588,14 +541,14 @@ GLOBAL_ENTRY(paravirt_fsys_bubble_down)
 	nop.m 0
 (p8)	br.call.sptk.many b6=b6			// B    (ignore return address)
 	br.cond.spnt ia64_trace_syscall		// B
-END(paravirt_fsys_bubble_down)
+END(fsys_bubble_down)
 
 	.rodata
 	.align 8
-	.globl paravirt_fsyscall_table
+	.globl fsyscall_table
 
-	data8 paravirt_fsys_bubble_down
-paravirt_fsyscall_table:
+	data8 fsys_bubble_down
+fsyscall_table:
 	data8 fsys_ni_syscall
 	data8 0				// exit			// 1025
 	data8 0				// read
@@ -614,7 +567,7 @@ paravirt_fsyscall_table:
 	data8 0				// chown
 	data8 0				// lseek		// 1040
 	data8 fsys_getpid		// getpid
-	data8 fsys_getppid		// getppid
+	data8 0				// getppid
 	data8 0				// mount
 	data8 0				// umount
 	data8 0				// setuid		// 1045
@@ -880,4 +833,4 @@ paravirt_fsyscall_table:
 
 	// fill in zeros for the remaining entries
 	.zero:
-	.space paravirt_fsyscall_table + 8*NR_syscalls - .zero, 0
+	.space fsyscall_table + 8*NR_syscalls - .zero, 0

@@ -120,6 +120,7 @@ static irqreturn_t cpm_error_interrupt(int irq, void *dev)
 
 static struct irqaction cpm_error_irqaction = {
 	.handler = cpm_error_interrupt,
+	.flags = IRQF_NO_THREAD,
 	.name = "error",
 };
 
@@ -227,7 +228,10 @@ void __init cpm_reset(void)
 	 * Bit 25, FAM can also be set to use FEC aggressive mode (860T).
 	 */
 	siu_conf = immr_map(im_siu_conf);
-	out_be32(&siu_conf->sc_sdcr, 1);
+	if ((mfspr(SPRN_IMMR) & 0xffff) == 0x0900) /* MPC885 */
+		out_be32(&siu_conf->sc_sdcr, 0x40);
+	else
+		out_be32(&siu_conf->sc_sdcr, 1);
 	immr_unmap(siu_conf);
 
 	cpm_muram_init();

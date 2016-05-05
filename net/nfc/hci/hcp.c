@@ -12,9 +12,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the
- * Free Software Foundation, Inc.,
- * 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+ * along with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 
 #define pr_fmt(fmt) "hci: %s: " fmt, __func__
@@ -35,7 +33,7 @@
 int nfc_hci_hcp_message_tx(struct nfc_hci_dev *hdev, u8 pipe,
 			   u8 type, u8 instruction,
 			   const u8 *payload, size_t payload_len,
-			   hci_cmd_cb_t cb, void *cb_data,
+			   data_exchange_cb_t cb, void *cb_context,
 			   unsigned long completion_delay)
 {
 	struct nfc_dev *ndev = hdev->ndev;
@@ -52,7 +50,7 @@ int nfc_hci_hcp_message_tx(struct nfc_hci_dev *hdev, u8 pipe,
 	skb_queue_head_init(&cmd->msg_frags);
 	cmd->wait_response = (type == NFC_HCI_HCP_COMMAND) ? true : false;
 	cmd->cb = cb;
-	cmd->cb_context = cb_data;
+	cmd->cb_context = cb_context;
 	cmd->completion_delay = completion_delay;
 
 	hci_len = payload_len + 1;
@@ -105,10 +103,17 @@ int nfc_hci_hcp_message_tx(struct nfc_hci_dev *hdev, u8 pipe,
 	}
 
 	mutex_lock(&hdev->msg_tx_mutex);
+
+	if (hdev->shutting_down) {
+		err = -ESHUTDOWN;
+		mutex_unlock(&hdev->msg_tx_mutex);
+		goto out_skb_err;
+	}
+
 	list_add_tail(&cmd->msg_l, &hdev->msg_tx_queue);
 	mutex_unlock(&hdev->msg_tx_mutex);
 
-	queue_work(hdev->msg_tx_wq, &hdev->msg_tx_work);
+	schedule_work(&hdev->msg_tx_work);
 
 	return 0;
 
@@ -117,17 +122,6 @@ out_skb_err:
 	kfree(cmd);
 
 	return err;
-}
-
-u8 nfc_hci_pipe2gate(struct nfc_hci_dev *hdev, u8 pipe)
-{
-	int gate;
-
-	for (gate = 0; gate < NFC_HCI_MAX_GATES; gate++)
-		if (hdev->gate2pipe[gate] == pipe)
-			return gate;
-
-	return 0xff;
 }
 
 /*

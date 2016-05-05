@@ -43,14 +43,14 @@ struct pps_source_info {
 			int event, void *data);	/* PPS echo function */
 
 	struct module *owner;
-	struct device *dev;
+	struct device *dev;		/* Parent device for device_create */
 };
 
 struct pps_event_time {
 #ifdef CONFIG_NTP_PPS
-	struct timespec ts_raw;
+	struct timespec64 ts_raw;
 #endif /* CONFIG_NTP_PPS */
-	struct timespec ts_real;
+	struct timespec64 ts_real;
 };
 
 /* The main struct */
@@ -69,6 +69,7 @@ struct pps_device {
 	wait_queue_head_t queue;		/* PPS event queue */
 
 	unsigned int id;			/* PPS source unique ID */
+	void const *lookup_cookie;		/* pps_lookup_dev only */
 	struct cdev cdev;
 	struct device *dev;
 	struct fasync_struct *async_queue;	/* fasync method */
@@ -79,7 +80,17 @@ struct pps_device {
  * Global variables
  */
 
-extern struct device_attribute pps_attrs[];
+extern const struct attribute_group *pps_groups[];
+
+/*
+ * Internal functions.
+ *
+ * These are not actually part of the exported API, but this is a
+ * convenient header file to put them in.
+ */
+
+extern int pps_register_cdev(struct pps_device *pps);
+extern void pps_unregister_cdev(struct pps_device *pps);
 
 /*
  * Exported functions
@@ -88,33 +99,37 @@ extern struct device_attribute pps_attrs[];
 extern struct pps_device *pps_register_source(
 		struct pps_source_info *info, int default_params);
 extern void pps_unregister_source(struct pps_device *pps);
-extern int pps_register_cdev(struct pps_device *pps);
-extern void pps_unregister_cdev(struct pps_device *pps);
 extern void pps_event(struct pps_device *pps,
 		struct pps_event_time *ts, int event, void *data);
+/* Look up a pps device by magic cookie */
+struct pps_device *pps_lookup_dev(void const *cookie);
 
 static inline void timespec_to_pps_ktime(struct pps_ktime *kt,
-		struct timespec ts)
+		struct timespec64 ts)
 {
 	kt->sec = ts.tv_sec;
 	kt->nsec = ts.tv_nsec;
 }
 
+static inline void pps_get_ts(struct pps_event_time *ts)
+{
+	struct system_time_snapshot snap;
+
+	ktime_get_snapshot(&snap);
+	ts->ts_real = ktime_to_timespec64(snap.real);
 #ifdef CONFIG_NTP_PPS
-
-static inline void pps_get_ts(struct pps_event_time *ts)
-{
-	getnstime_raw_and_real(&ts->ts_raw, &ts->ts_real);
+	ts->ts_raw = ktime_to_timespec64(snap.raw);
+#endif
 }
 
-#else /* CONFIG_NTP_PPS */
-
-static inline void pps_get_ts(struct pps_event_time *ts)
+/* Subtract known time delay from PPS event time(s) */
+static inline void pps_sub_ts(struct pps_event_time *ts, struct timespec64 delta)
 {
-	getnstimeofday(&ts->ts_real);
+	ts->ts_real = timespec64_sub(ts->ts_real, delta);
+#ifdef CONFIG_NTP_PPS
+	ts->ts_raw = timespec64_sub(ts->ts_raw, delta);
+#endif
 }
-
-#endif /* CONFIG_NTP_PPS */
 
 #endif /* LINUX_PPS_KERNEL_H */
 

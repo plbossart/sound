@@ -33,25 +33,25 @@
 #include <linux/gpio.h>
 #include <linux/interrupt.h>
 #include <linux/serial_core.h>
+#include <linux/serial_s3c.h>
 #include <linux/io.h>
 
-#include <plat/regs-serial.h>
 #include <mach/regs-clock.h>
 #include <mach/regs-gpio.h>
-#include <mach/regs-mem.h>
 #include <mach/regs-irq.h>
+#include <mach/gpio-samsung.h>
 
 #include <asm/mach/time.h>
 
 #include <plat/gpio-cfg.h>
 #include <plat/pm.h>
 
+#include "regs-mem.h"
+
 #define PFX "s3c24xx-pm: "
 
+#ifdef CONFIG_PM_SLEEP
 static struct sleep_save core_save[] = {
-	SAVE_ITEM(S3C2410_LOCKTIME),
-	SAVE_ITEM(S3C2410_CLKCON),
-
 	/* we restore the timings here, with the proviso that the board
 	 * brings the system up in an slower, or equal frequency setting
 	 * to the original system.
@@ -67,19 +67,8 @@ static struct sleep_save core_save[] = {
 	SAVE_ITEM(S3C2410_BANKCON3),
 	SAVE_ITEM(S3C2410_BANKCON4),
 	SAVE_ITEM(S3C2410_BANKCON5),
-
-#ifndef CONFIG_CPU_FREQ
-	SAVE_ITEM(S3C2410_CLKDIVN),
-	SAVE_ITEM(S3C2410_MPLLCON),
-	SAVE_ITEM(S3C2410_REFRESH),
+};
 #endif
-	SAVE_ITEM(S3C2410_UPLLCON),
-	SAVE_ITEM(S3C2410_CLKSLOW),
-};
-
-static struct sleep_save misc_save[] = {
-	SAVE_ITEM(S3C2410_DCLKCON),
-};
 
 /* s3c_pm_check_resume_pin
  *
@@ -121,7 +110,7 @@ void s3c_pm_configure_extint(void)
 	int pin;
 
 	/* for each of the external interrupts (EINT0..EINT15) we
-	 * need to check wether it is an external interrupt source,
+	 * need to check whether it is an external interrupt source,
 	 * and then configure it as an input if it is not
 	*/
 
@@ -134,16 +123,14 @@ void s3c_pm_configure_extint(void)
 	}
 }
 
-
+#ifdef CONFIG_PM_SLEEP
 void s3c_pm_restore_core(void)
 {
 	s3c_pm_do_restore_core(core_save, ARRAY_SIZE(core_save));
-	s3c_pm_do_restore(misc_save, ARRAY_SIZE(misc_save));
 }
 
 void s3c_pm_save_core(void)
 {
-	s3c_pm_do_save(misc_save, ARRAY_SIZE(misc_save));
 	s3c_pm_do_save(core_save, ARRAY_SIZE(core_save));
 }
-
+#endif

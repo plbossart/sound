@@ -1,5 +1,6 @@
 *.a
 *.aux
+*.bc
 *.bin
 *.bz2
 *.cis
@@ -21,6 +22,7 @@
 *.i
 *.jpeg
 *.ko
+*.ll
 *.log
 *.lst
 *.lzma
@@ -35,6 +37,7 @@
 *.out
 *.patch
 *.pdf
+*.plist
 *.png
 *.pot
 *.ps
@@ -162,8 +165,6 @@ mach-types.h
 machtypes.h
 map
 map_hugetlb
-maui_boot.h
-media
 mconf
 miboot*
 mk_elfconfig
@@ -182,7 +183,6 @@ modversions.h*
 nconf
 ncscope.*
 offset.h
-offsets.h
 oui.c*
 page-types
 parse.c

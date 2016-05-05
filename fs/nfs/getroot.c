@@ -32,6 +32,8 @@
 
 #include <asm/uaccess.h>
 
+#include "internal.h"
+
 #define NFSDBG_FACILITY		NFSDBG_CLIENT
 
 /*
@@ -49,16 +51,16 @@ static int nfs_superblock_set_dummy_root(struct super_block *sb, struct inode *i
 		/*
 		 * Ensure that this dentry is invisible to d_find_alias().
 		 * Otherwise, it may be spliced into the tree by
-		 * d_materialise_unique if a parent directory from the same
+		 * d_splice_alias if a parent directory from the same
 		 * filesystem gets mounted at a later time.
 		 * This again causes shrink_dcache_for_umount_subtree() to
 		 * Oops, since the test for IS_ROOT() will fail.
 		 */
-		spin_lock(&sb->s_root->d_inode->i_lock);
+		spin_lock(&d_inode(sb->s_root)->i_lock);
 		spin_lock(&sb->s_root->d_lock);
-		hlist_del_init(&sb->s_root->d_alias);
+		hlist_del_init(&sb->s_root->d_u.d_alias);
 		spin_unlock(&sb->s_root->d_lock);
-		spin_unlock(&sb->s_root->d_inode->i_lock);
+		spin_unlock(&d_inode(sb->s_root)->i_lock);
 	}
 	return 0;
 }
@@ -93,7 +95,7 @@ struct dentry *nfs_get_root(struct super_block *sb, struct nfs_fh *mntfh,
 		goto out;
 	}
 
-	inode = nfs_fhget(sb, mntfh, fsinfo.fattr);
+	inode = nfs_fhget(sb, mntfh, fsinfo.fattr, NULL);
 	if (IS_ERR(inode)) {
 		dprintk("nfs_get_root: get root inode failed\n");
 		ret = ERR_CAST(inode);
@@ -110,7 +112,7 @@ struct dentry *nfs_get_root(struct super_block *sb, struct nfs_fh *mntfh,
 	 * if the dentry tree reaches them; however if the dentry already
 	 * exists, we'll pick it up at this point and use it as the root
 	 */
-	ret = d_obtain_alias(inode);
+	ret = d_obtain_root(inode);
 	if (IS_ERR(ret)) {
 		dprintk("nfs_get_root: get root dentry failed\n");
 		goto out;
@@ -118,14 +120,14 @@ struct dentry *nfs_get_root(struct super_block *sb, struct nfs_fh *mntfh,
 
 	security_d_instantiate(ret, inode);
 	spin_lock(&ret->d_lock);
-	if (IS_ROOT(ret) && !(ret->d_flags & DCACHE_NFSFS_RENAMED)) {
+	if (IS_ROOT(ret) && !ret->d_fsdata &&
+	    !(ret->d_flags & DCACHE_NFSFS_RENAMED)) {
 		ret->d_fsdata = name;
 		name = NULL;
 	}
 	spin_unlock(&ret->d_lock);
 out:
-	if (name)
-		kfree(name);
+	kfree(name);
 	nfs_free_fattr(fsinfo.fattr);
 	return ret;
 }

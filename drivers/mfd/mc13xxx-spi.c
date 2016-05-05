@@ -13,7 +13,6 @@
 #include <linux/slab.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
-#include <linux/mutex.h>
 #include <linux/interrupt.h>
 #include <linux/mfd/core.h>
 #include <linux/mfd/mc13xxx.h>
@@ -28,10 +27,13 @@
 static const struct spi_device_id mc13xxx_device_id[] = {
 	{
 		.name = "mc13783",
-		.driver_data = MC13XXX_ID_MC13783,
+		.driver_data = (kernel_ulong_t)&mc13xxx_variant_mc13783,
 	}, {
 		.name = "mc13892",
-		.driver_data = MC13XXX_ID_MC13892,
+		.driver_data = (kernel_ulong_t)&mc13xxx_variant_mc13892,
+	}, {
+		.name = "mc34708",
+		.driver_data = (kernel_ulong_t)&mc13xxx_variant_mc34708,
 	}, {
 		/* sentinel */
 	}
@@ -39,13 +41,14 @@ static const struct spi_device_id mc13xxx_device_id[] = {
 MODULE_DEVICE_TABLE(spi, mc13xxx_device_id);
 
 static const struct of_device_id mc13xxx_dt_ids[] = {
-	{ .compatible = "fsl,mc13783", .data = (void *) MC13XXX_ID_MC13783, },
-	{ .compatible = "fsl,mc13892", .data = (void *) MC13XXX_ID_MC13892, },
+	{ .compatible = "fsl,mc13783", .data = &mc13xxx_variant_mc13783, },
+	{ .compatible = "fsl,mc13892", .data = &mc13xxx_variant_mc13892, },
+	{ .compatible = "fsl,mc34708", .data = &mc13xxx_variant_mc34708, },
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, mc13xxx_dt_ids);
 
-static struct regmap_config mc13xxx_regmap_spi_config = {
+static const struct regmap_config mc13xxx_regmap_spi_config = {
 	.reg_bits = 7,
 	.pad_bits = 1,
 	.val_bits = 24,
@@ -90,9 +93,14 @@ static int mc13xxx_spi_write(void *context, const void *data, size_t count)
 {
 	struct device *dev = context;
 	struct spi_device *spi = to_spi_device(dev);
+	const char *reg = data;
 
 	if (count != 4)
 		return -ENOTSUPP;
+
+	/* include errata fix for spi audio problems */
+	if (*reg == MC13783_AUDIO_CODEC || *reg == MC13783_AUDIO_DAC)
+		spi_write(spi, data, count);
 
 	return spi_write(spi, data, count);
 }
@@ -120,7 +128,6 @@ static struct regmap_bus regmap_mc13xxx_bus = {
 static int mc13xxx_spi_probe(struct spi_device *spi)
 {
 	struct mc13xxx *mc13xxx;
-	struct mc13xxx_platform_data *pdata = dev_get_platdata(&spi->dev);
 	int ret;
 
 	mc13xxx = devm_kzalloc(&spi->dev, sizeof(*mc13xxx), GFP_KERNEL);
@@ -128,55 +135,52 @@ static int mc13xxx_spi_probe(struct spi_device *spi)
 		return -ENOMEM;
 
 	dev_set_drvdata(&spi->dev, mc13xxx);
+
 	spi->mode = SPI_MODE_0 | SPI_CS_HIGH;
 
-	mc13xxx->dev = &spi->dev;
-	mutex_init(&mc13xxx->lock);
+	mc13xxx->irq = spi->irq;
+
+	spi->max_speed_hz = spi->max_speed_hz ? : 26000000;
+	ret = spi_setup(spi);
+	if (ret)
+		return ret;
 
 	mc13xxx->regmap = devm_regmap_init(&spi->dev, &regmap_mc13xxx_bus,
 					   &spi->dev,
 					   &mc13xxx_regmap_spi_config);
 	if (IS_ERR(mc13xxx->regmap)) {
 		ret = PTR_ERR(mc13xxx->regmap);
-		dev_err(mc13xxx->dev, "Failed to initialize register map: %d\n",
-				ret);
-		dev_set_drvdata(&spi->dev, NULL);
+		dev_err(&spi->dev, "Failed to initialize regmap: %d\n", ret);
 		return ret;
 	}
 
-	ret = mc13xxx_common_init(mc13xxx, pdata, spi->irq);
+	if (spi->dev.of_node) {
+		const struct of_device_id *of_id =
+			of_match_device(mc13xxx_dt_ids, &spi->dev);
 
-	if (ret) {
-		dev_set_drvdata(&spi->dev, NULL);
+		mc13xxx->variant = of_id->data;
 	} else {
-		const struct spi_device_id *devid =
-			spi_get_device_id(spi);
-		if (!devid || devid->driver_data != mc13xxx->ictype)
-			dev_warn(mc13xxx->dev,
-				"device id doesn't match auto detection!\n");
+		const struct spi_device_id *id_entry = spi_get_device_id(spi);
+
+		mc13xxx->variant = (void *)id_entry->driver_data;
 	}
 
-	return ret;
+	return mc13xxx_common_init(&spi->dev);
 }
 
-static int __devexit mc13xxx_spi_remove(struct spi_device *spi)
+static int mc13xxx_spi_remove(struct spi_device *spi)
 {
-	struct mc13xxx *mc13xxx = dev_get_drvdata(&spi->dev);
-
-	mc13xxx_common_cleanup(mc13xxx);
-
-	return 0;
+	return mc13xxx_common_exit(&spi->dev);
 }
 
 static struct spi_driver mc13xxx_spi_driver = {
 	.id_table = mc13xxx_device_id,
 	.driver = {
 		.name = "mc13xxx",
-		.owner = THIS_MODULE,
 		.of_match_table = mc13xxx_dt_ids,
 	},
 	.probe = mc13xxx_spi_probe,
-	.remove = __devexit_p(mc13xxx_spi_remove),
+	.remove = mc13xxx_spi_remove,
 };
 
 static int __init mc13xxx_init(void)

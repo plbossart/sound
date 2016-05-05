@@ -22,21 +22,23 @@ config M68KCLASSIC
 
 config COLDFIRE
 	bool "Coldfire CPU family support"
-	select GENERIC_GPIO
-	select ARCH_WANT_OPTIONAL_GPIOLIB
+	select ARCH_REQUIRE_GPIOLIB
 	select ARCH_HAVE_CUSTOM_GPIO_H
 	select CPU_HAS_NO_BITFIELDS
 	select CPU_HAS_NO_MULDIV64
 	select GENERIC_CSUM
+	select HAVE_CLK
 
 endchoice
 
 if M68KCLASSIC
 
 config M68000
-	bool
+	bool "MC68000"
+	depends on !MMU
 	select CPU_HAS_NO_BITFIELDS
 	select CPU_HAS_NO_MULDIV64
+	select CPU_HAS_NO_UNALIGNED
 	select GENERIC_CSUM
 	help
 	  The Freescale (was Motorola) 68000 CPU is the first generation of
@@ -48,6 +50,7 @@ config M68000
 config MCPU32
 	bool
 	select CPU_HAS_NO_BITFIELDS
+	select CPU_HAS_NO_UNALIGNED
 	help
 	  The Freescale (was then Motorola) CPU32 is a CPU core that is
 	  based on the 68020 processor. For the most part it is used in
@@ -56,7 +59,6 @@ config MCPU32
 config M68020
 	bool "68020 support"
 	depends on MMU
-	select GENERIC_ATOMIC64
 	select CPU_HAS_ADDRESS_SPACES
 	help
 	  If you anticipate running this kernel on a computer with a MC68020
@@ -67,7 +69,6 @@ config M68020
 config M68030
 	bool "68030 support"
 	depends on MMU && !MMU_SUN3
-	select GENERIC_ATOMIC64
 	select CPU_HAS_ADDRESS_SPACES
 	help
 	  If you anticipate running this kernel on a computer with a MC68030
@@ -77,7 +78,6 @@ config M68030
 config M68040
 	bool "68040 support"
 	depends on MMU && !MMU_SUN3
-	select GENERIC_ATOMIC64
 	select CPU_HAS_ADDRESS_SPACES
 	help
 	  If you anticipate running this kernel on a computer with a MC68LC040
@@ -88,7 +88,6 @@ config M68040
 config M68060
 	bool "68060 support"
 	depends on MMU && !MMU_SUN3
-	select GENERIC_ATOMIC64
 	select CPU_HAS_ADDRESS_SPACES
 	help
 	  If you anticipate running this kernel on a computer with a MC68060
@@ -115,16 +114,16 @@ config M68VZ328
 	help
 	  Motorola 68VZ328 processor support.
 
-config M68360
-	bool "MC68360"
-	depends on !MMU
-	select MCPU32
-	help
-	  Motorola 68360 processor support.
-
 endif # M68KCLASSIC
 
 if COLDFIRE
+
+choice
+	prompt "ColdFire SoC type"
+	default M520x
+	help
+	  Select the type of ColdFire System-on-Chip (SoC) that you want
+	  to build for.
 
 config M5206
 	bool "MCF5206"
@@ -175,9 +174,6 @@ config M525x
 	help
 	  Freescale (Motorola) Coldfire 5251/5253 processor support.
 
-config M527x
-	bool
-
 config M5271
 	bool "MCF5271"
 	depends on !MMU
@@ -227,9 +223,18 @@ config M5307
 config M532x
 	bool "MCF532x"
 	depends on !MMU
+	select M53xx
 	select HAVE_CACHE_CB
 	help
 	  Freescale (Motorola) ColdFire 532x processor support.
+
+config M537x
+	bool "MCF537x"
+	depends on !MMU
+	select M53xx
+	select HAVE_CACHE_CB
+	help
+	  Freescale ColdFire 537x processor support.
 
 config M5407
 	bool "MCF5407"
@@ -239,9 +244,6 @@ config M5407
 	select HAVE_MBAR
 	help
 	  Motorola ColdFire 5407 processor support.
-
-config M54xx
-	bool
 
 config M547x
 	bool "MCF547x"
@@ -269,15 +271,25 @@ config M5441x
 	help
 	  Freescale Coldfire 54410/54415/54416/54417/54418 processor support.
 
+endchoice
+
+config M527x
+	bool
+
+config M53xx
+	bool
+
+config M54xx
+	bool
+
 endif # COLDFIRE
 
 
 comment "Processor Specific Options"
 
 config M68KFPU_EMU
-	bool "Math emulation support (EXPERIMENTAL)"
+	bool "Math emulation support"
 	depends on MMU
-	depends on EXPERIMENTAL
 	help
 	  At some point in the future, this will cause floating-point math
 	  instructions to be emulated by the kernel on machines that lack a
@@ -376,6 +388,18 @@ config NODES_SHIFT
 	default "3"
 	depends on !SINGLE_MEMORY_CHUNK
 
+config CPU_HAS_NO_BITFIELDS
+	bool
+
+config CPU_HAS_NO_MULDIV64
+	bool
+
+config CPU_HAS_NO_UNALIGNED
+	bool
+
+config CPU_HAS_ADDRESS_SPACES
+	bool
+
 config FPU
 	bool
 
@@ -394,22 +418,18 @@ config HAVE_MBAR
 config HAVE_IPSBAR
 	bool
 
-config CLOCK_SET
-	bool "Enable setting the CPU clock frequency"
-	depends on COLDFIRE
-	default n
-	help
-	  On some CPU's you do not need to know what the core CPU clock
-	  frequency is. On these you can disable clock setting. On some
-	  traditional 68K parts, and on all ColdFire parts you need to set
-	  the appropriate CPU clock frequency. On these devices many of the
-	  onboard peripherals derive their timing from the master CPU clock
-	  frequency.
-
 config CLOCK_FREQ
 	int "Set the core clock frequency"
+	default "25000000" if M5206
+	default "54000000" if M5206e
+	default "166666666" if M520x
+	default "140000000" if M5249
+	default "150000000" if M527x || M523x
+	default "90000000" if M5307
+	default "50000000" if M5407
+	default "266000000" if M54xx
 	default "66666666"
-	depends on CLOCK_SET
+	depends on COLDFIRE
 	help
 	  Define the CPU clock frequency in use. This is the core clock
 	  frequency, it may or may not be the same as the external clock

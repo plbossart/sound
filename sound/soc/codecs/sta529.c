@@ -4,7 +4,7 @@
  * sound/soc/codecs/sta529.c -- spear ALSA Soc codec driver
  *
  * Copyright (C) 2012 ST Microelectronics
- * Rajeev Kumar <rajeev-dlh.kumar@st.com>
+ * Rajeev Kumar <rajeevkumar.linux@gmail.com>
  *
  * This file is licensed under the terms of the GNU General Public
  * License version 2. This program is licensed "as is" without any
@@ -74,9 +74,10 @@
 				SNDRV_PCM_FMTBIT_S32_LE)
 #define	S2PC_VALUE		0x98
 #define CLOCK_OUT		0x60
-#define LEFT_J_DATA_FORMAT	0x10
-#define I2S_DATA_FORMAT		0x12
-#define RIGHT_J_DATA_FORMAT	0x14
+#define DATA_FORMAT_MSK		0x0E
+#define LEFT_J_DATA_FORMAT	0x00
+#define I2S_DATA_FORMAT		0x02
+#define RIGHT_J_DATA_FORMAT	0x04
 #define CODEC_MUTE_VAL		0x80
 
 #define POWER_CNTLMSAK		0x40
@@ -140,7 +141,7 @@ static const char *pwm_mode_text[] = { "Binary", "Headphone", "Ternary",
 
 static const DECLARE_TLV_DB_SCALE(out_gain_tlv, -9150, 50, 0);
 static const DECLARE_TLV_DB_SCALE(master_vol_tlv, -12750, 50, 0);
-static const SOC_ENUM_SINGLE_DECL(pwm_src, STA529_FFXCFG1, 4, pwm_mode_text);
+static SOC_ENUM_SINGLE_DECL(pwm_src, STA529_FFXCFG1, 4, pwm_mode_text);
 
 static const struct snd_kcontrol_new sta529_snd_controls[] = {
 	SOC_DOUBLE_R_TLV("Digital Playback Volume", STA529_LVOL, STA529_RVOL, 0,
@@ -164,7 +165,7 @@ static int sta529_set_bias_level(struct snd_soc_codec *codec, enum
 				FFX_CLK_ENB);
 		break;
 	case SND_SOC_BIAS_STANDBY:
-		if (codec->dapm.bias_level == SND_SOC_BIAS_OFF)
+		if (snd_soc_codec_get_bias_level(codec) == SND_SOC_BIAS_OFF)
 			regcache_sync(sta529->regmap);
 		snd_soc_update_bits(codec, STA529_FFXCFG0,
 					POWER_CNTLMSAK, POWER_STDBY);
@@ -178,12 +179,6 @@ static int sta529_set_bias_level(struct snd_soc_codec *codec, enum
 		break;
 	}
 
-	/*
-	 * store the label for powers down audio subsystem for suspend.This is
-	 * used by soc core layer
-	 */
-	codec->dapm.bias_level = level;
-
 	return 0;
 
 }
@@ -192,21 +187,20 @@ static int sta529_hw_params(struct snd_pcm_substream *substream,
 		struct snd_pcm_hw_params *params,
 		struct snd_soc_dai *dai)
 {
-	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	struct snd_soc_codec *codec = rtd->codec;
+	struct snd_soc_codec *codec = dai->codec;
 	int pdata, play_freq_val, record_freq_val;
 	int bclk_to_fs_ratio;
 
-	switch (params_format(params)) {
-	case SNDRV_PCM_FORMAT_S16_LE:
+	switch (params_width(params)) {
+	case 16:
 		pdata = 1;
 		bclk_to_fs_ratio = 0;
 		break;
-	case SNDRV_PCM_FORMAT_S24_LE:
+	case 24:
 		pdata = 2;
 		bclk_to_fs_ratio = 1;
 		break;
-	case SNDRV_PCM_FORMAT_S32_LE:
+	case 32:
 		pdata = 3;
 		bclk_to_fs_ratio = 2;
 		break;
@@ -289,7 +283,7 @@ static int sta529_set_dai_fmt(struct snd_soc_dai *codec_dai, u32 fmt)
 		return -EINVAL;
 	}
 
-	snd_soc_update_bits(codec, STA529_S2PCFG0, 0x0D, mode);
+	snd_soc_update_bits(codec, STA529_S2PCFG0, DATA_FORMAT_MSK, mode);
 
 	return 0;
 }
@@ -319,51 +313,10 @@ static struct snd_soc_dai_driver sta529_dai = {
 	.ops	= &sta529_dai_ops,
 };
 
-static int sta529_probe(struct snd_soc_codec *codec)
-{
-	struct sta529 *sta529 = snd_soc_codec_get_drvdata(codec);
-	int ret;
-
-	codec->control_data = sta529->regmap;
-	ret = snd_soc_codec_set_cache_io(codec, 8, 8, SND_SOC_REGMAP);
-
-	if (ret < 0) {
-		dev_err(codec->dev, "Failed to set cache I/O: %d\n", ret);
-		return ret;
-	}
-	sta529_set_bias_level(codec, SND_SOC_BIAS_STANDBY);
-
-	return 0;
-}
-
-/* power down chip */
-static int sta529_remove(struct snd_soc_codec *codec)
-{
-	sta529_set_bias_level(codec, SND_SOC_BIAS_OFF);
-
-	return 0;
-}
-
-static int sta529_suspend(struct snd_soc_codec *codec)
-{
-	sta529_set_bias_level(codec, SND_SOC_BIAS_OFF);
-
-	return 0;
-}
-
-static int sta529_resume(struct snd_soc_codec *codec)
-{
-	sta529_set_bias_level(codec, SND_SOC_BIAS_STANDBY);
-
-	return 0;
-}
-
-struct snd_soc_codec_driver sta529_codec_driver = {
-	.probe = sta529_probe,
-	.remove = sta529_remove,
+static const struct snd_soc_codec_driver sta529_codec_driver = {
 	.set_bias_level = sta529_set_bias_level,
-	.suspend = sta529_suspend,
-	.resume = sta529_resume,
+	.suspend_bias_off = true,
+
 	.controls = sta529_snd_controls,
 	.num_controls = ARRAY_SIZE(sta529_snd_controls),
 };
@@ -380,20 +333,15 @@ static const struct regmap_config sta529_regmap = {
 	.num_reg_defaults = ARRAY_SIZE(sta529_reg_defaults),
 };
 
-static __devinit int sta529_i2c_probe(struct i2c_client *i2c,
-		const struct i2c_device_id *id)
+static int sta529_i2c_probe(struct i2c_client *i2c,
+			    const struct i2c_device_id *id)
 {
 	struct sta529 *sta529;
 	int ret;
 
-	if (!i2c_check_functionality(i2c->adapter, I2C_FUNC_SMBUS_BYTE_DATA))
-		return -EINVAL;
-
 	sta529 = devm_kzalloc(&i2c->dev, sizeof(struct sta529), GFP_KERNEL);
-	if (sta529 == NULL) {
-		dev_err(&i2c->dev, "Can not allocate memory\n");
+	if (!sta529)
 		return -ENOMEM;
-	}
 
 	sta529->regmap = devm_regmap_init_i2c(i2c, &sta529_regmap);
 	if (IS_ERR(sta529->regmap)) {
@@ -412,7 +360,7 @@ static __devinit int sta529_i2c_probe(struct i2c_client *i2c,
 	return ret;
 }
 
-static int __devexit sta529_i2c_remove(struct i2c_client *client)
+static int sta529_i2c_remove(struct i2c_client *client)
 {
 	snd_soc_unregister_codec(&client->dev);
 
@@ -428,15 +376,14 @@ MODULE_DEVICE_TABLE(i2c, sta529_i2c_id);
 static struct i2c_driver sta529_i2c_driver = {
 	.driver = {
 		.name = "sta529",
-		.owner = THIS_MODULE,
 	},
 	.probe		= sta529_i2c_probe,
-	.remove		= __devexit_p(sta529_i2c_remove),
+	.remove		= sta529_i2c_remove,
 	.id_table	= sta529_i2c_id,
 };
 
 module_i2c_driver(sta529_i2c_driver);
 
 MODULE_DESCRIPTION("ASoC STA529 codec driver");
-MODULE_AUTHOR("Rajeev Kumar <rajeev-dlh.kumar@st.com>");
+MODULE_AUTHOR("Rajeev Kumar <rajeevkumar.linux@gmail.com>");
 MODULE_LICENSE("GPL");

@@ -97,6 +97,7 @@ extern struct sh_cpuinfo cpu_data[];
 
 #define cpu_sleep()	__asm__ __volatile__ ("sleep" : : : "memory")
 #define cpu_relax()	barrier()
+#define cpu_relax_lowlatency() cpu_relax()
 
 void default_idle(void);
 void stop_this_cpu(void *);
@@ -175,9 +176,9 @@ extern unsigned int instruction_size(unsigned int insn);
 #endif /* __ASSEMBLY__ */
 
 #ifdef CONFIG_SUPERH32
-# include "processor_32.h"
+# include <asm/processor_32.h>
 #else
-# include "processor_64.h"
+# include <asm/processor_64.h>
 #endif
 
 #endif /* __ASM_SH_PROCESSOR_H */

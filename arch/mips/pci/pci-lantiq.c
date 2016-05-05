@@ -20,8 +20,6 @@
 #include <linux/of_irq.h>
 #include <linux/of_pci.h>
 
-#include <asm/pci.h>
-#include <asm/gpio.h>
 #include <asm/addrspace.h>
 
 #include <lantiq_soc.h>
@@ -89,13 +87,13 @@ static inline u32 ltq_calc_bar11mask(void)
 	u32 mem, bar11mask;
 
 	/* BAR11MASK value depends on available memory on system. */
-	mem = num_physpages * PAGE_SIZE;
+	mem = get_num_physpages() * PAGE_SIZE;
 	bar11mask = (0x0ffffff0 & ~((1 << (fls(mem) - 1)) - 1)) | 8;
 
 	return bar11mask;
 }
 
-static int __devinit ltq_pci_startup(struct platform_device *pdev)
+static int ltq_pci_startup(struct platform_device *pdev)
 {
 	struct device_node *node = pdev->dev.of_node;
 	const __be32 *req_mask, *bus_clk;
@@ -129,8 +127,16 @@ static int __devinit ltq_pci_startup(struct platform_device *pdev)
 
 	/* setup reset gpio used by pci */
 	reset_gpio = of_get_named_gpio(node, "gpio-reset", 0);
-	if (gpio_is_valid(reset_gpio))
-		devm_gpio_request(&pdev->dev, reset_gpio, "pci-reset");
+	if (gpio_is_valid(reset_gpio)) {
+		int ret = devm_gpio_request(&pdev->dev,
+						reset_gpio, "pci-reset");
+		if (ret) {
+			dev_err(&pdev->dev,
+				"failed to request gpio %d\n", reset_gpio);
+			return ret;
+		}
+		gpio_direction_output(reset_gpio, 1);
+	}
 
 	/* enable auto-switching between PCI and EBU */
 	ltq_pci_w32(0xa, PCI_CR_CLK_CTRL);
@@ -201,26 +207,21 @@ static int __devinit ltq_pci_startup(struct platform_device *pdev)
 	return 0;
 }
 
-static int __devinit ltq_pci_probe(struct platform_device *pdev)
+static int ltq_pci_probe(struct platform_device *pdev)
 {
 	struct resource *res_cfg, *res_bridge;
 
 	pci_clear_flags(PCI_PROBE_ONLY);
 
-	res_cfg = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	res_bridge = platform_get_resource(pdev, IORESOURCE_MEM, 1);
-	if (!res_cfg || !res_bridge) {
-		dev_err(&pdev->dev, "missing memory reources\n");
-		return -EINVAL;
-	}
+	ltq_pci_membase = devm_ioremap_resource(&pdev->dev, res_bridge);
+	if (IS_ERR(ltq_pci_membase))
+		return PTR_ERR(ltq_pci_membase);
 
-	ltq_pci_membase = devm_request_and_ioremap(&pdev->dev, res_bridge);
-	ltq_pci_mapped_cfg = devm_request_and_ioremap(&pdev->dev, res_cfg);
-
-	if (!ltq_pci_membase || !ltq_pci_mapped_cfg) {
-		dev_err(&pdev->dev, "failed to remap resources\n");
-		return -ENOMEM;
-	}
+	res_cfg = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	ltq_pci_mapped_cfg = devm_ioremap_resource(&pdev->dev, res_cfg);
+	if (IS_ERR(ltq_pci_mapped_cfg))
+		return PTR_ERR(ltq_pci_mapped_cfg);
 
 	ltq_pci_startup(pdev);
 
@@ -239,7 +240,6 @@ static struct platform_driver ltq_pci_driver = {
 	.probe = ltq_pci_probe,
 	.driver = {
 		.name = "pci-xway",
-		.owner = THIS_MODULE,
 		.of_match_table = ltq_pci_match,
 	},
 };

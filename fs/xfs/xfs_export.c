@@ -16,19 +16,21 @@
  * Inc.,  51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
  */
 #include "xfs.h"
-#include "xfs_types.h"
-#include "xfs_log.h"
-#include "xfs_trans.h"
-#include "xfs_sb.h"
-#include "xfs_ag.h"
-#include "xfs_dir2.h"
+#include "xfs_format.h"
+#include "xfs_log_format.h"
+#include "xfs_trans_resv.h"
 #include "xfs_mount.h"
+#include "xfs_da_format.h"
+#include "xfs_da_btree.h"
+#include "xfs_dir2.h"
 #include "xfs_export.h"
-#include "xfs_vnodeops.h"
-#include "xfs_bmap_btree.h"
 #include "xfs_inode.h"
+#include "xfs_trans.h"
 #include "xfs_inode_item.h"
 #include "xfs_trace.h"
+#include "xfs_icache.h"
+#include "xfs_log.h"
+#include "xfs_pnfs.h"
 
 /*
  * Note that we only accept fileids which are long enough rather than allow
@@ -47,7 +49,7 @@ static int xfs_fileid_length(int fileid_type)
 	case FILEID_INO32_GEN_PARENT | XFS_FILEID_TYPE_64FLAG:
 		return 6;
 	}
-	return 255; /* invalid */
+	return FILEID_INVALID;
 }
 
 STATIC int
@@ -89,7 +91,7 @@ xfs_fs_encode_fh(
 	len = xfs_fileid_length(fileid_type);
 	if (*max_len < len) {
 		*max_len = len;
-		return 255;
+		return FILEID_INVALID;
 	}
 	*max_len = len;
 
@@ -145,12 +147,12 @@ xfs_nfs_get_inode(
 		 * We don't use ESTALE directly down the chain to not
 		 * confuse applications using bulkstat that expect EINVAL.
 		 */
-		if (error == EINVAL || error == ENOENT)
-			error = ESTALE;
-		return ERR_PTR(-error);
+		if (error == -EINVAL || error == -ENOENT)
+			error = -ESTALE;
+		return ERR_PTR(error);
 	}
 
-	if (ip->i_d.di_gen != generation) {
+	if (VFS_I(ip)->i_generation != generation) {
 		IRELE(ip);
 		return ERR_PTR(-ESTALE);
 	}
@@ -189,6 +191,9 @@ xfs_fs_fh_to_parent(struct super_block *sb, struct fid *fid,
 	struct xfs_fid64	*fid64 = (struct xfs_fid64 *)fid;
 	struct inode		*inode = NULL;
 
+	if (fh_len < xfs_fileid_length(fileid_type))
+		return NULL;
+
 	switch (fileid_type) {
 	case FILEID_INO32_GEN_PARENT:
 		inode = xfs_nfs_get_inode(sb, fid->i32.parent_ino,
@@ -210,9 +215,9 @@ xfs_fs_get_parent(
 	int			error;
 	struct xfs_inode	*cip;
 
-	error = xfs_lookup(XFS_I(child->d_inode), &xfs_name_dotdot, &cip, NULL);
+	error = xfs_lookup(XFS_I(d_inode(child)), &xfs_name_dotdot, &cip, NULL);
 	if (unlikely(error))
-		return ERR_PTR(-error);
+		return ERR_PTR(error);
 
 	return d_obtain_alias(VFS_I(cip));
 }
@@ -241,4 +246,9 @@ const struct export_operations xfs_export_operations = {
 	.fh_to_parent		= xfs_fs_fh_to_parent,
 	.get_parent		= xfs_fs_get_parent,
 	.commit_metadata	= xfs_fs_nfs_commit_metadata,
+#ifdef CONFIG_NFSD_BLOCKLAYOUT
+	.get_uuid		= xfs_fs_get_uuid,
+	.map_blocks		= xfs_fs_map_blocks,
+	.commit_blocks		= xfs_fs_commit_blocks,
+#endif
 };

@@ -57,20 +57,6 @@ int clk_is_sysclk_mainosc(void)
 }
 
 /*
- * System reset via the watchdog timer
- */
-static void lpc32xx_watchdog_reset(void)
-{
-	/* Make sure WDT clocks are enabled */
-	__raw_writel(LPC32XX_CLKPWR_PWMCLK_WDOG_EN,
-		LPC32XX_CLKPWR_TIMER_CLK_CTRL);
-
-	/* Instant assert of RESETOUT_N with pulse length 1mS */
-	__raw_writel(13000, io_p2v(LPC32XX_WDTIM_BASE + 0x18));
-	__raw_writel(0x70, io_p2v(LPC32XX_WDTIM_BASE + 0xC));
-}
-
-/*
  * Detects and returns IRAM size for the device variation
  */
 #define LPC32XX_IRAM_BANK_SIZE SZ_128K
@@ -99,6 +85,7 @@ u32 lpc32xx_return_iram_size(void)
 
 	return iram_size;
 }
+EXPORT_SYMBOL_GPL(lpc32xx_return_iram_size);
 
 /*
  * Computes PLL rate from PLL register and input clock
@@ -177,25 +164,25 @@ u32 clk_get_pclk_div(void)
 
 static struct map_desc lpc32xx_io_desc[] __initdata = {
 	{
-		.virtual	= IO_ADDRESS(LPC32XX_AHB0_START),
+		.virtual	= (unsigned long)IO_ADDRESS(LPC32XX_AHB0_START),
 		.pfn		= __phys_to_pfn(LPC32XX_AHB0_START),
 		.length		= LPC32XX_AHB0_SIZE,
 		.type		= MT_DEVICE
 	},
 	{
-		.virtual	= IO_ADDRESS(LPC32XX_AHB1_START),
+		.virtual	= (unsigned long)IO_ADDRESS(LPC32XX_AHB1_START),
 		.pfn		= __phys_to_pfn(LPC32XX_AHB1_START),
 		.length		= LPC32XX_AHB1_SIZE,
 		.type		= MT_DEVICE
 	},
 	{
-		.virtual	= IO_ADDRESS(LPC32XX_FABAPB_START),
+		.virtual	= (unsigned long)IO_ADDRESS(LPC32XX_FABAPB_START),
 		.pfn		= __phys_to_pfn(LPC32XX_FABAPB_START),
 		.length		= LPC32XX_FABAPB_SIZE,
 		.type		= MT_DEVICE
 	},
 	{
-		.virtual	= IO_ADDRESS(LPC32XX_IRAM_BASE),
+		.virtual	= (unsigned long)IO_ADDRESS(LPC32XX_IRAM_BASE),
 		.pfn		= __phys_to_pfn(LPC32XX_IRAM_BASE),
 		.length		= (LPC32XX_IRAM_BANK_SIZE * 2),
 		.type		= MT_DEVICE
@@ -205,24 +192,6 @@ static struct map_desc lpc32xx_io_desc[] __initdata = {
 void __init lpc32xx_map_io(void)
 {
 	iotable_init(lpc32xx_io_desc, ARRAY_SIZE(lpc32xx_io_desc));
-}
-
-void lpc23xx_restart(char mode, const char *cmd)
-{
-	switch (mode) {
-	case 's':
-	case 'h':
-		lpc32xx_watchdog_reset();
-		break;
-
-	default:
-		/* Do nothing */
-		break;
-	}
-
-	/* Wait for watchdog to reset system */
-	while (1)
-		;
 }
 
 static int __init lpc32xx_check_uid(void)

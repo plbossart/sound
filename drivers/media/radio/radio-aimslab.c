@@ -82,7 +82,7 @@ static struct radio_isa_card *rtrack_alloc(void)
 #define AIMS_BIT_VOL_UP		(1 << 6)	/* active low */
 #define AIMS_BIT_VOL_DN		(1 << 7)	/* active low */
 
-void rtrack_set_pins(void *handle, u8 pins)
+static void rtrack_set_pins(void *handle, u8 pins)
 {
 	struct radio_isa_card *isa = handle;
 	struct rtrack *rt = container_of(isa, struct rtrack, isa);
@@ -129,11 +129,11 @@ static int rtrack_s_mute_volume(struct radio_isa_card *isa, bool mute, int vol)
 	} else if (curvol < vol) {
 		outb(0x98, isa->io);	/* volume up + sigstr + on	*/
 		for (; curvol < vol; curvol++)
-			udelay(3000);
+			mdelay(3);
 	} else if (curvol > vol) {
 		outb(0x58, isa->io);	/* volume down + sigstr + on	*/
 		for (; curvol > vol; curvol--)
-			udelay(3000);
+			mdelay(3);
 	}
 	outb(0xd8, isa->io);		/* volume steady + sigstr + on	*/
 	rt->curvol = vol;

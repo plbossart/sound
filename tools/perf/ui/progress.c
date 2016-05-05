@@ -1,32 +1,38 @@
 #include "../cache.h"
 #include "progress.h"
-#include "libslang.h"
-#include "ui.h"
-#include "browser.h"
 
-void ui_progress__update(u64 curr, u64 total, const char *title)
+static void null_progress__update(struct ui_progress *p __maybe_unused)
 {
-	int bar, y;
-	/*
-	 * FIXME: We should have a per UI backend way of showing progress,
-	 * stdio will just show a percentage as NN%, etc.
-	 */
-	if (use_browser <= 0)
-		return;
+}
 
-	if (total == 0)
-		return;
+static struct ui_progress_ops null_progress__ops =
+{
+	.update = null_progress__update,
+};
 
-	ui__refresh_dimensions(true);
-	pthread_mutex_lock(&ui__lock);
-	y = SLtt_Screen_Rows / 2 - 2;
-	SLsmg_set_color(0);
-	SLsmg_draw_box(y, 0, 3, SLtt_Screen_Cols);
-	SLsmg_gotorc(y++, 1);
-	SLsmg_write_string((char *)title);
-	SLsmg_set_color(HE_COLORSET_SELECTED);
-	bar = ((SLtt_Screen_Cols - 2) * curr) / total;
-	SLsmg_fill_region(y, 1, 1, bar, ' ');
-	SLsmg_refresh();
-	pthread_mutex_unlock(&ui__lock);
+struct ui_progress_ops *ui_progress__ops = &null_progress__ops;
+
+void ui_progress__update(struct ui_progress *p, u64 adv)
+{
+	p->curr += adv;
+
+	if (p->curr >= p->next) {
+		p->next += p->step;
+		ui_progress__ops->update(p);
+	}
+}
+
+void ui_progress__init(struct ui_progress *p, u64 total, const char *title)
+{
+	p->curr = 0;
+	p->next = p->step = total / 16;
+	p->total = total;
+	p->title = title;
+
+}
+
+void ui_progress__finish(void)
+{
+	if (ui_progress__ops->finish)
+		ui_progress__ops->finish();
 }

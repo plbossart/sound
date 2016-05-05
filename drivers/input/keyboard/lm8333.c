@@ -1,6 +1,6 @@
 /*
  * LM8333 keypad driver
- * Copyright (C) 2012 Wolfram Sang, Pengutronix <w.sang@pengutronix.de>
+ * Copyright (C) 2012 Wolfram Sang, Pengutronix <kernel@pengutronix.de>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -128,10 +128,11 @@ static irqreturn_t lm8333_irq_thread(int irq, void *data)
 	return IRQ_HANDLED;
 }
 
-static int __devinit lm8333_probe(struct i2c_client *client,
+static int lm8333_probe(struct i2c_client *client,
 				  const struct i2c_device_id *id)
 {
-	const struct lm8333_platform_data *pdata = client->dev.platform_data;
+	const struct lm8333_platform_data *pdata =
+			dev_get_platdata(&client->dev);
 	struct lm8333 *lm8333;
 	struct input_dev *input;
 	int err, active_time;
@@ -202,7 +203,7 @@ static int __devinit lm8333_probe(struct i2c_client *client,
 	return err;
 }
 
-static int __devexit lm8333_remove(struct i2c_client *client)
+static int lm8333_remove(struct i2c_client *client)
 {
 	struct lm8333 *lm8333 = i2c_get_clientdata(client);
 
@@ -222,14 +223,13 @@ MODULE_DEVICE_TABLE(i2c, lm8333_id);
 static struct i2c_driver lm8333_driver = {
 	.driver = {
 		.name		= "lm8333",
-		.owner		= THIS_MODULE,
 	},
 	.probe		= lm8333_probe,
-	.remove		= __devexit_p(lm8333_remove),
+	.remove		= lm8333_remove,
 	.id_table	= lm8333_id,
 };
 module_i2c_driver(lm8333_driver);
 
-MODULE_AUTHOR("Wolfram Sang <w.sang@pengutronix.de>");
+MODULE_AUTHOR("Wolfram Sang <kernel@pengutronix.de>");
 MODULE_DESCRIPTION("LM8333 keyboard driver");
 MODULE_LICENSE("GPL v2");

@@ -56,7 +56,7 @@ MODULE_LICENSE("GPL");
 
 #define W5100_S0_REGS		0x0400
 #define W5100_S0_MR		0x0400 /* S0 Mode Register */
-#define   S0_MR_MACRAW		  0x04 /* MAC RAW mode (promiscous) */
+#define   S0_MR_MACRAW		  0x04 /* MAC RAW mode (promiscuous) */
 #define   S0_MR_MACRAW_MF	  0x44 /* MAC RAW mode (filtered) */
 #define W5100_S0_CR		0x0401 /* S0 Command Register */
 #define   S0_CR_OPEN		  0x01 /* OPEN command */
@@ -498,9 +498,9 @@ static int w5100_napi_poll(struct napi_struct *napi, int budget)
 	}
 
 	if (rx_count < budget) {
+		napi_complete(napi);
 		w5100_write(priv, W5100_IMR, IR_S0);
 		mmiowb();
-		napi_complete(napi);
 	}
 
 	return rx_count;
@@ -570,7 +570,6 @@ static int w5100_set_macaddr(struct net_device *ndev, void *addr)
 	if (!is_valid_ether_addr(sock_addr->sa_data))
 		return -EADDRNOTAVAIL;
 	memcpy(ndev->dev_addr, sock_addr->sa_data, ETH_ALEN);
-	ndev->addr_assign_type &= ~NET_ADDR_RANDOM;
 	w5100_write_macaddr(priv);
 	return 0;
 }
@@ -580,8 +579,6 @@ static int w5100_open(struct net_device *ndev)
 	struct w5100_priv *priv = netdev_priv(ndev);
 
 	netif_info(priv, ifup, ndev, "enabling\n");
-	if (!is_valid_ether_addr(ndev->dev_addr))
-		return -EINVAL;
 	w5100_hw_start(priv);
 	napi_enable(&priv->napi);
 	netif_start_queue(ndev);
@@ -623,9 +620,9 @@ static const struct net_device_ops w5100_netdev_ops = {
 	.ndo_change_mtu		= eth_change_mtu,
 };
 
-static int __devinit w5100_hw_probe(struct platform_device *pdev)
+static int w5100_hw_probe(struct platform_device *pdev)
 {
-	struct wiznet_platform_data *data = pdev->dev.platform_data;
+	struct wiznet_platform_data *data = dev_get_platdata(&pdev->dev);
 	struct net_device *ndev = platform_get_drvdata(pdev);
 	struct w5100_priv *priv = netdev_priv(ndev);
 	const char *name = netdev_name(ndev);
@@ -637,19 +634,15 @@ static int __devinit w5100_hw_probe(struct platform_device *pdev)
 	if (data && is_valid_ether_addr(data->mac_addr)) {
 		memcpy(ndev->dev_addr, data->mac_addr, ETH_ALEN);
 	} else {
-		eth_random_addr(ndev->dev_addr);
-		ndev->addr_assign_type |= NET_ADDR_RANDOM;
+		eth_hw_addr_random(ndev);
 	}
 
 	mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (!mem)
-		return -ENXIO;
+	priv->base = devm_ioremap_resource(&pdev->dev, mem);
+	if (IS_ERR(priv->base))
+		return PTR_ERR(priv->base);
+
 	mem_size = resource_size(mem);
-	if (!devm_request_mem_region(&pdev->dev, mem->start, mem_size, name))
-		return -EBUSY;
-	priv->base = devm_ioremap(&pdev->dev, mem->start, mem_size);
-	if (!priv->base)
-		return -EBUSY;
 
 	spin_lock_init(&priv->reg_lock);
 	priv->indirect = mem_size < W5100_BUS_DIRECT_SIZE;
@@ -699,7 +692,7 @@ static int __devinit w5100_hw_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int __devinit w5100_probe(struct platform_device *pdev)
+static int w5100_probe(struct platform_device *pdev)
 {
 	struct w5100_priv *priv;
 	struct net_device *ndev;
@@ -713,7 +706,6 @@ static int __devinit w5100_probe(struct platform_device *pdev)
 	priv = netdev_priv(ndev);
 	priv->ndev = ndev;
 
-	ether_setup(ndev);
 	ndev->netdev_ops = &w5100_netdev_ops;
 	ndev->ethtool_ops = &w5100_ethtool_ops;
 	ndev->watchdog_timeo = HZ;
@@ -738,11 +730,10 @@ err_hw_probe:
 	unregister_netdev(ndev);
 err_register:
 	free_netdev(ndev);
-	platform_set_drvdata(pdev, NULL);
 	return err;
 }
 
-static int __devexit w5100_remove(struct platform_device *pdev)
+static int w5100_remove(struct platform_device *pdev)
 {
 	struct net_device *ndev = platform_get_drvdata(pdev);
 	struct w5100_priv *priv = netdev_priv(ndev);
@@ -754,11 +745,10 @@ static int __devexit w5100_remove(struct platform_device *pdev)
 
 	unregister_netdev(ndev);
 	free_netdev(ndev);
-	platform_set_drvdata(pdev, NULL);
 	return 0;
 }
 
-#ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 static int w5100_suspend(struct device *dev)
 {
 	struct platform_device *pdev = to_platform_device(dev);
@@ -791,18 +781,17 @@ static int w5100_resume(struct device *dev)
 	}
 	return 0;
 }
-#endif /* CONFIG_PM */
+#endif /* CONFIG_PM_SLEEP */
 
 static SIMPLE_DEV_PM_OPS(w5100_pm_ops, w5100_suspend, w5100_resume);
 
 static struct platform_driver w5100_driver = {
 	.driver		= {
 		.name	= DRV_NAME,
-		.owner	= THIS_MODULE,
 		.pm	= &w5100_pm_ops,
 	},
 	.probe		= w5100_probe,
-	.remove		= __devexit_p(w5100_remove),
+	.remove		= w5100_remove,
 };
 
 module_platform_driver(w5100_driver);

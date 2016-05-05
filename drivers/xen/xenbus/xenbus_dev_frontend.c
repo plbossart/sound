@@ -35,6 +35,8 @@
  *                              Turned xenfs into a loadable module.
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/kernel.h>
 #include <linux/errno.h>
 #include <linux/uio.h>
@@ -53,15 +55,13 @@
 #include <linux/string.h>
 #include <linux/slab.h>
 #include <linux/miscdevice.h>
-#include <linux/module.h>
+#include <linux/init.h>
 
 #include "xenbus_comms.h"
 
 #include <xen/xenbus.h>
 #include <xen/xen.h>
 #include <asm/xen/hypervisor.h>
-
-MODULE_LICENSE("GPL");
 
 /*
  * An element of a list of outstanding transactions, for which we're
@@ -186,6 +186,8 @@ static int queue_reply(struct list_head *queue, const void *data, size_t len)
 
 	if (len == 0)
 		return 0;
+	if (len > XENSTORE_PAYLOAD_MAX)
+		return -EINVAL;
 
 	rb = kmalloc(sizeof(*rb) + len, GFP_KERNEL);
 	if (rb == NULL)
@@ -324,10 +326,13 @@ static int xenbus_write_transaction(unsigned msg_type,
 	}
 
 	if (msg_type == XS_TRANSACTION_START) {
-		trans->handle.id = simple_strtoul(reply, NULL, 0);
-
-		list_add(&trans->list, &u->transactions);
-	} else if (msg_type == XS_TRANSACTION_END) {
+		if (u->u.msg.type == XS_ERROR)
+			kfree(trans);
+		else {
+			trans->handle.id = simple_strtoul(reply, NULL, 0);
+			list_add(&trans->list, &u->transactions);
+		}
+	} else if (u->u.msg.type == XS_TRANSACTION_END) {
 		list_for_each_entry(trans, &u->transactions, list)
 			if (trans->handle.id == u->u.msg.tx_id)
 				break;
@@ -458,7 +463,7 @@ static ssize_t xenbus_file_write(struct file *filp,
 		goto out;
 
 	/* Can't write a xenbus message larger we can buffer */
-	if ((len + u->len) > sizeof(u->u.buffer)) {
+	if (len > sizeof(u->u.buffer) - u->len) {
 		/* On error, dump existing buffer */
 		u->len = 0;
 		rc = -EINVAL;
@@ -616,14 +621,7 @@ static int __init xenbus_init(void)
 
 	err = misc_register(&xenbus_dev);
 	if (err)
-		printk(KERN_ERR "Could not register xenbus frontend device\n");
+		pr_err("Could not register xenbus frontend device\n");
 	return err;
 }
-
-static void __exit xenbus_exit(void)
-{
-	misc_deregister(&xenbus_dev);
-}
-
-module_init(xenbus_init);
-module_exit(xenbus_exit);
+device_initcall(xenbus_init);

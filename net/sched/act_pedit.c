@@ -1,5 +1,5 @@
 /*
- * net/sched/pedit.c	Generic packet editor
+ * net/sched/act_pedit.c	Generic packet editor
  *
  *		This program is free software; you can redistribute it and/or
  *		modify it under the terms of the GNU General Public License
@@ -24,28 +24,22 @@
 #include <net/tc_act/tc_pedit.h>
 
 #define PEDIT_TAB_MASK	15
-static struct tcf_common *tcf_pedit_ht[PEDIT_TAB_MASK + 1];
-static u32 pedit_idx_gen;
-static DEFINE_RWLOCK(pedit_lock);
 
-static struct tcf_hashinfo pedit_hash_info = {
-	.htab	=	tcf_pedit_ht,
-	.hmask	=	PEDIT_TAB_MASK,
-	.lock	=	&pedit_lock,
-};
+static int pedit_net_id;
 
 static const struct nla_policy pedit_policy[TCA_PEDIT_MAX + 1] = {
 	[TCA_PEDIT_PARMS]	= { .len = sizeof(struct tc_pedit) },
 };
 
-static int tcf_pedit_init(struct nlattr *nla, struct nlattr *est,
-			  struct tc_action *a, int ovr, int bind)
+static int tcf_pedit_init(struct net *net, struct nlattr *nla,
+			  struct nlattr *est, struct tc_action *a,
+			  int ovr, int bind)
 {
+	struct tc_action_net *tn = net_generic(net, pedit_net_id);
 	struct nlattr *tb[TCA_PEDIT_MAX + 1];
 	struct tc_pedit *parm;
 	int ret = 0, err;
 	struct tcf_pedit *p;
-	struct tcf_common *pc;
 	struct tc_pedit_key *keys = NULL;
 	int ksize;
 
@@ -63,27 +57,27 @@ static int tcf_pedit_init(struct nlattr *nla, struct nlattr *est,
 	if (nla_len(tb[TCA_PEDIT_PARMS]) < sizeof(*parm) + ksize)
 		return -EINVAL;
 
-	pc = tcf_hash_check(parm->index, a, bind, &pedit_hash_info);
-	if (!pc) {
+	if (!tcf_hash_check(tn, parm->index, a, bind)) {
 		if (!parm->nkeys)
 			return -EINVAL;
-		pc = tcf_hash_create(parm->index, est, a, sizeof(*p), bind,
-				     &pedit_idx_gen, &pedit_hash_info);
-		if (IS_ERR(pc))
-			return PTR_ERR(pc);
-		p = to_pedit(pc);
+		ret = tcf_hash_create(tn, parm->index, est, a,
+				      sizeof(*p), bind, false);
+		if (ret)
+			return ret;
+		p = to_pedit(a);
 		keys = kmalloc(ksize, GFP_KERNEL);
 		if (keys == NULL) {
-			kfree(pc);
+			tcf_hash_cleanup(a, est);
 			return -ENOMEM;
 		}
 		ret = ACT_P_CREATED;
 	} else {
-		p = to_pedit(pc);
-		if (!ovr) {
-			tcf_hash_release(pc, bind, &pedit_hash_info);
+		if (bind)
+			return 0;
+		tcf_hash_release(a, bind);
+		if (!ovr)
 			return -EEXIST;
-		}
+		p = to_pedit(a);
 		if (p->tcfp_nkeys && p->tcfp_nkeys != parm->nkeys) {
 			keys = kmalloc(ksize, GFP_KERNEL);
 			if (keys == NULL)
@@ -102,33 +96,25 @@ static int tcf_pedit_init(struct nlattr *nla, struct nlattr *est,
 	memcpy(p->tcfp_keys, parm->keys, ksize);
 	spin_unlock_bh(&p->tcf_lock);
 	if (ret == ACT_P_CREATED)
-		tcf_hash_insert(pc, &pedit_hash_info);
+		tcf_hash_insert(tn, a);
 	return ret;
 }
 
-static int tcf_pedit_cleanup(struct tc_action *a, int bind)
+static void tcf_pedit_cleanup(struct tc_action *a, int bind)
 {
 	struct tcf_pedit *p = a->priv;
-
-	if (p) {
-		struct tc_pedit_key *keys = p->tcfp_keys;
-		if (tcf_hash_release(&p->common, bind, &pedit_hash_info)) {
-			kfree(keys);
-			return 1;
-		}
-	}
-	return 0;
+	struct tc_pedit_key *keys = p->tcfp_keys;
+	kfree(keys);
 }
 
 static int tcf_pedit(struct sk_buff *skb, const struct tc_action *a,
 		     struct tcf_result *res)
 {
 	struct tcf_pedit *p = a->priv;
-	int i, munged = 0;
+	int i;
 	unsigned int off;
 
-	if (skb_cloned(skb) &&
-	    pskb_expand_head(skb, 0, 0, GFP_ATOMIC))
+	if (skb_unclone(skb, GFP_ATOMIC))
 		return p->tcf_action;
 
 	off = skb_network_offset(skb);
@@ -173,11 +159,8 @@ static int tcf_pedit(struct sk_buff *skb, const struct tc_action *a,
 			*ptr = ((*ptr & tkey->mask) ^ tkey->val);
 			if (ptr == &_data)
 				skb_store_bits(skb, off + offset, ptr, 4);
-			munged++;
 		}
 
-		if (munged)
-			skb->tc_verd = SET_TC_MUNGED(skb->tc_verd);
 		goto done;
 	} else
 		WARN(1, "pedit BUG: index %d\n", p->tcf_index);
@@ -231,18 +214,53 @@ nla_put_failure:
 	return -1;
 }
 
+static int tcf_pedit_walker(struct net *net, struct sk_buff *skb,
+			    struct netlink_callback *cb, int type,
+			    struct tc_action *a)
+{
+	struct tc_action_net *tn = net_generic(net, pedit_net_id);
+
+	return tcf_generic_walker(tn, skb, cb, type, a);
+}
+
+static int tcf_pedit_search(struct net *net, struct tc_action *a, u32 index)
+{
+	struct tc_action_net *tn = net_generic(net, pedit_net_id);
+
+	return tcf_hash_search(tn, a, index);
+}
+
 static struct tc_action_ops act_pedit_ops = {
 	.kind		=	"pedit",
-	.hinfo		=	&pedit_hash_info,
 	.type		=	TCA_ACT_PEDIT,
-	.capab		=	TCA_CAP_NONE,
 	.owner		=	THIS_MODULE,
 	.act		=	tcf_pedit,
 	.dump		=	tcf_pedit_dump,
 	.cleanup	=	tcf_pedit_cleanup,
-	.lookup		=	tcf_hash_search,
 	.init		=	tcf_pedit_init,
-	.walk		=	tcf_generic_walker
+	.walk		=	tcf_pedit_walker,
+	.lookup		=	tcf_pedit_search,
+};
+
+static __net_init int pedit_init_net(struct net *net)
+{
+	struct tc_action_net *tn = net_generic(net, pedit_net_id);
+
+	return tc_action_net_init(tn, &act_pedit_ops, PEDIT_TAB_MASK);
+}
+
+static void __net_exit pedit_exit_net(struct net *net)
+{
+	struct tc_action_net *tn = net_generic(net, pedit_net_id);
+
+	tc_action_net_exit(tn);
+}
+
+static struct pernet_operations pedit_net_ops = {
+	.init = pedit_init_net,
+	.exit = pedit_exit_net,
+	.id   = &pedit_net_id,
+	.size = sizeof(struct tc_action_net),
 };
 
 MODULE_AUTHOR("Jamal Hadi Salim(2002-4)");
@@ -251,12 +269,12 @@ MODULE_LICENSE("GPL");
 
 static int __init pedit_init_module(void)
 {
-	return tcf_register_action(&act_pedit_ops);
+	return tcf_register_action(&act_pedit_ops, &pedit_net_ops);
 }
 
 static void __exit pedit_cleanup_module(void)
 {
-	tcf_unregister_action(&act_pedit_ops);
+	tcf_unregister_action(&act_pedit_ops, &pedit_net_ops);
 }
 
 module_init(pedit_init_module);

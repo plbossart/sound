@@ -159,7 +159,6 @@ struct n_hdlc {
 /*
  * HDLC buffer list manipulation functions
  */
-static void n_hdlc_buf_list_init(struct n_hdlc_buf_list *list);
 static void n_hdlc_buf_put(struct n_hdlc_buf_list *list,
 			   struct n_hdlc_buf *buf);
 static struct n_hdlc_buf *n_hdlc_buf_get(struct n_hdlc_buf_list *list);
@@ -600,7 +599,7 @@ static ssize_t n_hdlc_tty_read(struct tty_struct *tty, struct file *file,
 	add_wait_queue(&tty->read_wait, &wait);
 
 	for (;;) {
-		if (test_bit(TTY_OTHER_CLOSED, &tty->flags)) {
+		if (test_bit(TTY_OTHER_DONE, &tty->flags)) {
 			ret = -EIO;
 			break;
 		}
@@ -828,7 +827,7 @@ static unsigned int n_hdlc_tty_poll(struct tty_struct *tty, struct file *filp,
 		/* set bits for operations that won't block */
 		if (n_hdlc->rx_buf_list.head)
 			mask |= POLLIN | POLLRDNORM;	/* readable */
-		if (test_bit(TTY_OTHER_CLOSED, &tty->flags))
+		if (test_bit(TTY_OTHER_DONE, &tty->flags))
 			mask |= POLLHUP;
 		if (tty_hung_up_p(filp))
 			mask |= POLLHUP;
@@ -848,17 +847,15 @@ static struct n_hdlc *n_hdlc_alloc(void)
 {
 	struct n_hdlc_buf *buf;
 	int i;
-	struct n_hdlc *n_hdlc = kmalloc(sizeof(*n_hdlc), GFP_KERNEL);
+	struct n_hdlc *n_hdlc = kzalloc(sizeof(*n_hdlc), GFP_KERNEL);
 
 	if (!n_hdlc)
 		return NULL;
 
-	memset(n_hdlc, 0, sizeof(*n_hdlc));
-
-	n_hdlc_buf_list_init(&n_hdlc->rx_free_buf_list);
-	n_hdlc_buf_list_init(&n_hdlc->tx_free_buf_list);
-	n_hdlc_buf_list_init(&n_hdlc->rx_buf_list);
-	n_hdlc_buf_list_init(&n_hdlc->tx_buf_list);
+	spin_lock_init(&n_hdlc->rx_free_buf_list.spinlock);
+	spin_lock_init(&n_hdlc->tx_free_buf_list.spinlock);
+	spin_lock_init(&n_hdlc->rx_buf_list.spinlock);
+	spin_lock_init(&n_hdlc->tx_buf_list.spinlock);
 	
 	/* allocate free rx buffer list */
 	for(i=0;i<DEFAULT_RX_BUF_COUNT;i++) {
@@ -885,16 +882,6 @@ static struct n_hdlc *n_hdlc_alloc(void)
 	return n_hdlc;
 	
 }	/* end of n_hdlc_alloc() */
-
-/**
- * n_hdlc_buf_list_init - initialize specified HDLC buffer list
- * @list - pointer to buffer list
- */
-static void n_hdlc_buf_list_init(struct n_hdlc_buf_list *list)
-{
-	memset(list, 0, sizeof(*list));
-	spin_lock_init(&list->spinlock);
-}	/* end of n_hdlc_buf_list_init() */
 
 /**
  * n_hdlc_buf_put - add specified HDLC buffer to tail of specified list
@@ -952,8 +939,6 @@ static char hdlc_register_ok[] __initdata =
 	KERN_INFO "N_HDLC line discipline registered.\n";
 static char hdlc_register_fail[] __initdata =
 	KERN_ERR "error registering line discipline: %d\n";
-static char hdlc_init_fail[] __initdata =
-	KERN_INFO "N_HDLC: init failure %d\n";
 
 static int __init n_hdlc_init(void)
 {
@@ -973,8 +958,6 @@ static int __init n_hdlc_init(void)
 	else
 		printk(hdlc_register_fail, status);
 
-	if (status)
-		printk(hdlc_init_fail, status);
 	return status;
 	
 }	/* end of init_module() */

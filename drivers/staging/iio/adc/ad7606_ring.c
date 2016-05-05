@@ -46,13 +46,11 @@ static void ad7606_poll_bh_to_ring(struct work_struct *work_s)
 	struct ad7606_state *st = container_of(work_s, struct ad7606_state,
 						poll_work);
 	struct iio_dev *indio_dev = iio_priv_to_dev(st);
-	struct iio_buffer *ring = indio_dev->buffer;
-	s64 time_ns;
 	__u8 *buf;
 	int ret;
 
 	buf = kzalloc(indio_dev->scan_bytes, GFP_KERNEL);
-	if (buf == NULL)
+	if (!buf)
 		return;
 
 	if (gpio_is_valid(st->pdata->gpio_frstdata)) {
@@ -79,12 +77,7 @@ static void ad7606_poll_bh_to_ring(struct work_struct *work_s)
 			goto done;
 	}
 
-	time_ns = iio_get_time_ns();
-
-	if (indio_dev->scan_timestamp)
-		*((s64 *)(buf + indio_dev->scan_bytes - sizeof(s64))) = time_ns;
-
-	ring->access->store_to(indio_dev->buffer, buf, time_ns);
+	iio_push_to_buffers_with_timestamp(indio_dev, buf, iio_get_time_ns());
 done:
 	gpio_set_value(st->pdata->gpio_convst, 0);
 	iio_trigger_notify_done(indio_dev->trig);

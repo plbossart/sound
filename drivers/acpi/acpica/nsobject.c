@@ -6,7 +6,7 @@
  ******************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2012, Intel Corp.
+ * Copyright (C) 2000 - 2016, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -61,7 +61,7 @@ ACPI_MODULE_NAME("nsobject")
  * RETURN:      Status
  *
  * DESCRIPTION: Record the given object as the value associated with the
- *              name whose acpi_handle is passed.  If Object is NULL
+ *              name whose acpi_handle is passed. If Object is NULL
  *              and Type is ACPI_TYPE_ANY, set the name as having no value.
  *              Note: Future may require that the Node->Flags field be passed
  *              as a parameter.
@@ -133,7 +133,7 @@ acpi_ns_attach_object(struct acpi_namespace_node *node,
 		 ((struct acpi_namespace_node *)object)->object) {
 		/*
 		 * Value passed is a name handle and that name has a
-		 * non-null value.  Use that name's value and type.
+		 * non-null value. Use that name's value and type.
 		 */
 		obj_desc = ((struct acpi_namespace_node *)object)->object;
 		object_type = ((struct acpi_namespace_node *)object)->type;
@@ -222,14 +222,30 @@ void acpi_ns_detach_object(struct acpi_namespace_node *node)
 		}
 	}
 
-	/* Clear the entry in all cases */
+	/* Clear the Node entry in all cases */
 
 	node->object = NULL;
 	if (ACPI_GET_DESCRIPTOR_TYPE(obj_desc) == ACPI_DESC_TYPE_OPERAND) {
+
+		/* Unlink object from front of possible object list */
+
 		node->object = obj_desc->common.next_object;
+
+		/* Handle possible 2-descriptor object */
+
 		if (node->object &&
-		    ((node->object)->common.type != ACPI_TYPE_LOCAL_DATA)) {
+		    (node->object->common.type != ACPI_TYPE_LOCAL_DATA)) {
 			node->object = node->object->common.next_object;
+		}
+
+		/*
+		 * Detach the object from any data objects (which are still held by
+		 * the namespace node)
+		 */
+		if (obj_desc->common.next_object &&
+		    ((obj_desc->common.next_object)->common.type ==
+		     ACPI_TYPE_LOCAL_DATA)) {
+			obj_desc->common.next_object = NULL;
 		}
 	}
 
@@ -321,7 +337,7 @@ union acpi_operand_object *acpi_ns_get_secondary_object(union
  *
  * RETURN:      Status
  *
- * DESCRIPTION: Low-level attach data.  Create and attach a Data object.
+ * DESCRIPTION: Low-level attach data. Create and attach a Data object.
  *
  ******************************************************************************/
 
@@ -377,7 +393,7 @@ acpi_ns_attach_data(struct acpi_namespace_node *node,
  *
  * RETURN:      Status
  *
- * DESCRIPTION: Low-level detach data.  Delete the data node, but the caller
+ * DESCRIPTION: Low-level detach data. Delete the data node, but the caller
  *              is responsible for the actual data.
  *
  ******************************************************************************/

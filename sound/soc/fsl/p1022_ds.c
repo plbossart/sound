@@ -11,11 +11,12 @@
  */
 
 #include <linux/module.h>
+#include <linux/fsl/guts.h>
 #include <linux/interrupt.h>
+#include <linux/of_address.h>
 #include <linux/of_device.h>
 #include <linux/slab.h>
 #include <sound/soc.h>
-#include <asm/fsl_guts.h>
 
 #include "fsl_dma.h"
 #include "fsl_ssi.h"
@@ -198,11 +199,9 @@ static int p1022_ds_probe(struct platform_device *pdev)
 {
 	struct device *dev = pdev->dev.parent;
 	/* ssi_pdev is the platform device for the SSI node that probed us */
-	struct platform_device *ssi_pdev =
-		container_of(dev, struct platform_device, dev);
+	struct platform_device *ssi_pdev = to_platform_device(dev);
 	struct device_node *np = ssi_pdev->dev.of_node;
 	struct device_node *codec_np = NULL;
-	struct platform_device *sound_device = NULL;
 	struct machine_data *mdata;
 	int ret = -ENODEV;
 	const char *sprop;
@@ -349,36 +348,23 @@ static int p1022_ds_probe(struct platform_device *pdev)
 	mdata->card.probe = p1022_ds_machine_probe;
 	mdata->card.remove = p1022_ds_machine_remove;
 	mdata->card.name = pdev->name; /* The platform driver name */
+	mdata->card.owner = THIS_MODULE;
+	mdata->card.dev = &pdev->dev;
 	mdata->card.num_links = 2;
 	mdata->card.dai_link = mdata->dai;
 
-	/* Allocate a new audio platform device structure */
-	sound_device = platform_device_alloc("soc-audio", -1);
-	if (!sound_device) {
-		dev_err(&pdev->dev, "platform device alloc failed\n");
-		ret = -ENOMEM;
-		goto error;
-	}
-
-	/* Associate the card data with the sound device */
-	platform_set_drvdata(sound_device, &mdata->card);
-
 	/* Register with ASoC */
-	ret = platform_device_add(sound_device);
+	ret = snd_soc_register_card(&mdata->card);
 	if (ret) {
-		dev_err(&pdev->dev, "platform device add failed\n");
+		dev_err(&pdev->dev, "could not register card\n");
 		goto error;
 	}
-	dev_set_drvdata(&pdev->dev, sound_device);
 
 	of_node_put(codec_np);
 
 	return 0;
 
 error:
-	if (sound_device)
-		platform_device_put(sound_device);
-
 	kfree(mdata);
 error_put:
 	of_node_put(codec_np);
@@ -390,33 +376,27 @@ error_put:
  *
  * This function is called when the platform device is removed.
  */
-static int __devexit p1022_ds_remove(struct platform_device *pdev)
+static int p1022_ds_remove(struct platform_device *pdev)
 {
-	struct platform_device *sound_device = dev_get_drvdata(&pdev->dev);
-	struct snd_soc_card *card = platform_get_drvdata(sound_device);
+	struct snd_soc_card *card = platform_get_drvdata(pdev);
 	struct machine_data *mdata =
 		container_of(card, struct machine_data, card);
 
-	platform_device_unregister(sound_device);
-
+	snd_soc_unregister_card(card);
 	kfree(mdata);
-	sound_device->dev.platform_data = NULL;
-
-	dev_set_drvdata(&pdev->dev, NULL);
 
 	return 0;
 }
 
 static struct platform_driver p1022_ds_driver = {
 	.probe = p1022_ds_probe,
-	.remove = __devexit_p(p1022_ds_remove),
+	.remove = p1022_ds_remove,
 	.driver = {
 		/*
 		 * The name must match 'compatible' property in the device tree,
 		 * in lowercase letters.
 		 */
 		.name = "snd-soc-p1022ds",
-		.owner = THIS_MODULE,
 	},
 };
 

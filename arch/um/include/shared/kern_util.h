@@ -6,8 +6,8 @@
 #ifndef __KERN_UTIL_H__
 #define __KERN_UTIL_H__
 
-#include "sysdep/ptrace.h"
-#include "sysdep/faultinfo.h"
+#include <sysdep/ptrace.h>
+#include <sysdep/faultinfo.h>
 
 struct siginfo;
 
@@ -22,7 +22,8 @@ extern int kmalloc_ok;
 extern unsigned long alloc_stack(int order, int atomic);
 extern void free_stack(unsigned long stack, int order);
 
-extern int do_signal(void);
+struct pt_regs;
+extern void do_signal(struct pt_regs *regs);
 extern void interrupt_end(void);
 extern void relay_signal(int sig, struct siginfo *si, struct uml_pt_regs *regs);
 

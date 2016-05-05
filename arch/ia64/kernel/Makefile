@@ -9,7 +9,7 @@ endif
 extra-y	:= head.o init_task.o vmlinux.lds
 
 obj-y := entry.o efi.o efi_stub.o gate-data.o fsys.o ia64_ksyms.o irq.o irq_ia64.o	\
-	 irq_lsapic.o ivt.o machvec.o pal.o paravirt_patchlist.o patch.o process.o perfmon.o ptrace.o sal.o		\
+	 irq_lsapic.o ivt.o machvec.o pal.o patch.o process.o perfmon.o ptrace.o sal.o		\
 	 salinfo.o setup.o signal.o sys_ia64.o time.o traps.o unaligned.o \
 	 unwind.o mca.o mca_asm.o topology.o dma-mapping.o
 
@@ -23,7 +23,6 @@ obj-$(CONFIG_SMP)		+= smp.o smpboot.o
 obj-$(CONFIG_NUMA)		+= numa.o
 obj-$(CONFIG_PERFMON)		+= perfmon_default_smpl.o
 obj-$(CONFIG_IA64_CYCLONE)	+= cyclone.o
-obj-$(CONFIG_CPU_FREQ)		+= cpufreq/
 obj-$(CONFIG_IA64_MCA_RECOVERY)	+= mca_recovery.o
 obj-$(CONFIG_KPROBES)		+= kprobes.o jprobes.o
 obj-$(CONFIG_DYNAMIC_FTRACE)	+= ftrace.o
@@ -35,9 +34,6 @@ obj-$(CONFIG_PCI_MSI)		+= msi_ia64.o
 mca_recovery-y			+= mca_drv.o mca_drv_asm.o
 obj-$(CONFIG_IA64_MC_ERR_INJECT)+= err_inject.o
 obj-$(CONFIG_STACKTRACE)	+= stacktrace.o
-
-obj-$(CONFIG_PARAVIRT)		+= paravirt.o paravirtentry.o \
-				   paravirt_patch.o
 
 obj-$(CONFIG_IA64_ESI)		+= esi.o
 ifneq ($(CONFIG_IA64_ESI),)
@@ -52,9 +48,7 @@ obj-$(CONFIG_BINFMT_ELF)	+= elfcore.o
 CFLAGS_traps.o  += -mfixed-range=f2-f5,f16-f31
 
 # The gate DSO image is built using a special linker script.
-include $(srctree)/arch/ia64/kernel/Makefile.gate
-# tell compiled for native
-CPPFLAGS_gate.lds += -D__IA64_GATE_PARAVIRTUALIZED_NATIVE
+include $(src)/Makefile.gate
 
 # Calculate NR_IRQ = max(IA64_NATIVE_NR_IRQS, XEN_NR_IRQS, ...) based on config
 define sed-y
@@ -85,30 +79,3 @@ arch/$(SRCARCH)/kernel/nr-irqs.s: arch/$(SRCARCH)/kernel/nr-irqs.c
 include/generated/nr-irqs.h: arch/$(SRCARCH)/kernel/nr-irqs.s
 	$(Q)mkdir -p $(dir $@)
 	$(call cmd,nr_irqs)
-
-#
-# native ivt.S, entry.S and fsys.S
-#
-ASM_PARAVIRT_OBJS = ivt.o entry.o fsys.o
-define paravirtualized_native
-AFLAGS_$(1) += -D__IA64_ASM_PARAVIRTUALIZED_NATIVE
-AFLAGS_pvchk-sed-$(1) += -D__IA64_ASM_PARAVIRTUALIZED_PVCHECK
-extra-y += pvchk-$(1)
-endef
-$(foreach obj,$(ASM_PARAVIRT_OBJS),$(eval $(call paravirtualized_native,$(obj))))
-
-#
-# Checker for paravirtualizations of privileged operations.
-#
-quiet_cmd_pv_check_sed = PVCHK   $@
-define cmd_pv_check_sed
-	sed -f $(srctree)/arch/$(SRCARCH)/scripts/pvcheck.sed $< > $@
-endef
-
-$(obj)/pvchk-sed-%.s: $(src)/%.S $(srctree)/arch/$(SRCARCH)/scripts/pvcheck.sed FORCE
-	$(call if_changed_dep,as_s_S)
-$(obj)/pvchk-%.s: $(obj)/pvchk-sed-%.s FORCE
-	$(call if_changed,pv_check_sed)
-$(obj)/pvchk-%.o: $(obj)/pvchk-%.s FORCE
-	$(call if_changed,as_o_S)
-.PRECIOUS: $(obj)/pvchk-sed-%.s $(obj)/pvchk-%.s $(obj)/pvchk-%.o

@@ -16,6 +16,7 @@
  *
  * Author: Varun Sethi <varun.sethi@freescale.com>
  * Author: Scott Wood <scotwood@freescale.com>
+ * Author: Mihai Caraman <mihai.caraman@freescale.com>
  *
  * This file is derived from arch/powerpc/kvm/booke_interrupts.S
  */
@@ -23,38 +24,40 @@
 #include <asm/ppc_asm.h>
 #include <asm/kvm_asm.h>
 #include <asm/reg.h>
-#include <asm/mmu-44x.h>
 #include <asm/page.h>
 #include <asm/asm-compat.h>
 #include <asm/asm-offsets.h>
 #include <asm/bitsperlong.h>
-#include <asm/thread_info.h>
 
+#ifdef CONFIG_64BIT
+#include <asm/exception-64e.h>
+#include <asm/hw_irq.h>
+#include <asm/irqflags.h>
+#else
 #include "../kernel/head_booke.h" /* for THREAD_NORMSAVE() */
-
-#define GET_VCPU(vcpu, thread)	\
-	PPC_LL	vcpu, THREAD_KVM_VCPU(thread)
+#endif
 
 #define LONGBYTES		(BITS_PER_LONG / 8)
 
 #define VCPU_GUEST_SPRG(n)	(VCPU_GUEST_SPRGS + (n * LONGBYTES))
 
 /* The host stack layout: */
-#define HOST_R1         (0 * LONGBYTES) /* Implied by stwu. */
-#define HOST_CALLEE_LR  (1 * LONGBYTES)
-#define HOST_RUN        (2 * LONGBYTES) /* struct kvm_run */
+#define HOST_R1         0 /* Implied by stwu. */
+#define HOST_CALLEE_LR  PPC_LR_STKOFF
+#define HOST_RUN        (HOST_CALLEE_LR + LONGBYTES)
 /*
  * r2 is special: it holds 'current', and it made nonvolatile in the
  * kernel with the -ffixed-r2 gcc option.
  */
-#define HOST_R2         (3 * LONGBYTES)
-#define HOST_CR         (4 * LONGBYTES)
-#define HOST_NV_GPRS    (5 * LONGBYTES)
+#define HOST_R2         (HOST_RUN + LONGBYTES)
+#define HOST_CR         (HOST_R2 + LONGBYTES)
+#define HOST_NV_GPRS    (HOST_CR + LONGBYTES)
 #define __HOST_NV_GPR(n)  (HOST_NV_GPRS + ((n - 14) * LONGBYTES))
 #define HOST_NV_GPR(n)  __HOST_NV_GPR(__REG_##n)
 #define HOST_MIN_STACK_SIZE (HOST_NV_GPR(R31) + LONGBYTES)
 #define HOST_STACK_SIZE ((HOST_MIN_STACK_SIZE + 15) & ~15) /* Align. */
-#define HOST_STACK_LR   (HOST_STACK_SIZE + LONGBYTES) /* In caller stack frame. */
+/* LR in caller stack frame. */
+#define HOST_STACK_LR	(HOST_STACK_SIZE + PPC_LR_STKOFF)
 
 #define NEED_EMU		0x00000001 /* emulation -- save nv regs */
 #define NEED_DEAR		0x00000002 /* save faulting DEAR */
@@ -117,38 +120,14 @@
 1:
 
 	.if	\flags & NEED_EMU
-	/*
-	 * This assumes you have external PID support.
-	 * To support a bookehv CPU without external PID, you'll
-	 * need to look up the TLB entry and create a temporary mapping.
-	 *
-	 * FIXME: we don't currently handle if the lwepx faults.  PR-mode
-	 * booke doesn't handle it either.  Since Linux doesn't use
-	 * broadcast tlbivax anymore, the only way this should happen is
-	 * if the guest maps its memory execute-but-not-read, or if we
-	 * somehow take a TLB miss in the middle of this entry code and
-	 * evict the relevant entry.  On e500mc, all kernel lowmem is
-	 * bolted into TLB1 large page mappings, and we don't use
-	 * broadcast invalidates, so we should not take a TLB miss here.
-	 *
-	 * Later we'll need to deal with faults here.  Disallowing guest
-	 * mappings that are execute-but-not-read could be an option on
-	 * e500mc, but not on chips with an LRAT if it is used.
-	 */
-
-	mfspr	r3, SPRN_EPLC	/* will already have correct ELPID and EGS */
 	PPC_STL	r15, VCPU_GPR(R15)(r4)
 	PPC_STL	r16, VCPU_GPR(R16)(r4)
 	PPC_STL	r17, VCPU_GPR(R17)(r4)
 	PPC_STL	r18, VCPU_GPR(R18)(r4)
 	PPC_STL	r19, VCPU_GPR(R19)(r4)
-	mr	r8, r3
 	PPC_STL	r20, VCPU_GPR(R20)(r4)
-	rlwimi	r8, r6, EPC_EAS_SHIFT - MSR_IR_LG, EPC_EAS
 	PPC_STL	r21, VCPU_GPR(R21)(r4)
-	rlwimi	r8, r6, EPC_EPR_SHIFT - MSR_PR_LG, EPC_EPR
 	PPC_STL	r22, VCPU_GPR(R22)(r4)
-	rlwimi	r8, r10, EPC_EPID_SHIFT, EPC_EPID
 	PPC_STL	r23, VCPU_GPR(R23)(r4)
 	PPC_STL	r24, VCPU_GPR(R24)(r4)
 	PPC_STL	r25, VCPU_GPR(R25)(r4)
@@ -158,33 +137,15 @@
 	PPC_STL	r29, VCPU_GPR(R29)(r4)
 	PPC_STL	r30, VCPU_GPR(R30)(r4)
 	PPC_STL	r31, VCPU_GPR(R31)(r4)
-	mtspr	SPRN_EPLC, r8
-
-	/* disable preemption, so we are sure we hit the fixup handler */
-	CURRENT_THREAD_INFO(r8, r1)
-	li	r7, 1
-	stw	r7, TI_PREEMPT(r8)
-
-	isync
 
 	/*
-	 * In case the read goes wrong, we catch it and write an invalid value
-	 * in LAST_INST instead.
+	 * We don't use external PID support. lwepx faults would need to be
+	 * handled by KVM and this implies aditional code in DO_KVM (for
+	 * DTB_MISS, DSI and LRAT) to check ESR[EPID] and EPLC[EGS] which
+	 * is too intrusive for the host. Get last instuction in
+	 * kvmppc_get_last_inst().
 	 */
-1:	lwepx	r9, 0, r5
-2:
-.section .fixup, "ax"
-3:	li	r9, KVM_INST_FETCH_FAILED
-	b	2b
-.previous
-.section __ex_table,"a"
-	PPC_LONG_ALIGN
-	PPC_LONG 1b,3b
-.previous
-
-	mtspr	SPRN_EPLC, r3
-	li	r7, 0
-	stw	r7, TI_PREEMPT(r8)
+	li	r9, KVM_INST_FETCH_FAILED
 	stw	r9, VCPU_LAST_INST(r4)
 	.endif
 
@@ -201,12 +162,131 @@
 	b	kvmppc_resume_host
 .endm
 
+#ifdef CONFIG_64BIT
+/* Exception types */
+#define EX_GEN			1
+#define EX_GDBELL		2
+#define EX_DBG			3
+#define EX_MC			4
+#define EX_CRIT			5
+#define EX_TLB			6
+
+/*
+ * For input register values, see arch/powerpc/include/asm/kvm_booke_hv_asm.h
+ */
+.macro kvm_handler intno type scratch, paca_ex, ex_r10, ex_r11, srr0, srr1, flags
+ _GLOBAL(kvmppc_handler_\intno\()_\srr1)
+	mr	r11, r4
+	/*
+	 * Get vcpu from Paca: paca->__current.thread->kvm_vcpu
+	 */
+	PPC_LL	r4, PACACURRENT(r13)
+	PPC_LL	r4, (THREAD + THREAD_KVM_VCPU)(r4)
+	stw	r10, VCPU_CR(r4)
+	PPC_STL r11, VCPU_GPR(R4)(r4)
+	PPC_STL	r5, VCPU_GPR(R5)(r4)
+	PPC_STL	r6, VCPU_GPR(R6)(r4)
+	PPC_STL	r8, VCPU_GPR(R8)(r4)
+	PPC_STL	r9, VCPU_GPR(R9)(r4)
+	.if \type == EX_TLB
+	PPC_LL	r5, EX_TLB_R13(r12)
+	PPC_LL	r6, EX_TLB_R10(r12)
+	PPC_LL	r8, EX_TLB_R11(r12)
+	mfspr	r12, \scratch
+	.else
+	mfspr	r5, \scratch
+	PPC_LL	r6, (\paca_ex + \ex_r10)(r13)
+	PPC_LL	r8, (\paca_ex + \ex_r11)(r13)
+	.endif
+	PPC_STL r5, VCPU_GPR(R13)(r4)
+	PPC_STL r3, VCPU_GPR(R3)(r4)
+	PPC_STL r7, VCPU_GPR(R7)(r4)
+	PPC_STL r12, VCPU_GPR(R12)(r4)
+	PPC_STL r6, VCPU_GPR(R10)(r4)
+	PPC_STL r8, VCPU_GPR(R11)(r4)
+	mfctr	r5
+	PPC_STL	r5, VCPU_CTR(r4)
+	mfspr	r5, \srr0
+	mfspr	r6, \srr1
+	kvm_handler_common \intno, \srr0, \flags
+.endm
+
+#define EX_PARAMS(type) \
+	EX_##type, \
+	SPRN_SPRG_##type##_SCRATCH, \
+	PACA_EX##type, \
+	EX_R10, \
+	EX_R11
+
+#define EX_PARAMS_TLB \
+	EX_TLB, \
+	SPRN_SPRG_GEN_SCRATCH, \
+	PACA_EXTLB, \
+	EX_TLB_R10, \
+	EX_TLB_R11
+
+kvm_handler BOOKE_INTERRUPT_CRITICAL, EX_PARAMS(CRIT), \
+	SPRN_CSRR0, SPRN_CSRR1, 0
+kvm_handler BOOKE_INTERRUPT_MACHINE_CHECK, EX_PARAMS(MC), \
+	SPRN_MCSRR0, SPRN_MCSRR1, 0
+kvm_handler BOOKE_INTERRUPT_DATA_STORAGE, EX_PARAMS(GEN), \
+	SPRN_SRR0, SPRN_SRR1,(NEED_EMU | NEED_DEAR | NEED_ESR)
+kvm_handler BOOKE_INTERRUPT_INST_STORAGE, EX_PARAMS(GEN), \
+	SPRN_SRR0, SPRN_SRR1, NEED_ESR
+kvm_handler BOOKE_INTERRUPT_EXTERNAL, EX_PARAMS(GEN), \
+	SPRN_SRR0, SPRN_SRR1, 0
+kvm_handler BOOKE_INTERRUPT_ALIGNMENT, EX_PARAMS(GEN), \
+	SPRN_SRR0, SPRN_SRR1,(NEED_DEAR | NEED_ESR)
+kvm_handler BOOKE_INTERRUPT_PROGRAM, EX_PARAMS(GEN), \
+	SPRN_SRR0, SPRN_SRR1, (NEED_ESR | NEED_EMU)
+kvm_handler BOOKE_INTERRUPT_FP_UNAVAIL, EX_PARAMS(GEN), \
+	SPRN_SRR0, SPRN_SRR1, 0
+kvm_handler BOOKE_INTERRUPT_AP_UNAVAIL, EX_PARAMS(GEN), \
+	SPRN_SRR0, SPRN_SRR1, 0
+kvm_handler BOOKE_INTERRUPT_DECREMENTER, EX_PARAMS(GEN), \
+	SPRN_SRR0, SPRN_SRR1, 0
+kvm_handler BOOKE_INTERRUPT_FIT, EX_PARAMS(GEN), \
+	SPRN_SRR0, SPRN_SRR1, 0
+kvm_handler BOOKE_INTERRUPT_WATCHDOG, EX_PARAMS(CRIT),\
+	SPRN_CSRR0, SPRN_CSRR1, 0
+/*
+ * Only bolted TLB miss exception handlers are supported for now
+ */
+kvm_handler BOOKE_INTERRUPT_DTLB_MISS, EX_PARAMS_TLB, \
+	SPRN_SRR0, SPRN_SRR1, (NEED_EMU | NEED_DEAR | NEED_ESR)
+kvm_handler BOOKE_INTERRUPT_ITLB_MISS, EX_PARAMS_TLB, \
+	SPRN_SRR0, SPRN_SRR1, 0
+kvm_handler BOOKE_INTERRUPT_ALTIVEC_UNAVAIL, EX_PARAMS(GEN), \
+	SPRN_SRR0, SPRN_SRR1, 0
+kvm_handler BOOKE_INTERRUPT_ALTIVEC_ASSIST, EX_PARAMS(GEN), \
+	SPRN_SRR0, SPRN_SRR1, 0
+kvm_handler BOOKE_INTERRUPT_PERFORMANCE_MONITOR, EX_PARAMS(GEN), \
+	SPRN_SRR0, SPRN_SRR1, 0
+kvm_handler BOOKE_INTERRUPT_DOORBELL, EX_PARAMS(GEN), \
+	SPRN_SRR0, SPRN_SRR1, 0
+kvm_handler BOOKE_INTERRUPT_DOORBELL_CRITICAL, EX_PARAMS(CRIT), \
+	SPRN_CSRR0, SPRN_CSRR1, 0
+kvm_handler BOOKE_INTERRUPT_HV_PRIV, EX_PARAMS(GEN), \
+	SPRN_SRR0, SPRN_SRR1, NEED_EMU
+kvm_handler BOOKE_INTERRUPT_HV_SYSCALL, EX_PARAMS(GEN), \
+	SPRN_SRR0, SPRN_SRR1, 0
+kvm_handler BOOKE_INTERRUPT_GUEST_DBELL, EX_PARAMS(GDBELL), \
+	SPRN_GSRR0, SPRN_GSRR1, 0
+kvm_handler BOOKE_INTERRUPT_GUEST_DBELL_CRIT, EX_PARAMS(CRIT), \
+	SPRN_CSRR0, SPRN_CSRR1, 0
+kvm_handler BOOKE_INTERRUPT_DEBUG, EX_PARAMS(DBG), \
+	SPRN_DSRR0, SPRN_DSRR1, 0
+kvm_handler BOOKE_INTERRUPT_DEBUG, EX_PARAMS(CRIT), \
+	SPRN_CSRR0, SPRN_CSRR1, 0
+kvm_handler BOOKE_INTERRUPT_LRAT_ERROR, EX_PARAMS(GEN), \
+	SPRN_SRR0, SPRN_SRR1, (NEED_EMU | NEED_DEAR | NEED_ESR)
+#else
 /*
  * For input register values, see arch/powerpc/include/asm/kvm_booke_hv_asm.h
  */
 .macro kvm_handler intno srr0, srr1, flags
 _GLOBAL(kvmppc_handler_\intno\()_\srr1)
-	GET_VCPU(r11, r10)
+	PPC_LL	r11, THREAD_KVM_VCPU(r10)
 	PPC_STL r3, VCPU_GPR(R3)(r11)
 	mfspr	r3, SPRN_SPRG_RSCRATCH0
 	PPC_STL	r4, VCPU_GPR(R4)(r11)
@@ -233,7 +313,7 @@ _GLOBAL(kvmppc_handler_\intno\()_\srr1)
 .macro kvm_lvl_handler intno scratch srr0, srr1, flags
 _GLOBAL(kvmppc_handler_\intno\()_\srr1)
 	mfspr	r10, SPRN_SPRG_THREAD
-	GET_VCPU(r11, r10)
+	PPC_LL	r11, THREAD_KVM_VCPU(r10)
 	PPC_STL r3, VCPU_GPR(R3)(r11)
 	mfspr	r3, \scratch
 	PPC_STL	r4, VCPU_GPR(R4)(r11)
@@ -268,7 +348,7 @@ kvm_handler BOOKE_INTERRUPT_INST_STORAGE, SPRN_SRR0, SPRN_SRR1, NEED_ESR
 kvm_handler BOOKE_INTERRUPT_EXTERNAL, SPRN_SRR0, SPRN_SRR1, 0
 kvm_handler BOOKE_INTERRUPT_ALIGNMENT, \
 	SPRN_SRR0, SPRN_SRR1, (NEED_DEAR | NEED_ESR)
-kvm_handler BOOKE_INTERRUPT_PROGRAM, SPRN_SRR0, SPRN_SRR1, NEED_ESR
+kvm_handler BOOKE_INTERRUPT_PROGRAM, SPRN_SRR0, SPRN_SRR1, (NEED_ESR | NEED_EMU)
 kvm_handler BOOKE_INTERRUPT_FP_UNAVAIL, SPRN_SRR0, SPRN_SRR1, 0
 kvm_handler BOOKE_INTERRUPT_SYSCALL, SPRN_SRR0, SPRN_SRR1, 0
 kvm_handler BOOKE_INTERRUPT_AP_UNAVAIL, SPRN_SRR0, SPRN_SRR1, 0
@@ -279,9 +359,6 @@ kvm_lvl_handler BOOKE_INTERRUPT_WATCHDOG, \
 kvm_handler BOOKE_INTERRUPT_DTLB_MISS, \
 	SPRN_SRR0, SPRN_SRR1, (NEED_EMU | NEED_DEAR | NEED_ESR)
 kvm_handler BOOKE_INTERRUPT_ITLB_MISS, SPRN_SRR0, SPRN_SRR1, 0
-kvm_handler BOOKE_INTERRUPT_SPE_UNAVAIL, SPRN_SRR0, SPRN_SRR1, 0
-kvm_handler BOOKE_INTERRUPT_SPE_FP_DATA, SPRN_SRR0, SPRN_SRR1, 0
-kvm_handler BOOKE_INTERRUPT_SPE_FP_ROUND, SPRN_SRR0, SPRN_SRR1, 0
 kvm_handler BOOKE_INTERRUPT_PERFORMANCE_MONITOR, SPRN_SRR0, SPRN_SRR1, 0
 kvm_handler BOOKE_INTERRUPT_DOORBELL, SPRN_SRR0, SPRN_SRR1, 0
 kvm_lvl_handler BOOKE_INTERRUPT_DOORBELL_CRITICAL, \
@@ -295,7 +372,7 @@ kvm_lvl_handler BOOKE_INTERRUPT_DEBUG, \
 	SPRN_SPRG_RSCRATCH_CRIT, SPRN_CSRR0, SPRN_CSRR1, 0
 kvm_lvl_handler BOOKE_INTERRUPT_DEBUG, \
 	SPRN_SPRG_RSCRATCH_DBG, SPRN_DSRR0, SPRN_DSRR1, 0
-
+#endif
 
 /* Registers:
  *  SPRG_SCRATCH0: guest r10
@@ -312,10 +389,18 @@ _GLOBAL(kvmppc_resume_host)
 	PPC_STL	r5, VCPU_LR(r4)
 	mfspr	r7, SPRN_SPRG5
 	stw	r3, VCPU_VRSAVE(r4)
+#ifdef CONFIG_64BIT
+	PPC_LL	r3, PACA_SPRG_VDSO(r13)
+#endif
+	mfspr	r5, SPRN_SPRG9
 	PPC_STD(r6, VCPU_SHARED_SPRG4, r11)
 	mfspr	r8, SPRN_SPRG6
 	PPC_STD(r7, VCPU_SHARED_SPRG5, r11)
 	mfspr	r9, SPRN_SPRG7
+#ifdef CONFIG_64BIT
+	mtspr	SPRN_SPRG_VDSO_WRITE, r3
+#endif
+	PPC_STD(r5, VCPU_SPRG9, r4)
 	PPC_STD(r8, VCPU_SHARED_SPRG6, r11)
 	mfxer	r3
 	PPC_STD(r9, VCPU_SHARED_SPRG7, r11)
@@ -345,6 +430,15 @@ _GLOBAL(kvmppc_resume_host)
 	rlwinm	r3, r3, 0, ~SPRN_EPCR_DMIUH
 	mtspr	SPRN_EPCR, r3
 	isync
+
+#ifdef CONFIG_64BIT
+	/*
+	 * We enter with interrupts disabled in hardware, but
+	 * we need to call RECONCILE_IRQ_STATE to ensure
+	 * that the software state is kept in sync.
+	 */
+	RECONCILE_IRQ_STATE(r3,r5)
+#endif
 
 	/* Switch to kernel stack and jump to handler. */
 	PPC_LL	r3, HOST_RUN(r1)
@@ -541,7 +635,9 @@ lightweight_exit:
 	mtspr	SPRN_SPRG5W, r6
 	PPC_LD(r8, VCPU_SHARED_SPRG7, r11)
 	mtspr	SPRN_SPRG6W, r7
+	PPC_LD(r5, VCPU_SPRG9, r4)
 	mtspr	SPRN_SPRG7W, r8
+	mtspr	SPRN_SPRG9, r5
 
 	/* Load some guest volatiles. */
 	PPC_LL	r3, VCPU_LR(r4)

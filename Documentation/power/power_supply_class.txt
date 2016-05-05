@@ -81,6 +81,9 @@ This defines trickle and fast charges.  For batteries that
 are already charged or discharging, 'n/a' can be displayed (or
 'unknown', if the status is not known).
 
+AUTHENTIC - indicates the power supply (battery or charger) connected
+to the platform is authentic(1) or non authentic(0).
+
 HEALTH - represents health of the battery, values corresponds to
 POWER_SUPPLY_HEALTH_*, defined in battery.h.
 
@@ -98,6 +101,10 @@ VOLTAGE_MAX, VOLTAGE_MIN - same as _DESIGN voltage values except that
 these ones should be used if hardware could only guess (measure and
 retain) the thresholds of a given power supply.
 
+VOLTAGE_BOOT - Reports the voltage measured during boot
+
+CURRENT_BOOT - Reports the current measured during boot
+
 CHARGE_FULL_DESIGN, CHARGE_EMPTY_DESIGN - design charge values, when
 battery considered full/empty.
 
@@ -113,8 +120,21 @@ be negative; there is no empty or full value.  It is only useful for
 relative, time-based measurements.
 
 CONSTANT_CHARGE_CURRENT - constant charge current programmed by charger.
+CONSTANT_CHARGE_CURRENT_MAX - maximum charge current supported by the
+power supply object.
+INPUT_CURRENT_LIMIT - input current limit programmed by charger. Indicates
+the current drawn from a charging source.
+CHARGE_TERM_CURRENT - Charge termination current used to detect the end of charge
+condition.
+
+CALIBRATE - battery or coulomb counter calibration status
 
 CONSTANT_CHARGE_VOLTAGE - constant charge voltage programmed by charger.
+CONSTANT_CHARGE_VOLTAGE_MAX - maximum charge voltage supported by the
+power supply object.
+
+CHARGE_CONTROL_LIMIT - current charge control limit setting
+CHARGE_CONTROL_LIMIT_MAX - maximum charge control limit setting
 
 ENERGY_FULL, ENERGY_EMPTY - same as above but for energy.
 
@@ -125,11 +145,13 @@ CAPACITY_LEVEL - capacity level. This corresponds to
 POWER_SUPPLY_CAPACITY_LEVEL_*.
 
 TEMP - temperature of the power supply.
-TEMP_ALERT_MIN - minimum battery temperature alert value in milli centigrade.
-TEMP_ALERT_MAX - maximum battery temperature alert value in milli centigrade.
+TEMP_ALERT_MIN - minimum battery temperature alert.
+TEMP_ALERT_MAX - maximum battery temperature alert.
 TEMP_AMBIENT - ambient temperature.
-TEMP_AMBIENT_ALERT_MIN - minimum ambient temperature alert value in milli centigrade.
-TEMP_AMBIENT_ALERT_MAX - maximum ambient temperature alert value in milli centigrade.
+TEMP_AMBIENT_ALERT_MIN - minimum ambient temperature alert.
+TEMP_AMBIENT_ALERT_MAX - maximum ambient temperature alert.
+TEMP_MIN - minimum operatable temperature
+TEMP_MAX - maximum operatable temperature
 
 TIME_TO_EMPTY - seconds left for battery to be considered empty (i.e.
 while battery powers a load)

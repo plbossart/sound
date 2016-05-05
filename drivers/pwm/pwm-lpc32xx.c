@@ -24,9 +24,7 @@ struct lpc32xx_pwm_chip {
 	void __iomem *base;
 };
 
-#define PWM_ENABLE	(1 << 31)
-#define PWM_RELOADV(x)	(((x) & 0xFF) << 8)
-#define PWM_DUTY(x)	((x) & 0xFF)
+#define PWM_ENABLE	BIT(31)
 
 #define to_lpc32xx_pwm_chip(_chip) \
 	container_of(_chip, struct lpc32xx_pwm_chip, chip)
@@ -37,24 +35,29 @@ static int lpc32xx_pwm_config(struct pwm_chip *chip, struct pwm_device *pwm,
 	struct lpc32xx_pwm_chip *lpc32xx = to_lpc32xx_pwm_chip(chip);
 	unsigned long long c;
 	int period_cycles, duty_cycles;
+	u32 val;
+	c = clk_get_rate(lpc32xx->clk);
 
-	c = clk_get_rate(lpc32xx->clk) / 256;
-	c = c * period_ns;
-	do_div(c, NSEC_PER_SEC);
+	/* The highest acceptable divisor is 256, which is represented by 0 */
+	period_cycles = div64_u64(c * period_ns,
+			       (unsigned long long)NSEC_PER_SEC * 256);
+	if (!period_cycles || period_cycles > 256)
+		return -ERANGE;
+	if (period_cycles == 256)
+		period_cycles = 0;
 
-	/* Handle high and low extremes */
-	if (c == 0)
-		c = 1;
-	if (c > 255)
-		c = 0; /* 0 set division by 256 */
-	period_cycles = c;
+	/* Compute 256 x #duty/period value and care for corner cases */
+	duty_cycles = div64_u64((unsigned long long)(period_ns - duty_ns) * 256,
+				period_ns);
+	if (!duty_cycles)
+		duty_cycles = 1;
+	if (duty_cycles > 255)
+		duty_cycles = 255;
 
-	c = 256 * duty_ns;
-	do_div(c, period_ns);
-	duty_cycles = c;
-
-	writel(PWM_ENABLE | PWM_RELOADV(period_cycles) | PWM_DUTY(duty_cycles),
-		lpc32xx->base + (pwm->hwpwm << 2));
+	val = readl(lpc32xx->base + (pwm->hwpwm << 2));
+	val &= ~0xFFFF;
+	val |= (period_cycles << 8) | duty_cycles;
+	writel(val, lpc32xx->base + (pwm->hwpwm << 2));
 
 	return 0;
 }
@@ -62,16 +65,30 @@ static int lpc32xx_pwm_config(struct pwm_chip *chip, struct pwm_device *pwm,
 static int lpc32xx_pwm_enable(struct pwm_chip *chip, struct pwm_device *pwm)
 {
 	struct lpc32xx_pwm_chip *lpc32xx = to_lpc32xx_pwm_chip(chip);
+	u32 val;
+	int ret;
 
-	return clk_enable(lpc32xx->clk);
+	ret = clk_prepare_enable(lpc32xx->clk);
+	if (ret)
+		return ret;
+
+	val = readl(lpc32xx->base + (pwm->hwpwm << 2));
+	val |= PWM_ENABLE;
+	writel(val, lpc32xx->base + (pwm->hwpwm << 2));
+
+	return 0;
 }
 
 static void lpc32xx_pwm_disable(struct pwm_chip *chip, struct pwm_device *pwm)
 {
 	struct lpc32xx_pwm_chip *lpc32xx = to_lpc32xx_pwm_chip(chip);
+	u32 val;
 
-	writel(0, lpc32xx->base + (pwm->hwpwm << 2));
-	clk_disable(lpc32xx->clk);
+	val = readl(lpc32xx->base + (pwm->hwpwm << 2));
+	val &= ~PWM_ENABLE;
+	writel(val, lpc32xx->base + (pwm->hwpwm << 2));
+
+	clk_disable_unprepare(lpc32xx->clk);
 }
 
 static const struct pwm_ops lpc32xx_pwm_ops = {
@@ -92,12 +109,9 @@ static int lpc32xx_pwm_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (!res)
-		return -EINVAL;
-
-	lpc32xx->base = devm_request_and_ioremap(&pdev->dev, res);
-	if (!lpc32xx->base)
-		return -EADDRNOTAVAIL;
+	lpc32xx->base = devm_ioremap_resource(&pdev->dev, res);
+	if (IS_ERR(lpc32xx->base))
+		return PTR_ERR(lpc32xx->base);
 
 	lpc32xx->clk = devm_clk_get(&pdev->dev, NULL);
 	if (IS_ERR(lpc32xx->clk))
@@ -105,7 +119,8 @@ static int lpc32xx_pwm_probe(struct platform_device *pdev)
 
 	lpc32xx->chip.dev = &pdev->dev;
 	lpc32xx->chip.ops = &lpc32xx_pwm_ops;
-	lpc32xx->chip.npwm = 2;
+	lpc32xx->chip.npwm = 1;
+	lpc32xx->chip.base = -1;
 
 	ret = pwmchip_add(&lpc32xx->chip);
 	if (ret < 0) {
@@ -118,15 +133,18 @@ static int lpc32xx_pwm_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int __devexit lpc32xx_pwm_remove(struct platform_device *pdev)
+static int lpc32xx_pwm_remove(struct platform_device *pdev)
 {
 	struct lpc32xx_pwm_chip *lpc32xx = platform_get_drvdata(pdev);
+	unsigned int i;
 
-	clk_disable(lpc32xx->clk);
+	for (i = 0; i < lpc32xx->chip.npwm; i++)
+		pwm_disable(&lpc32xx->chip.pwms[i]);
+
 	return pwmchip_remove(&lpc32xx->chip);
 }
 
-static struct of_device_id lpc32xx_pwm_dt_ids[] = {
+static const struct of_device_id lpc32xx_pwm_dt_ids[] = {
 	{ .compatible = "nxp,lpc3220-pwm", },
 	{ /* sentinel */ }
 };
@@ -135,10 +153,10 @@ MODULE_DEVICE_TABLE(of, lpc32xx_pwm_dt_ids);
 static struct platform_driver lpc32xx_pwm_driver = {
 	.driver = {
 		.name = "lpc32xx-pwm",
-		.of_match_table = of_match_ptr(lpc32xx_pwm_dt_ids),
+		.of_match_table = lpc32xx_pwm_dt_ids,
 	},
 	.probe = lpc32xx_pwm_probe,
-	.remove = __devexit_p(lpc32xx_pwm_remove),
+	.remove = lpc32xx_pwm_remove,
 };
 module_platform_driver(lpc32xx_pwm_driver);
 

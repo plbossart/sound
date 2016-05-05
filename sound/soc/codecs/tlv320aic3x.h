@@ -169,6 +169,7 @@
 /* Audio serial data interface control register A bits */
 #define BIT_CLK_MASTER          0x80
 #define WORD_CLK_MASTER         0x40
+#define DOUT_TRISTATE		0x20
 
 /* Codec Datapath setup register 7 */
 #define FSREF_44100		(1 << 7)
@@ -237,6 +238,10 @@
 #define DEFAULT_VOL     INVERT_VOL(0x50)
 /* Default input volume */
 #define DEFAULT_GAIN    0x20
+
+/* MICBIAS Control Register */
+#define MICBIAS_LEVEL_SHIFT	(6)
+#define MICBIAS_LEVEL_MASK	(3 << 6)
 
 /* headset detection / button API */
 

@@ -24,6 +24,7 @@
 #include <linux/sched.h>
 #include <linux/slab.h>
 #include <linux/kthread.h>
+#include "base.h"
 
 static struct task_struct *thread;
 
@@ -41,6 +42,8 @@ static struct req {
 	int err;
 	const char *name;
 	umode_t mode;	/* 0 => delete */
+	kuid_t uid;
+	kgid_t gid;
 	struct device *dev;
 } *requests;
 
@@ -85,7 +88,9 @@ int devtmpfs_create_node(struct device *dev)
 		return 0;
 
 	req.mode = 0;
-	req.name = device_get_devnode(dev, &req.mode, &tmp);
+	req.uid = GLOBAL_ROOT_UID;
+	req.gid = GLOBAL_ROOT_GID;
+	req.name = device_get_devnode(dev, &req.mode, &req.uid, &req.gid, &tmp);
 	if (!req.name)
 		return -ENOMEM;
 
@@ -121,7 +126,7 @@ int devtmpfs_delete_node(struct device *dev)
 	if (!thread)
 		return 0;
 
-	req.name = device_get_devnode(dev, NULL, &tmp);
+	req.name = device_get_devnode(dev, NULL, NULL, NULL, &tmp);
 	if (!req.name)
 		return -ENOMEM;
 
@@ -148,14 +153,14 @@ static int dev_mkdir(const char *name, umode_t mode)
 	struct path path;
 	int err;
 
-	dentry = kern_path_create(AT_FDCWD, name, &path, 1);
+	dentry = kern_path_create(AT_FDCWD, name, &path, LOOKUP_DIRECTORY);
 	if (IS_ERR(dentry))
 		return PTR_ERR(dentry);
 
-	err = vfs_mkdir(path.dentry->d_inode, dentry, mode);
+	err = vfs_mkdir(d_inode(path.dentry), dentry, mode);
 	if (!err)
 		/* mark as kernel-created inode */
-		dentry->d_inode->i_private = &thread;
+		d_inode(dentry)->i_private = &thread;
 	done_path_create(&path, dentry);
 	return err;
 }
@@ -187,7 +192,8 @@ static int create_path(const char *nodepath)
 	return err;
 }
 
-static int handle_create(const char *nodename, umode_t mode, struct device *dev)
+static int handle_create(const char *nodename, umode_t mode, kuid_t uid,
+			 kgid_t gid, struct device *dev)
 {
 	struct dentry *dentry;
 	struct path path;
@@ -201,20 +207,20 @@ static int handle_create(const char *nodename, umode_t mode, struct device *dev)
 	if (IS_ERR(dentry))
 		return PTR_ERR(dentry);
 
-	err = vfs_mknod(path.dentry->d_inode,
-			dentry, mode, dev->devt);
+	err = vfs_mknod(d_inode(path.dentry), dentry, mode, dev->devt);
 	if (!err) {
 		struct iattr newattrs;
 
-		/* fixup possibly umasked mode */
 		newattrs.ia_mode = mode;
-		newattrs.ia_valid = ATTR_MODE;
-		mutex_lock(&dentry->d_inode->i_mutex);
-		notify_change(dentry, &newattrs);
-		mutex_unlock(&dentry->d_inode->i_mutex);
+		newattrs.ia_uid = uid;
+		newattrs.ia_gid = gid;
+		newattrs.ia_valid = ATTR_MODE|ATTR_UID|ATTR_GID;
+		inode_lock(d_inode(dentry));
+		notify_change(dentry, &newattrs, NULL);
+		inode_unlock(d_inode(dentry));
 
 		/* mark as kernel-created inode */
-		dentry->d_inode->i_private = &thread;
+		d_inode(dentry)->i_private = &thread;
 	}
 	done_path_create(&path, dentry);
 	return err;
@@ -229,16 +235,16 @@ static int dev_rmdir(const char *name)
 	dentry = kern_path_locked(name, &parent);
 	if (IS_ERR(dentry))
 		return PTR_ERR(dentry);
-	if (dentry->d_inode) {
-		if (dentry->d_inode->i_private == &thread)
-			err = vfs_rmdir(parent.dentry->d_inode, dentry);
+	if (d_really_is_positive(dentry)) {
+		if (d_inode(dentry)->i_private == &thread)
+			err = vfs_rmdir(d_inode(parent.dentry), dentry);
 		else
 			err = -EPERM;
 	} else {
 		err = -ENOENT;
 	}
 	dput(dentry);
-	mutex_unlock(&parent.dentry->d_inode->i_mutex);
+	inode_unlock(d_inode(parent.dentry));
 	path_put(&parent);
 	return err;
 }
@@ -293,31 +299,32 @@ static int handle_remove(const char *nodename, struct device *dev)
 {
 	struct path parent;
 	struct dentry *dentry;
-	int deleted = 1;
+	int deleted = 0;
 	int err;
 
 	dentry = kern_path_locked(nodename, &parent);
 	if (IS_ERR(dentry))
 		return PTR_ERR(dentry);
 
-	if (dentry->d_inode) {
+	if (d_really_is_positive(dentry)) {
 		struct kstat stat;
-		err = vfs_getattr(parent.mnt, dentry, &stat);
-		if (!err && dev_mynode(dev, dentry->d_inode, &stat)) {
+		struct path p = {.mnt = parent.mnt, .dentry = dentry};
+		err = vfs_getattr(&p, &stat);
+		if (!err && dev_mynode(dev, d_inode(dentry), &stat)) {
 			struct iattr newattrs;
 			/*
 			 * before unlinking this node, reset permissions
 			 * of possible references like hardlinks
 			 */
-			newattrs.ia_uid = 0;
-			newattrs.ia_gid = 0;
+			newattrs.ia_uid = GLOBAL_ROOT_UID;
+			newattrs.ia_gid = GLOBAL_ROOT_GID;
 			newattrs.ia_mode = stat.mode & ~0777;
 			newattrs.ia_valid =
 				ATTR_UID|ATTR_GID|ATTR_MODE;
-			mutex_lock(&dentry->d_inode->i_mutex);
-			notify_change(dentry, &newattrs);
-			mutex_unlock(&dentry->d_inode->i_mutex);
-			err = vfs_unlink(parent.dentry->d_inode, dentry);
+			inode_lock(d_inode(dentry));
+			notify_change(dentry, &newattrs, NULL);
+			inode_unlock(d_inode(dentry));
+			err = vfs_unlink(d_inode(parent.dentry), dentry, NULL);
 			if (!err || err == -ENOENT)
 				deleted = 1;
 		}
@@ -325,7 +332,7 @@ static int handle_remove(const char *nodename, struct device *dev)
 		err = -ENOENT;
 	}
 	dput(dentry);
-	mutex_unlock(&parent.dentry->d_inode->i_mutex);
+	inode_unlock(d_inode(parent.dentry));
 
 	path_put(&parent);
 	if (deleted && strchr(nodename, '/'))
@@ -357,10 +364,11 @@ int devtmpfs_mount(const char *mntdir)
 
 static DECLARE_COMPLETION(setup_done);
 
-static int handle(const char *name, umode_t mode, struct device *dev)
+static int handle(const char *name, umode_t mode, kuid_t uid, kgid_t gid,
+		  struct device *dev)
 {
 	if (mode)
-		return handle_create(name, mode, dev);
+		return handle_create(name, mode, uid, gid, dev);
 	else
 		return handle_remove(name, dev);
 }
@@ -386,7 +394,8 @@ static int devtmpfsd(void *p)
 			spin_unlock(&req_lock);
 			while (req) {
 				struct req *next = req->next;
-				req->err = handle(req->name, req->mode, req->dev);
+				req->err = handle(req->name, req->mode,
+						  req->uid, req->gid, req->dev);
 				complete(&req->done);
 				req = next;
 			}

@@ -27,6 +27,8 @@
 #include <linux/net.h>
 #include <linux/delay.h>
 #include <linux/freezer.h>
+#include <linux/tcp.h>
+#include <linux/highmem.h>
 #include <asm/uaccess.h>
 #include <asm/processor.h>
 #include <linux/mempool.h>
@@ -47,7 +49,7 @@ AllocMidQEntry(const struct smb_hdr *smb_buffer, struct TCP_Server_Info *server)
 	struct mid_q_entry *temp;
 
 	if (server == NULL) {
-		cERROR(1, "Null TCP session in AllocMidQEntry");
+		cifs_dbg(VFS, "Null TCP session in AllocMidQEntry\n");
 		return NULL;
 	}
 
@@ -56,10 +58,10 @@ AllocMidQEntry(const struct smb_hdr *smb_buffer, struct TCP_Server_Info *server)
 		return temp;
 	else {
 		memset(temp, 0, sizeof(struct mid_q_entry));
-		temp->mid = smb_buffer->Mid;	/* always LE */
+		temp->mid = get_mid(smb_buffer);
 		temp->pid = current->pid;
 		temp->command = cpu_to_le16(smb_buffer->Command);
-		cFYI(1, "For smb_command %d", smb_buffer->Command);
+		cifs_dbg(FYI, "For smb_command %d\n", smb_buffer->Command);
 	/*	do_gettimeofday(&temp->when_sent);*/ /* easier to use jiffies */
 		/* when mid allocated can be before when sent */
 		temp->when_alloc = jiffies;
@@ -97,9 +99,9 @@ DeleteMidQEntry(struct mid_q_entry *midEntry)
 	   something is wrong, unless it is quite a slow link or server */
 	if ((now - midEntry->when_alloc) > HZ) {
 		if ((cifsFYI & CIFS_TIMER) && (midEntry->command != command)) {
-			printk(KERN_DEBUG " CIFS slow rsp: cmd %d mid %llu",
+			pr_debug(" CIFS slow rsp: cmd %d mid %llu",
 			       midEntry->command, midEntry->mid);
-			printk(" A: 0x%lx S: 0x%lx R: 0x%lx\n",
+			pr_info(" A: 0x%lx S: 0x%lx R: 0x%lx\n",
 			       now - midEntry->when_alloc,
 			       now - midEntry->when_sent,
 			       now - midEntry->when_received);
@@ -109,8 +111,8 @@ DeleteMidQEntry(struct mid_q_entry *midEntry)
 	mempool_free(midEntry, cifs_mid_poolp);
 }
 
-static void
-delete_mid(struct mid_q_entry *mid)
+void
+cifs_delete_mid(struct mid_q_entry *mid)
 {
 	spin_lock(&GlobalMid_Lock);
 	list_del(&mid->qhead);
@@ -119,20 +121,28 @@ delete_mid(struct mid_q_entry *mid)
 	DeleteMidQEntry(mid);
 }
 
+/*
+ * smb_send_kvec - send an array of kvecs to the server
+ * @server:	Server to send the data to
+ * @iov:	Pointer to array of kvecs
+ * @n_vec:	length of kvec array
+ * @sent:	amount of data sent on socket is stored here
+ *
+ * Our basic "send data to server" function. Should be called with srv_mutex
+ * held. The caller is responsible for handling the results.
+ */
 static int
-smb_sendv(struct TCP_Server_Info *server, struct kvec *iov, int n_vec)
+smb_send_kvec(struct TCP_Server_Info *server, struct kvec *iov, size_t n_vec,
+		size_t *sent)
 {
 	int rc = 0;
 	int i = 0;
 	struct msghdr smb_msg;
-	unsigned int len = iov[0].iov_len;
-	unsigned int total_len;
-	int first_vec = 0;
-	unsigned int smb_buf_length = get_rfc1002_length(iov[0].iov_base);
+	unsigned int remaining;
+	size_t first_vec = 0;
 	struct socket *ssocket = server->ssocket;
 
-	if (ssocket == NULL)
-		return -ENOTSOCK; /* BB eventually add reconnect code here */
+	*sent = 0;
 
 	smb_msg.msg_name = (struct sockaddr *) &server->dstaddr;
 	smb_msg.msg_namelen = sizeof(struct sockaddr);
@@ -143,64 +153,70 @@ smb_sendv(struct TCP_Server_Info *server, struct kvec *iov, int n_vec)
 	else
 		smb_msg.msg_flags = MSG_NOSIGNAL;
 
-	total_len = 0;
+	remaining = 0;
 	for (i = 0; i < n_vec; i++)
-		total_len += iov[i].iov_len;
-
-	cFYI(1, "Sending smb:  total_len %d", total_len);
-	dump_smb(iov[0].iov_base, len);
+		remaining += iov[i].iov_len;
 
 	i = 0;
-	while (total_len) {
+	while (remaining) {
+		/*
+		 * If blocking send, we try 3 times, since each can block
+		 * for 5 seconds. For nonblocking  we have to try more
+		 * but wait increasing amounts of time allowing time for
+		 * socket to clear.  The overall time we wait in either
+		 * case to send on the socket is about 15 seconds.
+		 * Similarly we wait for 15 seconds for a response from
+		 * the server in SendReceive[2] for the server to send
+		 * a response back for most types of requests (except
+		 * SMB Write past end of file which can be slow, and
+		 * blocking lock operations). NFS waits slightly longer
+		 * than CIFS, but this can make it take longer for
+		 * nonresponsive servers to be detected and 15 seconds
+		 * is more than enough time for modern networks to
+		 * send a packet.  In most cases if we fail to send
+		 * after the retries we will kill the socket and
+		 * reconnect which may clear the network problem.
+		 */
 		rc = kernel_sendmsg(ssocket, &smb_msg, &iov[first_vec],
-				    n_vec - first_vec, total_len);
-		if ((rc == -ENOSPC) || (rc == -EAGAIN)) {
+				    n_vec - first_vec, remaining);
+		if (rc == -EAGAIN) {
 			i++;
-			/*
-			 * If blocking send we try 3 times, since each can block
-			 * for 5 seconds. For nonblocking  we have to try more
-			 * but wait increasing amounts of time allowing time for
-			 * socket to clear.  The overall time we wait in either
-			 * case to send on the socket is about 15 seconds.
-			 * Similarly we wait for 15 seconds for a response from
-			 * the server in SendReceive[2] for the server to send
-			 * a response back for most types of requests (except
-			 * SMB Write past end of file which can be slow, and
-			 * blocking lock operations). NFS waits slightly longer
-			 * than CIFS, but this can make it take longer for
-			 * nonresponsive servers to be detected and 15 seconds
-			 * is more than enough time for modern networks to
-			 * send a packet.  In most cases if we fail to send
-			 * after the retries we will kill the socket and
-			 * reconnect which may clear the network problem.
-			 */
-			if ((i >= 14) || (!server->noblocksnd && (i > 2))) {
-				cERROR(1, "sends on sock %p stuck for 15 seconds",
-				    ssocket);
+			if (i >= 14 || (!server->noblocksnd && (i > 2))) {
+				cifs_dbg(VFS, "sends on sock %p stuck for 15 seconds\n",
+					 ssocket);
 				rc = -EAGAIN;
 				break;
 			}
 			msleep(1 << i);
 			continue;
 		}
+
 		if (rc < 0)
 			break;
 
-		if (rc == total_len) {
-			total_len = 0;
-			break;
-		} else if (rc > total_len) {
-			cERROR(1, "sent %d requested %d", rc, total_len);
+		/* send was at least partially successful */
+		*sent += rc;
+
+		if (rc == remaining) {
+			remaining = 0;
 			break;
 		}
+
+		if (rc > remaining) {
+			cifs_dbg(VFS, "sent %d requested %d\n", rc, remaining);
+			break;
+		}
+
 		if (rc == 0) {
 			/* should never happen, letting socket clear before
 			   retrying is our only obvious option here */
-			cERROR(1, "tcp sent no data");
+			cifs_dbg(VFS, "tcp sent no data\n");
 			msleep(500);
 			continue;
 		}
-		total_len -= rc;
+
+		remaining -= rc;
+
 		/* the line below resets i */
 		for (i = first_vec; i < n_vec; i++) {
 			if (iov[i].iov_len) {
@@ -215,25 +231,148 @@ smb_sendv(struct TCP_Server_Info *server, struct kvec *iov, int n_vec)
 				}
 			}
 		}
+
 		i = 0; /* in case we get ENOSPC on the next send */
+		rc = 0;
+	}
+	return rc;
+}
+
+/**
+ * rqst_page_to_kvec - Turn a slot in the smb_rqst page array into a kvec
+ * @rqst: pointer to smb_rqst
+ * @idx: index into the array of the page
+ * @iov: pointer to struct kvec that will hold the result
+ *
+ * Helper function to convert a slot in the rqst->rq_pages array into a kvec.
+ * The page will be kmapped and the address placed into iov_base. The length
+ * will then be adjusted according to the ptailoff.
+ */
+void
+cifs_rqst_page_to_kvec(struct smb_rqst *rqst, unsigned int idx,
+			struct kvec *iov)
+{
+	/*
+	 * FIXME: We could avoid this kmap altogether if we used
+	 * kernel_sendpage instead of kernel_sendmsg. That will only
+	 * work if signing is disabled though as sendpage inlines the
+	 * page directly into the fraglist. If userspace modifies the
+	 * page after we calculate the signature, then the server will
+	 * reject it and may break the connection. kernel_sendmsg does
+	 * an extra copy of the data and avoids that issue.
+	 */
+	iov->iov_base = kmap(rqst->rq_pages[idx]);
+
+	/* if last page, don't send beyond this offset into page */
+	if (idx == (rqst->rq_npages - 1))
+		iov->iov_len = rqst->rq_tailsz;
+	else
+		iov->iov_len = rqst->rq_pagesz;
+}
+
+static unsigned long
+rqst_len(struct smb_rqst *rqst)
+{
+	unsigned int i;
+	struct kvec *iov = rqst->rq_iov;
+	unsigned long buflen = 0;
+
+	/* total up iov array first */
+	for (i = 0; i < rqst->rq_nvec; i++)
+		buflen += iov[i].iov_len;
+
+	/* add in the page array if there is one */
+	if (rqst->rq_npages) {
+		buflen += rqst->rq_pagesz * (rqst->rq_npages - 1);
+		buflen += rqst->rq_tailsz;
 	}
 
+	return buflen;
+}
+
+static int
+smb_send_rqst(struct TCP_Server_Info *server, struct smb_rqst *rqst)
+{
+	int rc;
+	struct kvec *iov = rqst->rq_iov;
+	int n_vec = rqst->rq_nvec;
+	unsigned int smb_buf_length = get_rfc1002_length(iov[0].iov_base);
+	unsigned long send_length;
+	unsigned int i;
+	size_t total_len = 0, sent;
+	struct socket *ssocket = server->ssocket;
+	int val = 1;
+
+	if (ssocket == NULL)
+		return -ENOTSOCK;
+
+	/* sanity check send length */
+	send_length = rqst_len(rqst);
+	if (send_length != smb_buf_length + 4) {
+		WARN(1, "Send length mismatch(send_length=%lu smb_buf_length=%u)\n",
+			send_length, smb_buf_length);
+		return -EIO;
+	}
+
+	cifs_dbg(FYI, "Sending smb: smb_len=%u\n", smb_buf_length);
+	dump_smb(iov[0].iov_base, iov[0].iov_len);
+
+	/* cork the socket */
+	kernel_setsockopt(ssocket, SOL_TCP, TCP_CORK,
+				(char *)&val, sizeof(val));
+
+	rc = smb_send_kvec(server, iov, n_vec, &sent);
+	if (rc < 0)
+		goto uncork;
+
+	total_len += sent;
+
+	/* now walk the page array and send each page in it */
+	for (i = 0; i < rqst->rq_npages; i++) {
+		struct kvec p_iov;
+
+		cifs_rqst_page_to_kvec(rqst, i, &p_iov);
+		rc = smb_send_kvec(server, &p_iov, 1, &sent);
+		kunmap(rqst->rq_pages[i]);
+		if (rc < 0)
+			break;
+
+		total_len += sent;
+	}
+
+uncork:
+	/* uncork it */
+	val = 0;
+	kernel_setsockopt(ssocket, SOL_TCP, TCP_CORK,
+				(char *)&val, sizeof(val));
+
 	if ((total_len > 0) && (total_len != smb_buf_length + 4)) {
-		cFYI(1, "partial send (%d remaining), terminating session",
-			total_len);
-		/* If we have only sent part of an SMB then the next SMB
-		   could be taken as the remainder of this one.  We need
-		   to kill the socket so the server throws away the partial
-		   SMB */
+		cifs_dbg(FYI, "partial send (wanted=%u sent=%zu): terminating session\n",
+			 smb_buf_length + 4, total_len);
+		/*
+		 * If we have only sent part of an SMB then the next SMB could
+		 * be taken as the remainder of this one. We need to kill the
+		 * socket so the server throws away the partial SMB
+		 */
 		server->tcpStatus = CifsNeedReconnect;
 	}
 
 	if (rc < 0 && rc != -EINTR)
-		cERROR(1, "Error %d sending data on socket to server", rc);
+		cifs_dbg(VFS, "Error %d sending data on socket to server\n",
+			 rc);
 	else
 		rc = 0;
 
 	return rc;
+}
+
+static int
+smb_sendv(struct TCP_Server_Info *server, struct kvec *iov, int n_vec)
+{
+	struct smb_rqst rqst = { .rq_iov = iov,
+				 .rq_nvec = n_vec };
+
+	return smb_send_rqst(server, &rqst);
 }
 
 int
@@ -300,8 +439,22 @@ static int
 wait_for_free_request(struct TCP_Server_Info *server, const int timeout,
 		      const int optype)
 {
-	return wait_for_free_credits(server, timeout,
-				server->ops->get_credits_field(server, optype));
+	int *val;
+
+	val = server->ops->get_credits_field(server, optype);
+	/* Since an echo is already inflight, no need to wait to send another */
+	if (*val <= 0 && optype == CIFS_ECHO_OP)
+		return -EAGAIN;
+	return wait_for_free_credits(server, timeout, val);
+}
+
+int
+cifs_wait_mtu_credits(struct TCP_Server_Info *server, unsigned int size,
+		      unsigned int *num, unsigned int *credits)
+{
+	*num = size;
+	*credits = 0;
+	return 0;
 }
 
 static int allocate_mid(struct cifs_ses *ses, struct smb_hdr *in_buf,
@@ -312,17 +465,24 @@ static int allocate_mid(struct cifs_ses *ses, struct smb_hdr *in_buf,
 	}
 
 	if (ses->server->tcpStatus == CifsNeedReconnect) {
-		cFYI(1, "tcp session dead - return to caller to retry");
+		cifs_dbg(FYI, "tcp session dead - return to caller to retry\n");
 		return -EAGAIN;
 	}
 
-	if (ses->status != CifsGood) {
-		/* check if SMB session is bad because we are setting it up */
+	if (ses->status == CifsNew) {
 		if ((in_buf->Command != SMB_COM_SESSION_SETUP_ANDX) &&
 			(in_buf->Command != SMB_COM_NEGOTIATE))
 			return -EAGAIN;
 		/* else ok - we are setting up session */
 	}
+
+	if (ses->status == CifsExiting) {
+		/* check if SMB session is bad because we are setting it up */
+		if (in_buf->Command != SMB_COM_LOGOFF_ANDX)
+			return -EAGAIN;
+		/* else ok - we are shutting down session */
+	}
+
 	*ppmidQ = AllocMidQEntry(in_buf, ses->server);
 	if (*ppmidQ == NULL)
 		return -ENOMEM;
@@ -337,7 +497,7 @@ wait_for_response(struct TCP_Server_Info *server, struct mid_q_entry *midQ)
 {
 	int error;
 
-	error = wait_event_freezekillable(server->response_q,
+	error = wait_event_freezekillable_unsafe(server->response_q,
 				    midQ->mid_state != MID_REQUEST_SUBMITTED);
 	if (error < 0)
 		return -ERESTARTSYS;
@@ -345,30 +505,28 @@ wait_for_response(struct TCP_Server_Info *server, struct mid_q_entry *midQ)
 	return 0;
 }
 
-int
-cifs_setup_async_request(struct TCP_Server_Info *server, struct kvec *iov,
-			 unsigned int nvec, struct mid_q_entry **ret_mid)
+struct mid_q_entry *
+cifs_setup_async_request(struct TCP_Server_Info *server, struct smb_rqst *rqst)
 {
 	int rc;
-	struct smb_hdr *hdr = (struct smb_hdr *)iov[0].iov_base;
+	struct smb_hdr *hdr = (struct smb_hdr *)rqst->rq_iov[0].iov_base;
 	struct mid_q_entry *mid;
 
 	/* enable signing if server requires it */
-	if (server->sec_mode & (SECMODE_SIGN_REQUIRED | SECMODE_SIGN_ENABLED))
+	if (server->sign)
 		hdr->Flags2 |= SMBFLG2_SECURITY_SIGNATURE;
 
 	mid = AllocMidQEntry(hdr, server);
 	if (mid == NULL)
-		return -ENOMEM;
+		return ERR_PTR(-ENOMEM);
 
-	rc = cifs_sign_smbv(iov, nvec, server, &mid->sequence_number);
+	rc = cifs_sign_rqst(rqst, server, &mid->sequence_number);
 	if (rc) {
 		DeleteMidQEntry(mid);
-		return rc;
+		return ERR_PTR(rc);
 	}
 
-	*ret_mid = mid;
-	return 0;
+	return mid;
 }
 
 /*
@@ -376,27 +534,30 @@ cifs_setup_async_request(struct TCP_Server_Info *server, struct kvec *iov,
  * the result. Caller is responsible for dealing with timeouts.
  */
 int
-cifs_call_async(struct TCP_Server_Info *server, struct kvec *iov,
-		unsigned int nvec, mid_receive_t *receive,
-		mid_callback_t *callback, void *cbdata, const int flags)
+cifs_call_async(struct TCP_Server_Info *server, struct smb_rqst *rqst,
+		mid_receive_t *receive, mid_callback_t *callback,
+		void *cbdata, const int flags)
 {
 	int rc, timeout, optype;
 	struct mid_q_entry *mid;
+	unsigned int credits = 0;
 
 	timeout = flags & CIFS_TIMEOUT_MASK;
 	optype = flags & CIFS_OP_MASK;
 
-	rc = wait_for_free_request(server, timeout, optype);
-	if (rc)
-		return rc;
+	if ((flags & CIFS_HAS_CREDITS) == 0) {
+		rc = wait_for_free_request(server, timeout, optype);
+		if (rc)
+			return rc;
+		credits = 1;
+	}
 
 	mutex_lock(&server->srv_mutex);
-	rc = server->ops->setup_async_request(server, iov, nvec, &mid);
-	if (rc) {
+	mid = server->ops->setup_async_request(server, rqst);
+	if (IS_ERR(mid)) {
 		mutex_unlock(&server->srv_mutex);
-		add_credits(server, 1, optype);
-		wake_up(&server->request_q);
-		return rc;
+		add_credits_and_wake_if(server, credits, optype);
+		return PTR_ERR(mid);
 	}
 
 	mid->receive = receive;
@@ -411,17 +572,21 @@ cifs_call_async(struct TCP_Server_Info *server, struct kvec *iov,
 
 
 	cifs_in_send_inc(server);
-	rc = smb_sendv(server, iov, nvec);
+	rc = smb_send_rqst(server, rqst);
 	cifs_in_send_dec(server);
 	cifs_save_when_sent(mid);
+
+	if (rc < 0) {
+		server->sequence_number -= 2;
+		cifs_delete_mid(mid);
+	}
+
 	mutex_unlock(&server->srv_mutex);
 
 	if (rc == 0)
 		return 0;
 
-	delete_mid(mid);
-	add_credits(server, 1, optype);
-	wake_up(&server->request_q);
+	add_credits_and_wake_if(server, credits, optype);
 	return rc;
 }
 
@@ -446,7 +611,7 @@ SendReceiveNoRsp(const unsigned int xid, struct cifs_ses *ses,
 	iov[0].iov_len = get_rfc1002_length(in_buf) + 4;
 	flags |= CIFS_NO_RESP;
 	rc = SendReceive2(xid, ses, iov, 1, &resp_buf_type, flags);
-	cFYI(DBG2, "SendRcvNoRsp flags %d rc %d", flags, rc);
+	cifs_dbg(NOISY, "SendRcvNoRsp flags %d rc %d\n", flags, rc);
 
 	return rc;
 }
@@ -456,8 +621,8 @@ cifs_sync_mid_result(struct mid_q_entry *mid, struct TCP_Server_Info *server)
 {
 	int rc = 0;
 
-	cFYI(1, "%s: cmd=%d mid=%llu state=%d", __func__,
-	     le16_to_cpu(mid->command), mid->mid, mid->mid_state);
+	cifs_dbg(FYI, "%s: cmd=%d mid=%llu state=%d\n",
+		 __func__, le16_to_cpu(mid->command), mid->mid, mid->mid_state);
 
 	spin_lock(&GlobalMid_Lock);
 	switch (mid->mid_state) {
@@ -475,13 +640,15 @@ cifs_sync_mid_result(struct mid_q_entry *mid, struct TCP_Server_Info *server)
 		break;
 	default:
 		list_del_init(&mid->qhead);
-		cERROR(1, "%s: invalid mid state mid=%llu state=%d", __func__,
-		       mid->mid, mid->mid_state);
+		cifs_dbg(VFS, "%s: invalid mid state mid=%llu state=%d\n",
+			 __func__, mid->mid, mid->mid_state);
 		rc = -EIO;
 	}
 	spin_unlock(&GlobalMid_Lock);
 
+	mutex_lock(&server->srv_mutex);
 	DeleteMidQEntry(mid);
+	mutex_unlock(&server->srv_mutex);
 	return rc;
 }
 
@@ -501,37 +668,42 @@ cifs_check_receive(struct mid_q_entry *mid, struct TCP_Server_Info *server,
 	dump_smb(mid->resp_buf, min_t(u32, 92, len));
 
 	/* convert the length into a more usable form */
-	if (server->sec_mode & (SECMODE_SIGN_REQUIRED | SECMODE_SIGN_ENABLED)) {
+	if (server->sign) {
 		struct kvec iov;
+		int rc = 0;
+		struct smb_rqst rqst = { .rq_iov = &iov,
+					 .rq_nvec = 1 };
 
 		iov.iov_base = mid->resp_buf;
 		iov.iov_len = len;
 		/* FIXME: add code to kill session */
-		if (cifs_verify_signature(&iov, 1, server,
-					  mid->sequence_number + 1) != 0)
-			cERROR(1, "Unexpected SMB signature");
+		rc = cifs_verify_signature(&rqst, server,
+					   mid->sequence_number);
+		if (rc)
+			cifs_dbg(VFS, "SMB signature verification returned error = %d\n",
+				 rc);
 	}
 
 	/* BB special case reconnect tid and uid here? */
 	return map_smb_to_linux_error(mid->resp_buf, log_error);
 }
 
-int
-cifs_setup_request(struct cifs_ses *ses, struct kvec *iov,
-		   unsigned int nvec, struct mid_q_entry **ret_mid)
+struct mid_q_entry *
+cifs_setup_request(struct cifs_ses *ses, struct smb_rqst *rqst)
 {
 	int rc;
-	struct smb_hdr *hdr = (struct smb_hdr *)iov[0].iov_base;
+	struct smb_hdr *hdr = (struct smb_hdr *)rqst->rq_iov[0].iov_base;
 	struct mid_q_entry *mid;
 
 	rc = allocate_mid(ses, hdr, &mid);
 	if (rc)
-		return rc;
-	rc = cifs_sign_smbv(iov, nvec, ses->server, &mid->sequence_number);
-	if (rc)
-		delete_mid(mid);
-	*ret_mid = mid;
-	return rc;
+		return ERR_PTR(rc);
+	rc = cifs_sign_rqst(rqst, ses->server, &mid->sequence_number);
+	if (rc) {
+		cifs_delete_mid(mid);
+		return ERR_PTR(rc);
+	}
+	return mid;
 }
 
 int
@@ -544,6 +716,8 @@ SendReceive2(const unsigned int xid, struct cifs_ses *ses,
 	struct mid_q_entry *midQ;
 	char *buf = iov[0].iov_base;
 	unsigned int credits = 1;
+	struct smb_rqst rqst = { .rq_iov = iov,
+				 .rq_nvec = n_vec };
 
 	timeout = flags & CIFS_TIMEOUT_MASK;
 	optype = flags & CIFS_OP_MASK;
@@ -552,7 +726,7 @@ SendReceive2(const unsigned int xid, struct cifs_ses *ses,
 
 	if ((ses == NULL) || (ses->server == NULL)) {
 		cifs_small_buf_release(buf);
-		cERROR(1, "Null session");
+		cifs_dbg(VFS, "Null session\n");
 		return -EIO;
 	}
 
@@ -581,13 +755,13 @@ SendReceive2(const unsigned int xid, struct cifs_ses *ses,
 
 	mutex_lock(&ses->server->srv_mutex);
 
-	rc = ses->server->ops->setup_request(ses, iov, n_vec, &midQ);
-	if (rc) {
+	midQ = ses->server->ops->setup_request(ses, &rqst);
+	if (IS_ERR(midQ)) {
 		mutex_unlock(&ses->server->srv_mutex);
 		cifs_small_buf_release(buf);
 		/* Update # of requests on wire to server */
 		add_credits(ses->server, 1, optype);
-		return rc;
+		return PTR_ERR(midQ);
 	}
 
 	midQ->mid_state = MID_REQUEST_SUBMITTED;
@@ -596,6 +770,8 @@ SendReceive2(const unsigned int xid, struct cifs_ses *ses,
 	cifs_in_send_dec(ses->server);
 	cifs_save_when_sent(midQ);
 
+	if (rc < 0)
+		ses->server->sequence_number -= 2;
 	mutex_unlock(&ses->server->srv_mutex);
 
 	if (rc < 0) {
@@ -632,7 +808,7 @@ SendReceive2(const unsigned int xid, struct cifs_ses *ses,
 
 	if (!midQ->resp_buf || midQ->mid_state != MID_RESPONSE_RECEIVED) {
 		rc = -EIO;
-		cFYI(1, "Bad MID state?");
+		cifs_dbg(FYI, "Bad MID state?\n");
 		goto out;
 	}
 
@@ -649,11 +825,11 @@ SendReceive2(const unsigned int xid, struct cifs_ses *ses,
 	rc = ses->server->ops->check_receive(midQ, ses->server,
 					     flags & CIFS_LOG_ERROR);
 
-	/* mark it so buf will not be freed by delete_mid */
+	/* mark it so buf will not be freed by cifs_delete_mid */
 	if ((flags & CIFS_NO_RESP) == 0)
 		midQ->resp_buf = NULL;
 out:
-	delete_mid(midQ);
+	cifs_delete_mid(midQ);
 	add_credits(ses->server, credits, optype);
 
 	return rc;
@@ -668,11 +844,11 @@ SendReceive(const unsigned int xid, struct cifs_ses *ses,
 	struct mid_q_entry *midQ;
 
 	if (ses == NULL) {
-		cERROR(1, "Null smb session");
+		cifs_dbg(VFS, "Null smb session\n");
 		return -EIO;
 	}
 	if (ses->server == NULL) {
-		cERROR(1, "Null tcp session");
+		cifs_dbg(VFS, "Null tcp session\n");
 		return -EIO;
 	}
 
@@ -685,8 +861,8 @@ SendReceive(const unsigned int xid, struct cifs_ses *ses,
 
 	if (be32_to_cpu(in_buf->smb_buf_length) > CIFSMaxBufSize +
 			MAX_CIFS_HDR_SIZE - 4) {
-		cERROR(1, "Illegal length, greater than maximum frame, %d",
-			   be32_to_cpu(in_buf->smb_buf_length));
+		cifs_dbg(VFS, "Illegal length, greater than maximum frame, %d\n",
+			 be32_to_cpu(in_buf->smb_buf_length));
 		return -EIO;
 	}
 
@@ -720,6 +896,10 @@ SendReceive(const unsigned int xid, struct cifs_ses *ses,
 	rc = smb_send(ses->server, in_buf, be32_to_cpu(in_buf->smb_buf_length));
 	cifs_in_send_dec(ses->server);
 	cifs_save_when_sent(midQ);
+
+	if (rc < 0)
+		ses->server->sequence_number -= 2;
+
 	mutex_unlock(&ses->server->srv_mutex);
 
 	if (rc < 0)
@@ -751,7 +931,7 @@ SendReceive(const unsigned int xid, struct cifs_ses *ses,
 	if (!midQ->resp_buf || !out_buf ||
 	    midQ->mid_state != MID_RESPONSE_RECEIVED) {
 		rc = -EIO;
-		cERROR(1, "Bad MID state?");
+		cifs_dbg(VFS, "Bad MID state?\n");
 		goto out;
 	}
 
@@ -759,7 +939,7 @@ SendReceive(const unsigned int xid, struct cifs_ses *ses,
 	memcpy(out_buf, midQ->resp_buf, *pbytes_returned + 4);
 	rc = cifs_check_receive(midQ, ses->server, 0);
 out:
-	delete_mid(midQ);
+	cifs_delete_mid(midQ);
 	add_credits(ses->server, 1, 0);
 
 	return rc;
@@ -801,13 +981,13 @@ SendReceiveBlockingLock(const unsigned int xid, struct cifs_tcon *tcon,
 	struct cifs_ses *ses;
 
 	if (tcon == NULL || tcon->ses == NULL) {
-		cERROR(1, "Null smb session");
+		cifs_dbg(VFS, "Null smb session\n");
 		return -EIO;
 	}
 	ses = tcon->ses;
 
 	if (ses->server == NULL) {
-		cERROR(1, "Null tcp session");
+		cifs_dbg(VFS, "Null tcp session\n");
 		return -EIO;
 	}
 
@@ -820,8 +1000,8 @@ SendReceiveBlockingLock(const unsigned int xid, struct cifs_tcon *tcon,
 
 	if (be32_to_cpu(in_buf->smb_buf_length) > CIFSMaxBufSize +
 			MAX_CIFS_HDR_SIZE - 4) {
-		cERROR(1, "Illegal length, greater than maximum frame, %d",
-			   be32_to_cpu(in_buf->smb_buf_length));
+		cifs_dbg(VFS, "Illegal length, greater than maximum frame, %d\n",
+			 be32_to_cpu(in_buf->smb_buf_length));
 		return -EIO;
 	}
 
@@ -843,7 +1023,7 @@ SendReceiveBlockingLock(const unsigned int xid, struct cifs_tcon *tcon,
 
 	rc = cifs_sign_smb(in_buf, ses->server, &midQ->sequence_number);
 	if (rc) {
-		delete_mid(midQ);
+		cifs_delete_mid(midQ);
 		mutex_unlock(&ses->server->srv_mutex);
 		return rc;
 	}
@@ -853,10 +1033,14 @@ SendReceiveBlockingLock(const unsigned int xid, struct cifs_tcon *tcon,
 	rc = smb_send(ses->server, in_buf, be32_to_cpu(in_buf->smb_buf_length));
 	cifs_in_send_dec(ses->server);
 	cifs_save_when_sent(midQ);
+
+	if (rc < 0)
+		ses->server->sequence_number -= 2;
+
 	mutex_unlock(&ses->server->srv_mutex);
 
 	if (rc < 0) {
-		delete_mid(midQ);
+		cifs_delete_mid(midQ);
 		return rc;
 	}
 
@@ -877,7 +1061,7 @@ SendReceiveBlockingLock(const unsigned int xid, struct cifs_tcon *tcon,
 			   blocking lock to return. */
 			rc = send_cancel(ses->server, in_buf, midQ);
 			if (rc) {
-				delete_mid(midQ);
+				cifs_delete_mid(midQ);
 				return rc;
 			}
 		} else {
@@ -889,7 +1073,7 @@ SendReceiveBlockingLock(const unsigned int xid, struct cifs_tcon *tcon,
 			/* If we get -ENOLCK back the lock may have
 			   already been removed. Don't exit in this case. */
 			if (rc && rc != -ENOLCK) {
-				delete_mid(midQ);
+				cifs_delete_mid(midQ);
 				return rc;
 			}
 		}
@@ -918,7 +1102,7 @@ SendReceiveBlockingLock(const unsigned int xid, struct cifs_tcon *tcon,
 	/* rcvd frame is ok */
 	if (out_buf == NULL || midQ->mid_state != MID_RESPONSE_RECEIVED) {
 		rc = -EIO;
-		cERROR(1, "Bad MID state?");
+		cifs_dbg(VFS, "Bad MID state?\n");
 		goto out;
 	}
 
@@ -926,7 +1110,7 @@ SendReceiveBlockingLock(const unsigned int xid, struct cifs_tcon *tcon,
 	memcpy(out_buf, midQ->resp_buf, *pbytes_returned + 4);
 	rc = cifs_check_receive(midQ, ses->server, 0);
 out:
-	delete_mid(midQ);
+	cifs_delete_mid(midQ);
 	if (rstart && rc == -EACCES)
 		return -ERESTARTSYS;
 	return rc;

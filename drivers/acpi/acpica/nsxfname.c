@@ -6,7 +6,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2012, Intel Corp.
+ * Copyright (C) 2000 - 2016, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -42,7 +42,8 @@
  * POSSIBILITY OF SUCH DAMAGES.
  */
 
-#include <linux/export.h>
+#define EXPORT_ACPI_INTERFACES
+
 #include <acpi/acpi.h>
 #include "accommon.h"
 #include "acnamesp.h"
@@ -53,8 +54,8 @@
 ACPI_MODULE_NAME("nsxfname")
 
 /* Local prototypes */
-static char *acpi_ns_copy_device_id(struct acpica_device_id *dest,
-				    struct acpica_device_id *source,
+static char *acpi_ns_copy_device_id(struct acpi_pnp_device_id *dest,
+				    struct acpi_pnp_device_id *source,
 				    char *string_area);
 
 /******************************************************************************
@@ -69,8 +70,8 @@ static char *acpi_ns_copy_device_id(struct acpica_device_id *dest,
  * RETURN:      Status
  *
  * DESCRIPTION: This routine will search for a caller specified name in the
- *              name space.  The caller can restrict the search region by
- *              specifying a non NULL parent.  The parent value is itself a
+ *              name space. The caller can restrict the search region by
+ *              specifying a non NULL parent. The parent value is itself a
  *              namespace handle.
  *
  ******************************************************************************/
@@ -107,13 +108,13 @@ acpi_get_handle(acpi_handle parent,
 	 *
 	 * Error for <null Parent + relative path>
 	 */
-	if (acpi_ns_valid_root_prefix(pathname[0])) {
+	if (ACPI_IS_ROOT_PREFIX(pathname[0])) {
 
 		/* Pathname is fully qualified (starts with '\') */
 
 		/* Special case for root-only, since we can't search for it */
 
-		if (!ACPI_STRCMP(pathname, ACPI_NS_ROOT_PATH)) {
+		if (!strcmp(pathname, ACPI_NS_ROOT_PATH)) {
 			*ret_handle =
 			    ACPI_CAST_PTR(acpi_handle, acpi_gbl_root_node);
 			return (AE_OK);
@@ -149,7 +150,7 @@ ACPI_EXPORT_SYMBOL(acpi_get_handle)
  * RETURN:      Pointer to a string containing the fully qualified Name.
  *
  * DESCRIPTION: This routine returns the fully qualified name associated with
- *              the Handle parameter.  This and the acpi_pathname_to_handle are
+ *              the Handle parameter. This and the acpi_pathname_to_handle are
  *              complementary functions.
  *
  ******************************************************************************/
@@ -158,6 +159,7 @@ acpi_get_name(acpi_handle handle, u32 name_type, struct acpi_buffer * buffer)
 {
 	acpi_status status;
 	struct acpi_namespace_node *node;
+	const char *node_name;
 
 	/* Parameter validation */
 
@@ -170,11 +172,15 @@ acpi_get_name(acpi_handle handle, u32 name_type, struct acpi_buffer * buffer)
 		return (status);
 	}
 
-	if (name_type == ACPI_FULL_PATHNAME) {
+	if (name_type == ACPI_FULL_PATHNAME ||
+	    name_type == ACPI_FULL_PATHNAME_NO_TRAILING) {
 
 		/* Get the full pathname (From the namespace root) */
 
-		status = acpi_ns_handle_to_pathname(handle, buffer);
+		status = acpi_ns_handle_to_pathname(handle, buffer,
+						    name_type ==
+						    ACPI_FULL_PATHNAME ? FALSE :
+						    TRUE);
 		return (status);
 	}
 
@@ -202,12 +208,12 @@ acpi_get_name(acpi_handle handle, u32 name_type, struct acpi_buffer * buffer)
 
 	/* Just copy the ACPI name from the Node and zero terminate it */
 
-	ACPI_STRNCPY(buffer->pointer, acpi_ut_get_node_name(node),
-		     ACPI_NAME_SIZE);
+	node_name = acpi_ut_get_node_name(node);
+	ACPI_MOVE_NAME(buffer->pointer, node_name);
 	((char *)buffer->pointer)[ACPI_NAME_SIZE] = 0;
 	status = AE_OK;
 
-      unlock_and_exit:
+unlock_and_exit:
 
 	(void)acpi_ut_release_mutex(ACPI_MTX_NAMESPACE);
 	return (status);
@@ -219,27 +225,27 @@ ACPI_EXPORT_SYMBOL(acpi_get_name)
  *
  * FUNCTION:    acpi_ns_copy_device_id
  *
- * PARAMETERS:  dest                - Pointer to the destination DEVICE_ID
- *              source              - Pointer to the source DEVICE_ID
+ * PARAMETERS:  dest                - Pointer to the destination PNP_DEVICE_ID
+ *              source              - Pointer to the source PNP_DEVICE_ID
  *              string_area         - Pointer to where to copy the dest string
  *
  * RETURN:      Pointer to the next string area
  *
- * DESCRIPTION: Copy a single DEVICE_ID, including the string data.
+ * DESCRIPTION: Copy a single PNP_DEVICE_ID, including the string data.
  *
  ******************************************************************************/
-static char *acpi_ns_copy_device_id(struct acpica_device_id *dest,
-				    struct acpica_device_id *source,
+static char *acpi_ns_copy_device_id(struct acpi_pnp_device_id *dest,
+				    struct acpi_pnp_device_id *source,
 				    char *string_area)
 {
-	/* Create the destination DEVICE_ID */
+	/* Create the destination PNP_DEVICE_ID */
 
 	dest->string = string_area;
 	dest->length = source->length;
 
 	/* Copy actual string and return a pointer to the next string area */
 
-	ACPI_MEMCPY(string_area, source->string, source->length);
+	memcpy(string_area, source->string, source->length);
 	return (string_area + source->length);
 }
 
@@ -257,9 +263,16 @@ static char *acpi_ns_copy_device_id(struct acpica_device_id *dest,
  *              control methods (Such as in the case of a device.)
  *
  * For Device and Processor objects, run the Device _HID, _UID, _CID, _STA,
- * _ADR, _sx_w, and _sx_d methods.
+ * _CLS, _ADR, _sx_w, and _sx_d methods.
  *
  * Note: Allocates the return buffer, must be freed by the caller.
+ *
+ * Note: This interface is intended to be used during the initial device
+ * discovery namespace traversal. Therefore, no complex methods can be
+ * executed, especially those that access operation regions. Therefore, do
+ * not add any additional methods that could cause problems in this area.
+ * this was the fate of the _SUB method which was found to cause such
+ * problems and was removed (11/2015).
  *
  ******************************************************************************/
 
@@ -269,14 +282,15 @@ acpi_get_object_info(acpi_handle handle,
 {
 	struct acpi_namespace_node *node;
 	struct acpi_device_info *info;
-	struct acpica_device_id_list *cid_list = NULL;
-	struct acpica_device_id *hid = NULL;
-	struct acpica_device_id *uid = NULL;
+	struct acpi_pnp_device_id_list *cid_list = NULL;
+	struct acpi_pnp_device_id *hid = NULL;
+	struct acpi_pnp_device_id *uid = NULL;
+	struct acpi_pnp_device_id *cls = NULL;
 	char *next_id_string;
 	acpi_object_type type;
 	acpi_name name;
 	u8 param_count = 0;
-	u8 valid = 0;
+	u16 valid = 0;
 	u32 info_size;
 	u32 i;
 	acpi_status status;
@@ -289,7 +303,7 @@ acpi_get_object_info(acpi_handle handle,
 
 	status = acpi_ut_acquire_mutex(ACPI_MTX_NAMESPACE);
 	if (ACPI_FAILURE(status)) {
-		goto cleanup;
+		return (status);
 	}
 
 	node = acpi_ns_validate_handle(handle);
@@ -316,7 +330,7 @@ acpi_get_object_info(acpi_handle handle,
 	if ((type == ACPI_TYPE_DEVICE) || (type == ACPI_TYPE_PROCESSOR)) {
 		/*
 		 * Get extra info for ACPI Device/Processor objects only:
-		 * Run the Device _HID, _UID, and _CID methods.
+		 * Run the Device _HID, _UID, _CLS, and _CID methods.
 		 *
 		 * Note: none of these methods are required, so they may or may
 		 * not be present for this device. The Info->Valid bitfield is used
@@ -348,8 +362,16 @@ acpi_get_object_info(acpi_handle handle,
 
 			info_size +=
 			    (cid_list->list_size -
-			     sizeof(struct acpica_device_id_list));
+			     sizeof(struct acpi_pnp_device_id_list));
 			valid |= ACPI_VALID_CID;
+		}
+
+		/* Execute the Device._CLS method */
+
+		status = acpi_ut_execute_CLS(node, &cls);
+		if (ACPI_SUCCESS(status)) {
+			info_size += cls->length;
+			valid |= ACPI_VALID_CLS;
 		}
 	}
 
@@ -370,9 +392,14 @@ acpi_get_object_info(acpi_handle handle,
 		 * Get extra info for ACPI Device/Processor objects only:
 		 * Run the _STA, _ADR and, sx_w, and _sx_d methods.
 		 *
-		 * Note: none of these methods are required, so they may or may
+		 * Notes: none of these methods are required, so they may or may
 		 * not be present for this device. The Info->Valid bitfield is used
 		 * to indicate which methods were found and run successfully.
+		 *
+		 * For _STA, if the method does not exist, then (as per the ACPI
+		 * specification), the returned current_status flags will indicate
+		 * that the device is present/functional/enabled. Otherwise, the
+		 * current_status flags reflect the value returned from _STA.
 		 */
 
 		/* Execute the Device._STA method */
@@ -418,11 +445,11 @@ acpi_get_object_info(acpi_handle handle,
 	next_id_string = ACPI_CAST_PTR(char, info->compatible_id_list.ids);
 	if (cid_list) {
 
-		/* Point past the CID DEVICE_ID array */
+		/* Point past the CID PNP_DEVICE_ID array */
 
 		next_id_string +=
 		    ((acpi_size) cid_list->count *
-		     sizeof(struct acpica_device_id));
+		     sizeof(struct acpi_pnp_device_id));
 	}
 
 	/*
@@ -463,6 +490,11 @@ acpi_get_object_info(acpi_handle handle,
 		}
 	}
 
+	if (cls) {
+		next_id_string = acpi_ns_copy_device_id(&info->class_code,
+							cls, next_id_string);
+	}
+
 	/* Copy the fixed-length data */
 
 	info->info_size = info_size;
@@ -474,7 +506,7 @@ acpi_get_object_info(acpi_handle handle,
 	*return_buffer = info;
 	status = AE_OK;
 
-      cleanup:
+cleanup:
 	if (hid) {
 		ACPI_FREE(hid);
 	}
@@ -483,6 +515,9 @@ acpi_get_object_info(acpi_handle handle,
 	}
 	if (cid_list) {
 		ACPI_FREE(cid_list);
+	}
+	if (cls) {
+		ACPI_FREE(cls);
 	}
 	return (status);
 }
@@ -521,14 +556,14 @@ acpi_status acpi_install_method(u8 *buffer)
 	/* Parameter validation */
 
 	if (!buffer) {
-		return AE_BAD_PARAMETER;
+		return (AE_BAD_PARAMETER);
 	}
 
 	/* Table must be a DSDT or SSDT */
 
 	if (!ACPI_COMPARE_NAME(table->signature, ACPI_SIG_DSDT) &&
 	    !ACPI_COMPARE_NAME(table->signature, ACPI_SIG_SSDT)) {
-		return AE_BAD_HEADER;
+		return (AE_BAD_HEADER);
 	}
 
 	/* First AML opcode in the table must be a control method */
@@ -536,7 +571,7 @@ acpi_status acpi_install_method(u8 *buffer)
 	parser_state.aml = buffer + sizeof(struct acpi_table_header);
 	opcode = acpi_ps_peek_opcode(&parser_state);
 	if (opcode != AML_METHOD_OP) {
-		return AE_BAD_PARAMETER;
+		return (AE_BAD_PARAMETER);
 	}
 
 	/* Extract method information from the raw AML */
@@ -544,6 +579,7 @@ acpi_status acpi_install_method(u8 *buffer)
 	parser_state.aml += acpi_ps_get_opcode_size(opcode);
 	parser_state.pkg_end = acpi_ps_get_next_package_end(&parser_state);
 	path = acpi_ps_get_next_namestring(&parser_state);
+
 	method_flags = *parser_state.aml++;
 	aml_start = parser_state.aml;
 	aml_length = ACPI_PTR_DIFF(parser_state.pkg_end, aml_start);
@@ -554,13 +590,13 @@ acpi_status acpi_install_method(u8 *buffer)
 	 */
 	aml_buffer = ACPI_ALLOCATE(aml_length);
 	if (!aml_buffer) {
-		return AE_NO_MEMORY;
+		return (AE_NO_MEMORY);
 	}
 
 	method_obj = acpi_ut_create_internal_object(ACPI_TYPE_METHOD);
 	if (!method_obj) {
 		ACPI_FREE(aml_buffer);
-		return AE_NO_MEMORY;
+		return (AE_NO_MEMORY);
 	}
 
 	/* Lock namespace for acpi_ns_lookup, we may be creating a new node */
@@ -594,7 +630,7 @@ acpi_status acpi_install_method(u8 *buffer)
 
 	/* Copy the method AML to the local buffer */
 
-	ACPI_MEMCPY(aml_buffer, aml_start, aml_length);
+	memcpy(aml_buffer, aml_start, aml_length);
 
 	/* Initialize the method object with the new method's information */
 
@@ -626,12 +662,12 @@ acpi_status acpi_install_method(u8 *buffer)
 	/* Remove local reference to the method object */
 
 	acpi_ut_remove_reference(method_obj);
-	return status;
+	return (status);
 
 error_exit:
 
 	ACPI_FREE(aml_buffer);
 	ACPI_FREE(method_obj);
-	return status;
+	return (status);
 }
 ACPI_EXPORT_SYMBOL(acpi_install_method)

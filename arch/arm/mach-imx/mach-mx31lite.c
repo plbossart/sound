@@ -39,13 +39,13 @@
 #include <asm/page.h>
 #include <asm/setup.h>
 
-#include <mach/hardware.h>
-#include <mach/common.h>
-#include <mach/board-mx31lite.h>
-#include <mach/iomux-mx3.h>
-#include <mach/ulpi.h>
-
+#include "board-mx31lite.h"
+#include "common.h"
 #include "devices-imx31.h"
+#include "ehci.h"
+#include "hardware.h"
+#include "iomux-mx3.h"
+#include "ulpi.h"
 
 /*
  * This file contains the module-specific initialization routines.
@@ -207,7 +207,7 @@ static struct platform_device physmap_flash_device = {
  */
 static struct map_desc mx31lite_io_desc[] __initdata = {
 	{
-		.virtual = MX31_CS4_BASE_ADDR_VIRT,
+		.virtual = (unsigned long)MX31_CS4_BASE_ADDR_VIRT,
 		.pfn = __phys_to_pfn(MX31_CS4_BASE_ADDR),
 		.length = MX31_CS4_SIZE,
 		.type = MT_DEVICE
@@ -270,7 +270,7 @@ static void __init mx31lite_init(void)
 	/* SMSC9117 IRQ pin */
 	ret = gpio_request(IOMUX_TO_GPIO(MX31_PIN_SFS6), "sms9117-irq");
 	if (ret)
-		pr_warning("could not get LAN irq gpio\n");
+		pr_warn("could not get LAN irq gpio\n");
 	else {
 		gpio_direction_input(IOMUX_TO_GPIO(MX31_PIN_SFS6));
 		smsc911x_resources[1].start =
@@ -286,18 +286,13 @@ static void __init mx31lite_timer_init(void)
 	mx31_clocks_init(26000000);
 }
 
-static struct sys_timer mx31lite_timer = {
-	.init	= mx31lite_timer_init,
-};
-
 MACHINE_START(MX31LITE, "LogicPD i.MX31 SOM")
 	/* Maintainer: Freescale Semiconductor, Inc. */
 	.atag_offset = 0x100,
 	.map_io = mx31lite_map_io,
 	.init_early = imx31_init_early,
 	.init_irq = mx31_init_irq,
-	.handle_irq = imx31_handle_irq,
-	.timer = &mx31lite_timer,
+	.init_time	= mx31lite_timer_init,
 	.init_machine = mx31lite_init,
 	.restart	= mxc_restart,
 MACHINE_END

@@ -54,10 +54,10 @@
 #define DEVICEID_PN		0xf000	/* bits 15..12: Part Number */
 #define DEVICEID_MFGID		0x0fff	/* bits 11..00: Manufacturer ID */
 
-#define CHIPID			1	/* Chip ID */
-#define CHIPID_REV		0xfc00	/* bits 15..10: Chip Version */
-#define CHIPID_DEV		0x0200	/* bits 09..09: Device */
-#define CHIPID_FIRMWARE		0x01ff	/* bits 08..00: Firmware Version */
+#define SI_CHIPID		1	/* Chip ID */
+#define SI_CHIPID_REV		0xfc00	/* bits 15..10: Chip Version */
+#define SI_CHIPID_DEV		0x0200	/* bits 09..09: Device */
+#define SI_CHIPID_FIRMWARE	0x01ff	/* bits 08..00: Firmware Version */
 
 #define POWERCFG		2	/* Power Configuration */
 #define POWERCFG_DSMUTE		0x8000	/* bits 15..15: Softmute Disable */
@@ -163,10 +163,11 @@ struct si470x_device {
 	struct completion completion;
 	bool status_rssi_auto_update;	/* Does RSSI get updated automatic? */
 
-#if defined(CONFIG_USB_SI470X) || defined(CONFIG_USB_SI470X_MODULE)
+#if IS_ENABLED(CONFIG_USB_SI470X)
 	/* reference to USB and video device */
 	struct usb_device *usbdev;
 	struct usb_interface *intf;
+	char *usb_buf;
 
 	/* Interrupt endpoint handling */
 	char *int_in_buffer;
@@ -179,7 +180,7 @@ struct si470x_device {
 	unsigned char hardware_version;
 #endif
 
-#if defined(CONFIG_I2C_SI470X) || defined(CONFIG_I2C_SI470X_MODULE)
+#if IS_ENABLED(CONFIG_I2C_SI470X)
 	struct i2c_client *client;
 #endif
 };

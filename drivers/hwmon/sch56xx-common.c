@@ -30,7 +30,6 @@
 #include <linux/watchdog.h>
 #include <linux/miscdevice.h>
 #include <linux/uaccess.h>
-#include <linux/kref.h>
 #include <linux/slab.h>
 #include "sch56xx-common.h"
 
@@ -67,7 +66,6 @@ MODULE_PARM_DESC(nowayout, "Watchdog cannot be stopped once started (default="
 struct sch56xx_watchdog_data {
 	u16 addr;
 	struct mutex *io_lock;
-	struct kref kref;
 	struct watchdog_info wdinfo;
 	struct watchdog_device wddev;
 	u8 watchdog_preset;
@@ -161,8 +159,8 @@ static int sch56xx_send_cmd(u16 addr, u8 cmd, u16 reg, u8 v)
 			break;
 	}
 	if (i == max_busy_polls + max_lazy_polls) {
-		pr_err("Max retries exceeded reading virtual "
-		       "register 0x%04hx (%d)\n", reg, 1);
+		pr_err("Max retries exceeded reading virtual register 0x%04hx (%d)\n",
+		       reg, 1);
 		return -EIO;
 	}
 
@@ -178,12 +176,12 @@ static int sch56xx_send_cmd(u16 addr, u8 cmd, u16 reg, u8 v)
 			break;
 
 		if (i == 0)
-			pr_warn("EC reports: 0x%02x reading virtual register "
-				"0x%04hx\n", (unsigned int)val, reg);
+			pr_warn("EC reports: 0x%02x reading virtual register 0x%04hx\n",
+				(unsigned int)val, reg);
 	}
 	if (i == max_busy_polls) {
-		pr_err("Max retries exceeded reading virtual "
-		       "register 0x%04hx (%d)\n", reg, 2);
+		pr_err("Max retries exceeded reading virtual register 0x%04hx (%d)\n",
+		       reg, 2);
 		return -EIO;
 	}
 
@@ -257,15 +255,6 @@ EXPORT_SYMBOL(sch56xx_read_virtual_reg12);
 /*
  * Watchdog routines
  */
-
-/* Release our data struct when we're unregistered *and*
-   all references to our watchdog device are released */
-static void watchdog_release_resources(struct kref *r)
-{
-	struct sch56xx_watchdog_data *data =
-		container_of(r, struct sch56xx_watchdog_data, kref);
-	kfree(data);
-}
 
 static int watchdog_set_timeout(struct watchdog_device *wddev,
 				unsigned int timeout)
@@ -395,28 +384,12 @@ static int watchdog_stop(struct watchdog_device *wddev)
 	return 0;
 }
 
-static void watchdog_ref(struct watchdog_device *wddev)
-{
-	struct sch56xx_watchdog_data *data = watchdog_get_drvdata(wddev);
-
-	kref_get(&data->kref);
-}
-
-static void watchdog_unref(struct watchdog_device *wddev)
-{
-	struct sch56xx_watchdog_data *data = watchdog_get_drvdata(wddev);
-
-	kref_put(&data->kref, watchdog_release_resources);
-}
-
 static const struct watchdog_ops watchdog_ops = {
 	.owner		= THIS_MODULE,
 	.start		= watchdog_start,
 	.stop		= watchdog_stop,
 	.ping		= watchdog_trigger,
 	.set_timeout	= watchdog_set_timeout,
-	.ref		= watchdog_ref,
-	.unref		= watchdog_unref,
 };
 
 struct sch56xx_watchdog_data *sch56xx_watchdog_register(struct device *parent,
@@ -448,7 +421,6 @@ struct sch56xx_watchdog_data *sch56xx_watchdog_register(struct device *parent,
 
 	data->addr = addr;
 	data->io_lock = io_lock;
-	kref_init(&data->kref);
 
 	strlcpy(data->wdinfo.identity, "sch56xx watchdog",
 		sizeof(data->wdinfo.identity));
@@ -494,8 +466,7 @@ EXPORT_SYMBOL(sch56xx_watchdog_register);
 void sch56xx_watchdog_unregister(struct sch56xx_watchdog_data *data)
 {
 	watchdog_unregister_device(&data->wddev);
-	kref_put(&data->kref, watchdog_release_resources);
-	/* Don't touch data after this it may have been free-ed! */
+	kfree(data);
 }
 EXPORT_SYMBOL(sch56xx_watchdog_unregister);
 
@@ -503,10 +474,10 @@ EXPORT_SYMBOL(sch56xx_watchdog_unregister);
  * platform dev find, add and remove functions
  */
 
-static int __init sch56xx_find(int sioaddr, unsigned short *address,
-			       const char **name)
+static int __init sch56xx_find(int sioaddr, const char **name)
 {
 	u8 devid;
+	unsigned short address;
 	int err;
 
 	err = superio_enter(sioaddr);
@@ -540,20 +511,21 @@ static int __init sch56xx_find(int sioaddr, unsigned short *address,
 	 * Warning the order of the low / high byte is the other way around
 	 * as on most other superio devices!!
 	 */
-	*address = superio_inb(sioaddr, SIO_REG_ADDR) |
+	address = superio_inb(sioaddr, SIO_REG_ADDR) |
 		   superio_inb(sioaddr, SIO_REG_ADDR + 1) << 8;
-	if (*address == 0) {
+	if (address == 0) {
 		pr_warn("Base address not set\n");
 		err = -ENODEV;
 		goto exit;
 	}
+	err = address;
 
 exit:
 	superio_exit(sioaddr);
 	return err;
 }
 
-static int __init sch56xx_device_add(unsigned short address, const char *name)
+static int __init sch56xx_device_add(int address, const char *name)
 {
 	struct resource res = {
 		.start	= address,
@@ -593,15 +565,14 @@ exit_device_put:
 
 static int __init sch56xx_init(void)
 {
-	int err;
-	unsigned short address;
-	const char *name;
+	int address;
+	const char *name = NULL;
 
-	err = sch56xx_find(0x4e, &address, &name);
-	if (err)
-		err = sch56xx_find(0x2e, &address, &name);
-	if (err)
-		return err;
+	address = sch56xx_find(0x4e, &name);
+	if (address < 0)
+		address = sch56xx_find(0x2e, &name);
+	if (address < 0)
+		return address;
 
 	return sch56xx_device_add(address, name);
 }

@@ -110,21 +110,6 @@ extern int fixup_exception(struct pt_regs *regs);
 #define __put_user(x, ptr) __put_user_nocheck((x), (ptr), sizeof(*(ptr)))
 #define __get_user(x, ptr) __get_user_nocheck((x), (ptr), sizeof(*(ptr)))
 
-/*
- * The "xxx_ret" versions return constant specified in third argument, if
- * something bad happens. These macros can be optimized for the
- * case of just returning from the function xxx_ret is used.
- */
-
-#define put_user_ret(x, ptr, ret) \
-	({ if (put_user((x), (ptr)))	return (ret); })
-#define get_user_ret(x, ptr, ret) \
-	({ if (get_user((x), (ptr)))	return (ret); })
-#define __put_user_ret(x, ptr, ret) \
-	({ if (__put_user((x), (ptr)))	return (ret); })
-#define __get_user_ret(x, ptr, ret) \
-	({ if (__get_user((x), (ptr)))	return (ret); })
-
 struct __large_struct { unsigned long buf[100]; };
 #define __m(x) (*(struct __large_struct *)(x))
 
@@ -161,7 +146,7 @@ struct __large_struct { unsigned long buf[100]; };
 
 #define __get_user_check(x, ptr, size)					\
 ({									\
-	const __typeof__(ptr) __guc_ptr = (ptr);			\
+	const __typeof__(*(ptr))* __guc_ptr = (ptr);			\
 	int _e;								\
 	if (likely(__access_ok((unsigned long) __guc_ptr, (size))))	\
 		_e = __get_user_nocheck((x), __guc_ptr, (size));	\
@@ -471,13 +456,13 @@ extern unsigned long __generic_copy_from_user(void *, const void __user *,
 
 #define __copy_to_user(to, from, n)			\
 ({							\
-	might_sleep();					\
+	might_fault();					\
 	__copy_to_user_inatomic((to), (from), (n));	\
 })
 
 #define __copy_from_user(to, from, n)			\
 ({							\
-	might_sleep();					\
+	might_fault();					\
 	__copy_from_user_inatomic((to), (from), (n));	\
 })
 

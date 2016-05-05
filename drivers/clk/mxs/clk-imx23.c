@@ -9,17 +9,22 @@
  * http://www.gnu.org/copyleft/gpl.html
  */
 
+#include <linux/clk/mxs.h>
 #include <linux/clk.h>
-#include <linux/clkdev.h>
+#include <linux/clk-provider.h>
 #include <linux/err.h>
 #include <linux/init.h>
 #include <linux/io.h>
-#include <mach/common.h>
-#include <mach/mx23.h>
+#include <linux/of.h>
+#include <linux/of_address.h>
 #include "clk.h"
 
-#define DIGCTRL			MX23_IO_ADDRESS(MX23_DIGCTL_BASE_ADDR)
-#define CLKCTRL			MX23_IO_ADDRESS(MX23_CLKCTRL_BASE_ADDR)
+static void __iomem *clkctrl;
+static void __iomem *digctrl;
+
+#define CLKCTRL clkctrl
+#define DIGCTRL digctrl
+
 #define PLLCTRL0		(CLKCTRL + 0x0000)
 #define CPU			(CLKCTRL + 0x0020)
 #define HBUS			(CLKCTRL + 0x0030)
@@ -47,10 +52,10 @@ static void __init clk_misc_init(void)
 	u32 val;
 
 	/* Gate off cpu clock in WFI for power saving */
-	__mxs_setl(1 << BP_CPU_INTERRUPT_WAIT, CPU);
+	writel_relaxed(1 << BP_CPU_INTERRUPT_WAIT, CPU + SET);
 
 	/* Clear BYPASS for SAIF */
-	__mxs_clrl(1 << BP_CLKSEQ_BYPASS_SAIF, CLKSEQ);
+	writel_relaxed(1 << BP_CLKSEQ_BYPASS_SAIF, CLKSEQ + CLR);
 
 	/* SAIF has to use frac div for functional operation */
 	val = readl_relaxed(SAIF);
@@ -61,60 +66,22 @@ static void __init clk_misc_init(void)
 	 * Source ssp clock from ref_io than ref_xtal,
 	 * as ref_xtal only provides 24 MHz as maximum.
 	 */
-	__mxs_clrl(1 << BP_CLKSEQ_BYPASS_SSP, CLKSEQ);
+	writel_relaxed(1 << BP_CLKSEQ_BYPASS_SSP, CLKSEQ + CLR);
 
 	/*
 	 * 480 MHz seems too high to be ssp clock source directly,
 	 * so set frac to get a 288 MHz ref_io.
 	 */
-	__mxs_clrl(0x3f << BP_FRAC_IOFRAC, FRAC);
-	__mxs_setl(30 << BP_FRAC_IOFRAC, FRAC);
+	writel_relaxed(0x3f << BP_FRAC_IOFRAC, FRAC + CLR);
+	writel_relaxed(30 << BP_FRAC_IOFRAC, FRAC + SET);
 }
 
-static struct clk_lookup uart_lookups[] = {
-	{ .dev_id = "duart", },
-	{ .dev_id = "mxs-auart.0", },
-	{ .dev_id = "mxs-auart.1", },
-	{ .dev_id = "8006c000.serial", },
-	{ .dev_id = "8006e000.serial", },
-	{ .dev_id = "80070000.serial", },
-};
-
-static struct clk_lookup hbus_lookups[] = {
-	{ .dev_id = "imx23-dma-apbh", },
-	{ .dev_id = "80004000.dma-apbh", },
-};
-
-static struct clk_lookup xbus_lookups[] = {
-	{ .dev_id = "duart", .con_id = "apb_pclk"},
-	{ .dev_id = "80070000.serial", .con_id = "apb_pclk"},
-	{ .dev_id = "imx23-dma-apbx", },
-	{ .dev_id = "80024000.dma-apbx", },
-};
-
-static struct clk_lookup ssp_lookups[] = {
-	{ .dev_id = "imx23-mmc.0", },
-	{ .dev_id = "imx23-mmc.1", },
-	{ .dev_id = "80010000.ssp", },
-	{ .dev_id = "80034000.ssp", },
-};
-
-static struct clk_lookup lcdif_lookups[] = {
-	{ .dev_id = "imx23-fb", },
-	{ .dev_id = "80030000.lcdif", },
-};
-
-static struct clk_lookup gpmi_lookups[] = {
-	{ .dev_id = "imx23-gpmi-nand", },
-	{ .dev_id = "8000c000.gpmi-nand", },
-};
-
-static const char *sel_pll[]  __initconst = { "pll", "ref_xtal", };
-static const char *sel_cpu[]  __initconst = { "ref_cpu", "ref_xtal", };
-static const char *sel_pix[]  __initconst = { "ref_pix", "ref_xtal", };
-static const char *sel_io[]   __initconst = { "ref_io", "ref_xtal", };
-static const char *cpu_sels[] __initconst = { "cpu_pll", "cpu_xtal", };
-static const char *emi_sels[] __initconst = { "emi_pll", "emi_xtal", };
+static const char *const sel_pll[]  __initconst = { "pll", "ref_xtal", };
+static const char *const sel_cpu[]  __initconst = { "ref_cpu", "ref_xtal", };
+static const char *const sel_pix[]  __initconst = { "ref_pix", "ref_xtal", };
+static const char *const sel_io[]   __initconst = { "ref_io", "ref_xtal", };
+static const char *const cpu_sels[] __initconst = { "cpu_pll", "cpu_xtal", };
+static const char *const emi_sels[] __initconst = { "emi_pll", "emi_xtal", };
 
 enum imx23_clk {
 	ref_xtal, pll, ref_cpu, ref_emi, ref_pix, ref_io, saif_sel,
@@ -122,19 +89,29 @@ enum imx23_clk {
 	cpu_xtal, hbus, xbus, lcdif_div, ssp_div, gpmi_div, emi_pll,
 	emi_xtal, etm_div, saif_div, clk32k_div, rtc, adc, spdif_div,
 	clk32k, dri, pwm, filt, uart, ssp, gpmi, spdif, emi, saif,
-	lcdif, etm, usb, usb_pwr,
+	lcdif, etm, usb, usb_phy,
 	clk_max
 };
 
 static struct clk *clks[clk_max];
+static struct clk_onecell_data clk_data;
 
 static enum imx23_clk clks_init_on[] __initdata = {
 	cpu, hbus, xbus, emi, uart,
 };
 
-int __init mx23_clocks_init(void)
+static void __init mx23_clocks_init(struct device_node *np)
 {
-	int i;
+	struct device_node *dcnp;
+	u32 i;
+
+	dcnp = of_find_compatible_node(NULL, NULL, "fsl,imx23-digctl");
+	digctrl = of_iomap(dcnp, 0);
+	WARN_ON(!digctrl);
+	of_node_put(dcnp);
+
+	clkctrl = of_iomap(np, 0);
+	WARN_ON(!clkctrl);
 
 	clk_misc_init();
 
@@ -178,29 +155,22 @@ int __init mx23_clocks_init(void)
 	clks[saif] = mxs_clk_gate("saif", "saif_div", SAIF, 31);
 	clks[lcdif] = mxs_clk_gate("lcdif", "lcdif_div", PIX, 31);
 	clks[etm] = mxs_clk_gate("etm", "etm_div", ETM, 31);
-	clks[usb] = mxs_clk_gate("usb", "usb_pwr", DIGCTRL, 2);
-	clks[usb_pwr] = clk_register_gate(NULL, "usb_pwr", "pll", 0, PLLCTRL0, 18, 0, &mxs_lock);
+	clks[usb] = mxs_clk_gate("usb", "usb_phy", DIGCTRL, 2);
+	clks[usb_phy] = clk_register_gate(NULL, "usb_phy", "pll", 0, PLLCTRL0, 18, 0, &mxs_lock);
 
 	for (i = 0; i < ARRAY_SIZE(clks); i++)
 		if (IS_ERR(clks[i])) {
 			pr_err("i.MX23 clk %d: register failed with %ld\n",
 				i, PTR_ERR(clks[i]));
-			return PTR_ERR(clks[i]);
+			return;
 		}
 
-	clk_register_clkdev(clks[clk32k], NULL, "timrot");
-	clk_register_clkdev(clks[pwm], NULL, "80064000.pwm");
-	clk_register_clkdevs(clks[hbus], hbus_lookups, ARRAY_SIZE(hbus_lookups));
-	clk_register_clkdevs(clks[xbus], xbus_lookups, ARRAY_SIZE(xbus_lookups));
-	clk_register_clkdevs(clks[uart], uart_lookups, ARRAY_SIZE(uart_lookups));
-	clk_register_clkdevs(clks[ssp], ssp_lookups, ARRAY_SIZE(ssp_lookups));
-	clk_register_clkdevs(clks[gpmi], gpmi_lookups, ARRAY_SIZE(gpmi_lookups));
-	clk_register_clkdevs(clks[lcdif], lcdif_lookups, ARRAY_SIZE(lcdif_lookups));
+	clk_data.clks = clks;
+	clk_data.clk_num = ARRAY_SIZE(clks);
+	of_clk_add_provider(np, of_clk_src_onecell_get, &clk_data);
 
 	for (i = 0; i < ARRAY_SIZE(clks_init_on); i++)
 		clk_prepare_enable(clks[clks_init_on[i]]);
 
-	mxs_timer_init(MX23_INT_TIMER0);
-
-	return 0;
 }
+CLK_OF_DECLARE(imx23_clkctrl, "fsl,imx23-clkctrl", mx23_clocks_init);

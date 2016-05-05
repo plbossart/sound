@@ -36,13 +36,14 @@
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
 #include <asm/mach/time.h>
-#include <mach/hardware.h>
-#include <mach/common.h>
-#include <mach/iomux-mx27.h>
-#include <mach/ulpi.h>
-#include <mach/3ds_debugboard.h>
 
+#include "3ds_debugboard.h"
+#include "common.h"
 #include "devices-imx27.h"
+#include "ehci.h"
+#include "hardware.h"
+#include "iomux-mx27.h"
+#include "ulpi.h"
 
 #define SD1_EN_GPIO		IMX_GPIO_NR(2, 25)
 #define OTG_PHY_RESET_GPIO	IMX_GPIO_NR(2, 23)
@@ -158,6 +159,11 @@ static const int mx27pdk_pins[] __initconst = {
 	PB21_PF_CSI_HSYNC,
 	CSI_PWRDWN | GPIO_GPIO | GPIO_OUT,
 	CSI_RESET | GPIO_GPIO | GPIO_OUT,
+	/* SSI4 */
+	PC16_PF_SSI4_FS,
+	PC17_PF_SSI4_RXD,
+	PC18_PF_SSI4_TXD,
+	PC19_PF_SSI4_CLK,
 };
 
 static struct gpio mx27_3ds_camera_gpios[] = {
@@ -329,13 +335,24 @@ static struct mc13xxx_regulator_init_data mx27_3ds_regulators[] = {
 };
 
 /* MC13783 */
+static struct mc13xxx_codec_platform_data mx27_3ds_codec = {
+	.dac_ssi_port = MC13783_SSI1_PORT,
+	.adc_ssi_port = MC13783_SSI1_PORT,
+};
+
 static struct mc13xxx_platform_data mc13783_pdata = {
 	.regulators = {
 		.regulators = mx27_3ds_regulators,
 		.num_regulators = ARRAY_SIZE(mx27_3ds_regulators),
 
 	},
-	.flags  = MC13XXX_USE_TOUCHSCREEN | MC13XXX_USE_RTC,
+	.flags  = MC13XXX_USE_TOUCHSCREEN | MC13XXX_USE_RTC |
+						MC13XXX_USE_CODEC,
+	.codec = &mx27_3ds_codec,
+};
+
+static struct imx_ssi_platform_data mx27_3ds_ssi_pdata = {
+	.flags = IMX_SSI_DMA | IMX_SSI_NET,
 };
 
 /* SPI */
@@ -512,6 +529,9 @@ static void __init mx27pdk_init(void)
 	}
 
 	imx27_add_mx2_camera(&mx27_3ds_cam_pdata);
+	imx27_add_imx_ssi(0, &mx27_3ds_ssi_pdata);
+
+	imx_add_platform_device("imx_mc13783", 0, NULL, 0, NULL, 0);
 }
 
 static void __init mx27pdk_timer_init(void)
@@ -519,18 +539,13 @@ static void __init mx27pdk_timer_init(void)
 	mx27_clocks_init(26000000);
 }
 
-static struct sys_timer mx27pdk_timer = {
-	.init	= mx27pdk_timer_init,
-};
-
 MACHINE_START(MX27_3DS, "Freescale MX27PDK")
 	/* maintainer: Freescale Semiconductor, Inc. */
 	.atag_offset = 0x100,
 	.map_io = mx27_map_io,
 	.init_early = imx27_init_early,
 	.init_irq = mx27_init_irq,
-	.handle_irq = imx27_handle_irq,
-	.timer = &mx27pdk_timer,
+	.init_time	= mx27pdk_timer_init,
 	.init_machine = mx27pdk_init,
 	.restart	= mxc_restart,
 MACHINE_END

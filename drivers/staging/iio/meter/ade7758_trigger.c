@@ -21,7 +21,7 @@
 static irqreturn_t ade7758_data_rdy_trig_poll(int irq, void *private)
 {
 	disable_irq_nosync(irq);
-	iio_trigger_poll(private, iio_get_time_ns());
+	iio_trigger_poll(private);
 
 	return IRQ_HANDLED;
 }
@@ -32,7 +32,7 @@ static irqreturn_t ade7758_data_rdy_trig_poll(int irq, void *private)
 static int ade7758_data_rdy_trigger_set_state(struct iio_trigger *trig,
 						bool state)
 {
-	struct iio_dev *indio_dev = trig->private_data;
+	struct iio_dev *indio_dev = iio_trigger_get_drvdata(trig);
 
 	dev_dbg(&indio_dev->dev, "%s (%d)\n", __func__, state);
 	return ade7758_set_irq(&indio_dev->dev, state);
@@ -44,7 +44,7 @@ static int ade7758_data_rdy_trigger_set_state(struct iio_trigger *trig,
  **/
 static int ade7758_trig_try_reen(struct iio_trigger *trig)
 {
-	struct iio_dev *indio_dev = trig->private_data;
+	struct iio_dev *indio_dev = iio_trigger_get_drvdata(trig);
 	struct ade7758_state *st = iio_priv(indio_dev);
 
 	enable_irq(st->us->irq);
@@ -66,7 +66,7 @@ int ade7758_probe_trigger(struct iio_dev *indio_dev)
 	st->trig = iio_trigger_alloc("%s-dev%d",
 					spi_get_device_id(st->us)->name,
 					indio_dev->id);
-	if (st->trig == NULL) {
+	if (!st->trig) {
 		ret = -ENOMEM;
 		goto error_ret;
 	}
@@ -81,11 +81,11 @@ int ade7758_probe_trigger(struct iio_dev *indio_dev)
 
 	st->trig->dev.parent = &st->us->dev;
 	st->trig->ops = &ade7758_trigger_ops;
-	st->trig->private_data = indio_dev;
+	iio_trigger_set_drvdata(st->trig, indio_dev);
 	ret = iio_trigger_register(st->trig);
 
 	/* select default trigger */
-	indio_dev->trig = st->trig;
+	indio_dev->trig = iio_trigger_get(st->trig);
 	if (ret)
 		goto error_free_irq;
 

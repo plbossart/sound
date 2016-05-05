@@ -10,6 +10,7 @@
  */
 
 #include <linux/module.h>
+#include <linux/kernel.h>
 #include <linux/net.h>
 #include <linux/slab.h>
 #include <linux/skbuff.h>
@@ -36,7 +37,7 @@ static struct proto rxrpc_proto;
 static const struct proto_ops rxrpc_rpc_ops;
 
 /* local epoch for detecting local-end reset */
-__be32 rxrpc_epoch;
+u32 rxrpc_epoch;
 
 /* current debugging ID */
 atomic_t rxrpc_debug_id;
@@ -66,7 +67,7 @@ static void rxrpc_write_space(struct sock *sk)
 	if (rxrpc_writable(sk)) {
 		struct socket_wq *wq = rcu_dereference(sk->sk_wq);
 
-		if (wq_has_sleeper(wq))
+		if (skwq_has_sleeper(wq))
 			wake_up_interruptible(&wq->wait);
 		sk_wake_async(sk, SOCK_WAKE_SPACE, POLL_OUT);
 	}
@@ -80,6 +81,8 @@ static int rxrpc_validate_address(struct rxrpc_sock *rx,
 				  struct sockaddr_rxrpc *srx,
 				  int len)
 {
+	unsigned int tail;
+
 	if (len < sizeof(struct sockaddr_rxrpc))
 		return -EINVAL;
 
@@ -102,9 +105,7 @@ static int rxrpc_validate_address(struct rxrpc_sock *rx,
 		_debug("INET: %x @ %pI4",
 		       ntohs(srx->transport.sin.sin_port),
 		       &srx->transport.sin.sin_addr);
-		if (srx->transport_len > 8)
-			memset((void *)&srx->transport + 8, 0,
-			       srx->transport_len - 8);
+		tail = offsetof(struct sockaddr_rxrpc, transport.sin.__pad);
 		break;
 
 	case AF_INET6:
@@ -112,6 +113,8 @@ static int rxrpc_validate_address(struct rxrpc_sock *rx,
 		return -EAFNOSUPPORT;
 	}
 
+	if (tail < len)
+		memset((void *)srx + tail, 0, len - tail);
 	return 0;
 }
 
@@ -120,11 +123,10 @@ static int rxrpc_validate_address(struct rxrpc_sock *rx,
  */
 static int rxrpc_bind(struct socket *sock, struct sockaddr *saddr, int len)
 {
-	struct sockaddr_rxrpc *srx = (struct sockaddr_rxrpc *) saddr;
+	struct sockaddr_rxrpc *srx = (struct sockaddr_rxrpc *)saddr;
 	struct sock *sk = sock->sk;
 	struct rxrpc_local *local;
 	struct rxrpc_sock *rx = rxrpc_sk(sk), *prx;
-	__be16 service_id;
 	int ret;
 
 	_enter("%p,%p,%d", rx, saddr, len);
@@ -142,7 +144,7 @@ static int rxrpc_bind(struct socket *sock, struct sockaddr *saddr, int len)
 
 	memcpy(&rx->srx, srx, sizeof(rx->srx));
 
-	/* find a local transport endpoint if we don't have one already */
+	/* Find or create a local transport endpoint to use */
 	local = rxrpc_lookup_local(&rx->srx);
 	if (IS_ERR(local)) {
 		ret = PTR_ERR(local);
@@ -151,14 +153,12 @@ static int rxrpc_bind(struct socket *sock, struct sockaddr *saddr, int len)
 
 	rx->local = local;
 	if (srx->srx_service) {
-		service_id = htons(srx->srx_service);
 		write_lock_bh(&local->services_lock);
 		list_for_each_entry(prx, &local->services, listen_link) {
-			if (prx->service_id == service_id)
+			if (prx->srx.srx_service == srx->srx_service)
 				goto service_in_use;
 		}
 
-		rx->service_id = service_id;
 		list_add_tail(&rx->listen_link, &local->services);
 		write_unlock_bh(&local->services_lock);
 
@@ -275,7 +275,6 @@ struct rxrpc_call *rxrpc_kernel_begin_call(struct socket *sock,
 	struct rxrpc_transport *trans;
 	struct rxrpc_call *call;
 	struct rxrpc_sock *rx = rxrpc_sk(sock->sk);
-	__be16 service_id;
 
 	_enter(",,%x,%lx", key_serial(key), user_call_ID);
 
@@ -298,16 +297,14 @@ struct rxrpc_call *rxrpc_kernel_begin_call(struct socket *sock,
 		atomic_inc(&trans->usage);
 	}
 
-	service_id = rx->service_id;
-	if (srx)
-		service_id = htons(srx->srx_service);
-
+	if (!srx)
+		srx = &rx->srx;
 	if (!key)
 		key = rx->key;
-	if (key && !key->payload.data)
+	if (key && !key->payload.data[0])
 		key = NULL; /* a no-security key */
 
-	bundle = rxrpc_get_bundle(rx, trans, key, service_id, gfp);
+	bundle = rxrpc_get_bundle(rx, trans, key, srx->srx_service, gfp);
 	if (IS_ERR(bundle)) {
 		call = ERR_CAST(bundle);
 		goto out;
@@ -323,7 +320,6 @@ out_notrans:
 	_leave(" = %p", call);
 	return call;
 }
-
 EXPORT_SYMBOL(rxrpc_kernel_begin_call);
 
 /**
@@ -339,7 +335,6 @@ void rxrpc_kernel_end_call(struct rxrpc_call *call)
 	rxrpc_remove_user_ID(call->socket, call);
 	rxrpc_put_call(call);
 }
-
 EXPORT_SYMBOL(rxrpc_kernel_end_call);
 
 /**
@@ -424,7 +419,6 @@ static int rxrpc_connect(struct socket *sock, struct sockaddr *addr,
 	}
 
 	rx->trans = trans;
-	rx->service_id = htons(srx->srx_service);
 	rx->sk.sk_state = RXRPC_CLIENT_CONNECTED;
 
 	release_sock(&rx->sk);
@@ -440,8 +434,7 @@ static int rxrpc_connect(struct socket *sock, struct sockaddr *addr,
  *   - sends a call data packet
  *   - may send an abort (abort code in control data)
  */
-static int rxrpc_sendmsg(struct kiocb *iocb, struct socket *sock,
-			 struct msghdr *m, size_t len)
+static int rxrpc_sendmsg(struct socket *sock, struct msghdr *m, size_t len)
 {
 	struct rxrpc_transport *trans;
 	struct rxrpc_sock *rx = rxrpc_sk(sock->sk);
@@ -481,7 +474,7 @@ static int rxrpc_sendmsg(struct kiocb *iocb, struct socket *sock,
 	switch (rx->sk.sk_state) {
 	case RXRPC_SERVER_LISTENING:
 		if (!m->msg_name) {
-			ret = rxrpc_server_sendmsg(iocb, rx, m, len);
+			ret = rxrpc_server_sendmsg(rx, m, len);
 			break;
 		}
 	case RXRPC_SERVER_BOUND:
@@ -491,7 +484,7 @@ static int rxrpc_sendmsg(struct kiocb *iocb, struct socket *sock,
 			break;
 		}
 	case RXRPC_CLIENT_CONNECTED:
-		ret = rxrpc_client_sendmsg(iocb, rx, trans, m, len);
+		ret = rxrpc_client_sendmsg(rx, trans, m, len);
 		break;
 	default:
 		ret = -ENOTCONN;
@@ -622,7 +615,7 @@ static int rxrpc_create(struct net *net, struct socket *sock, int protocol,
 	if (!net_eq(net, &init_net))
 		return -EAFNOSUPPORT;
 
-	/* we support transport protocol UDP only */
+	/* we support transport protocol UDP/UDP6 only */
 	if (protocol != PF_INET)
 		return -EPROTONOSUPPORT;
 
@@ -632,7 +625,7 @@ static int rxrpc_create(struct net *net, struct socket *sock, int protocol,
 	sock->ops = &rxrpc_rpc_ops;
 	sock->state = SS_UNCONNECTED;
 
-	sk = sk_alloc(net, PF_RXRPC, GFP_KERNEL, &rxrpc_proto);
+	sk = sk_alloc(net, PF_RXRPC, GFP_KERNEL, &rxrpc_proto, kern);
 	if (!sk)
 		return -ENOMEM;
 
@@ -754,7 +747,7 @@ static int rxrpc_release(struct socket *sock)
  * RxRPC network protocol
  */
 static const struct proto_ops rxrpc_rpc_ops = {
-	.family		= PF_UNIX,
+	.family		= PF_RXRPC,
 	.owner		= THIS_MODULE,
 	.release	= rxrpc_release,
 	.bind		= rxrpc_bind,
@@ -778,7 +771,7 @@ static struct proto rxrpc_proto = {
 	.name		= "RXRPC",
 	.owner		= THIS_MODULE,
 	.obj_size	= sizeof(struct rxrpc_sock),
-	.max_header	= sizeof(struct rxrpc_header),
+	.max_header	= sizeof(struct rxrpc_wire_header),
 };
 
 static const struct net_proto_family rxrpc_family_ops = {
@@ -792,12 +785,11 @@ static const struct net_proto_family rxrpc_family_ops = {
  */
 static int __init af_rxrpc_init(void)
 {
-	struct sk_buff *dummy_skb;
 	int ret = -1;
 
-	BUILD_BUG_ON(sizeof(struct rxrpc_skb_priv) > sizeof(dummy_skb->cb));
+	BUILD_BUG_ON(sizeof(struct rxrpc_skb_priv) > FIELD_SIZEOF(struct sk_buff, cb));
 
-	rxrpc_epoch = htonl(get_seconds());
+	rxrpc_epoch = get_seconds();
 
 	ret = -ENOMEM;
 	rxrpc_call_jar = kmem_cache_create(
@@ -838,12 +830,21 @@ static int __init af_rxrpc_init(void)
 		goto error_key_type_s;
 	}
 
+	ret = rxrpc_sysctl_init();
+	if (ret < 0) {
+		printk(KERN_CRIT "RxRPC: Cannot register sysctls\n");
+		goto error_sysctls;
+	}
+
 #ifdef CONFIG_PROC_FS
-	proc_net_fops_create(&init_net, "rxrpc_calls", 0, &rxrpc_call_seq_fops);
-	proc_net_fops_create(&init_net, "rxrpc_conns", 0, &rxrpc_connection_seq_fops);
+	proc_create("rxrpc_calls", 0, init_net.proc_net, &rxrpc_call_seq_fops);
+	proc_create("rxrpc_conns", 0, init_net.proc_net,
+		    &rxrpc_connection_seq_fops);
 #endif
 	return 0;
 
+error_sysctls:
+	unregister_key_type(&key_type_rxrpc_s);
 error_key_type_s:
 	unregister_key_type(&key_type_rxrpc);
 error_key_type:
@@ -864,6 +865,7 @@ error_call_jar:
 static void __exit af_rxrpc_exit(void)
 {
 	_enter("");
+	rxrpc_sysctl_exit();
 	unregister_key_type(&key_type_rxrpc_s);
 	unregister_key_type(&key_type_rxrpc);
 	sock_unregister(PF_RXRPC);
@@ -878,8 +880,8 @@ static void __exit af_rxrpc_exit(void)
 
 	_debug("flush scheduled work");
 	flush_workqueue(rxrpc_workqueue);
-	proc_net_remove(&init_net, "rxrpc_conns");
-	proc_net_remove(&init_net, "rxrpc_calls");
+	remove_proc_entry("rxrpc_conns", init_net.proc_net);
+	remove_proc_entry("rxrpc_calls", init_net.proc_net);
 	destroy_workqueue(rxrpc_workqueue);
 	kmem_cache_destroy(rxrpc_call_jar);
 	_leave("");

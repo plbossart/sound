@@ -17,9 +17,11 @@
  *  along with this program; if not, write to the Free Software
  *  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
+
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/device.h>
 #include <linux/hrtimer.h>
-#include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -127,12 +129,11 @@ struct gianfar_ptp_registers {
 
 #define DRIVER		"gianfar_ptp"
 #define DEFAULT_CKSEL	1
-#define N_ALARM		1 /* first alarm is used internally to reset fipers */
 #define N_EXT_TS	2
 #define REG_SIZE	sizeof(struct gianfar_ptp_registers)
 
 struct etsects {
-	struct gianfar_ptp_registers *regs;
+	struct gianfar_ptp_registers __iomem *regs;
 	spinlock_t lock; /* protects regs */
 	struct ptp_clock *clock;
 	struct ptp_clock_info caps;
@@ -321,10 +322,10 @@ static int ptp_gianfar_adjtime(struct ptp_clock_info *ptp, s64 delta)
 	return 0;
 }
 
-static int ptp_gianfar_gettime(struct ptp_clock_info *ptp, struct timespec *ts)
+static int ptp_gianfar_gettime(struct ptp_clock_info *ptp,
+			       struct timespec64 *ts)
 {
 	u64 ns;
-	u32 remainder;
 	unsigned long flags;
 	struct etsects *etsects = container_of(ptp, struct etsects, caps);
 
@@ -334,20 +335,19 @@ static int ptp_gianfar_gettime(struct ptp_clock_info *ptp, struct timespec *ts)
 
 	spin_unlock_irqrestore(&etsects->lock, flags);
 
-	ts->tv_sec = div_u64_rem(ns, 1000000000, &remainder);
-	ts->tv_nsec = remainder;
+	*ts = ns_to_timespec64(ns);
+
 	return 0;
 }
 
 static int ptp_gianfar_settime(struct ptp_clock_info *ptp,
-			       const struct timespec *ts)
+			       const struct timespec64 *ts)
 {
 	u64 ns;
 	unsigned long flags;
 	struct etsects *etsects = container_of(ptp, struct etsects, caps);
 
-	ns = ts->tv_sec * 1000000000ULL;
-	ns += ts->tv_nsec;
+	ns = timespec64_to_ns(ts);
 
 	spin_lock_irqsave(&etsects->lock, flags);
 
@@ -410,35 +410,23 @@ static struct ptp_clock_info ptp_gianfar_caps = {
 	.owner		= THIS_MODULE,
 	.name		= "gianfar clock",
 	.max_adj	= 512000,
-	.n_alarm	= N_ALARM,
+	.n_alarm	= 0,
 	.n_ext_ts	= N_EXT_TS,
 	.n_per_out	= 0,
+	.n_pins		= 0,
 	.pps		= 1,
 	.adjfreq	= ptp_gianfar_adjfreq,
 	.adjtime	= ptp_gianfar_adjtime,
-	.gettime	= ptp_gianfar_gettime,
-	.settime	= ptp_gianfar_settime,
+	.gettime64	= ptp_gianfar_gettime,
+	.settime64	= ptp_gianfar_settime,
 	.enable		= ptp_gianfar_enable,
 };
-
-/* OF device tree */
-
-static int get_of_u32(struct device_node *node, char *str, u32 *val)
-{
-	int plen;
-	const u32 *prop = of_get_property(node, str, &plen);
-
-	if (!prop || plen != sizeof(*prop))
-		return -1;
-	*val = *prop;
-	return 0;
-}
 
 static int gianfar_ptp_probe(struct platform_device *dev)
 {
 	struct device_node *node = dev->dev.of_node;
 	struct etsects *etsects;
-	struct timespec now;
+	struct timespec64 now;
 	int err = -ENOMEM;
 	u32 tmr_ctrl;
 	unsigned long flags;
@@ -450,21 +438,29 @@ static int gianfar_ptp_probe(struct platform_device *dev)
 	err = -ENODEV;
 
 	etsects->caps = ptp_gianfar_caps;
-	etsects->cksel = DEFAULT_CKSEL;
 
-	if (get_of_u32(node, "fsl,tclk-period", &etsects->tclk_period) ||
-	    get_of_u32(node, "fsl,tmr-prsc", &etsects->tmr_prsc) ||
-	    get_of_u32(node, "fsl,tmr-add", &etsects->tmr_add) ||
-	    get_of_u32(node, "fsl,tmr-fiper1", &etsects->tmr_fiper1) ||
-	    get_of_u32(node, "fsl,tmr-fiper2", &etsects->tmr_fiper2) ||
-	    get_of_u32(node, "fsl,max-adj", &etsects->caps.max_adj)) {
+	if (of_property_read_u32(node, "fsl,cksel", &etsects->cksel))
+		etsects->cksel = DEFAULT_CKSEL;
+
+	if (of_property_read_u32(node,
+				 "fsl,tclk-period", &etsects->tclk_period) ||
+	    of_property_read_u32(node,
+				 "fsl,tmr-prsc", &etsects->tmr_prsc) ||
+	    of_property_read_u32(node,
+				 "fsl,tmr-add", &etsects->tmr_add) ||
+	    of_property_read_u32(node,
+				 "fsl,tmr-fiper1", &etsects->tmr_fiper1) ||
+	    of_property_read_u32(node,
+				 "fsl,tmr-fiper2", &etsects->tmr_fiper2) ||
+	    of_property_read_u32(node,
+				 "fsl,max-adj", &etsects->caps.max_adj)) {
 		pr_err("device tree node missing required elements\n");
 		goto no_node;
 	}
 
 	etsects->irq = platform_get_irq(dev, 0);
 
-	if (etsects->irq == NO_IRQ) {
+	if (etsects->irq < 0) {
 		pr_err("irq not in device tree\n");
 		goto no_node;
 	}
@@ -478,7 +474,7 @@ static int gianfar_ptp_probe(struct platform_device *dev)
 		pr_err("no resource\n");
 		goto no_resource;
 	}
-	if (request_resource(&ioport_resource, etsects->rsrc)) {
+	if (request_resource(&iomem_resource, etsects->rsrc)) {
 		pr_err("resource busy\n");
 		goto no_resource;
 	}
@@ -491,7 +487,7 @@ static int gianfar_ptp_probe(struct platform_device *dev)
 		pr_err("ioremap ptp registers failed\n");
 		goto no_ioremap;
 	}
-	getnstimeofday(&now);
+	getnstimeofday64(&now);
 	ptp_gianfar_settime(&etsects->caps, &now);
 
 	tmr_ctrl =
@@ -510,18 +506,19 @@ static int gianfar_ptp_probe(struct platform_device *dev)
 
 	spin_unlock_irqrestore(&etsects->lock, flags);
 
-	etsects->clock = ptp_clock_register(&etsects->caps);
+	etsects->clock = ptp_clock_register(&etsects->caps, &dev->dev);
 	if (IS_ERR(etsects->clock)) {
 		err = PTR_ERR(etsects->clock);
 		goto no_clock;
 	}
-	gfar_phc_clock = ptp_clock_index(etsects->clock);
+	gfar_phc_index = ptp_clock_index(etsects->clock);
 
-	dev_set_drvdata(&dev->dev, etsects);
+	platform_set_drvdata(dev, etsects);
 
 	return 0;
 
 no_clock:
+	iounmap(etsects->regs);
 no_ioremap:
 	release_resource(etsects->rsrc);
 no_resource:
@@ -534,12 +531,12 @@ no_memory:
 
 static int gianfar_ptp_remove(struct platform_device *dev)
 {
-	struct etsects *etsects = dev_get_drvdata(&dev->dev);
+	struct etsects *etsects = platform_get_drvdata(dev);
 
 	gfar_write(&etsects->regs->tmr_temask, 0);
 	gfar_write(&etsects->regs->tmr_ctrl,   0);
 
-	gfar_phc_clock = -1;
+	gfar_phc_index = -1;
 	ptp_clock_unregister(etsects->clock);
 	iounmap(etsects->regs);
 	release_resource(etsects->rsrc);
@@ -549,16 +546,16 @@ static int gianfar_ptp_remove(struct platform_device *dev)
 	return 0;
 }
 
-static struct of_device_id match_table[] = {
+static const struct of_device_id match_table[] = {
 	{ .compatible = "fsl,etsec-ptp" },
 	{},
 };
+MODULE_DEVICE_TABLE(of, match_table);
 
 static struct platform_driver gianfar_ptp_driver = {
 	.driver = {
 		.name		= "gianfar_ptp",
 		.of_match_table	= match_table,
-		.owner		= THIS_MODULE,
 	},
 	.probe       = gianfar_ptp_probe,
 	.remove      = gianfar_ptp_remove,

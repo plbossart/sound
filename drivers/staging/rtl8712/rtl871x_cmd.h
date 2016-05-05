@@ -83,7 +83,7 @@ struct	evt_priv {
 
 #define init_h2fwcmd_w_parm_no_rsp(pcmd, pparm, code) \
 do {\
-	_init_listhead(&pcmd->list);\
+	INIT_LIST_HEAD(&pcmd->list);\
 	pcmd->cmdcode = code;\
 	pcmd->parmbuf = (u8 *)(pparm);\
 	pcmd->cmdsz = sizeof(*pparm);\
@@ -123,30 +123,12 @@ struct usb_suspend_parm {
 };
 
 /*
- * Caller Mode: Infra, Ad-Hoc
- * Notes: To join the specified bss
- * Command Event Mode
- */
-struct joinbss_parm {
-	struct ndis_wlan_bssid_ex network;
-};
-
-/*
  * Caller Mode: Infra, Ad-HoC(C)
  * Notes: To disconnect the current associated BSS
  * Command Mode
  */
 struct disconnect_parm {
 	u32 rsvd;
-};
-
-/*
- * Caller Mode: AP, Ad-HoC(M)
- * Notes: To create a BSS
- * Command Mode
- */
-struct createbss_parm {
-	struct ndis_wlan_bssid_ex network;
 };
 
 /*
@@ -749,13 +731,11 @@ u8 r8712_setopmode_cmd(struct _adapter *padapter,
 u8 r8712_setdatarate_cmd(struct _adapter *padapter, u8 *rateset);
 u8 r8712_set_chplan_cmd(struct _adapter  *padapter, int chplan);
 u8 r8712_setbasicrate_cmd(struct _adapter *padapter, u8 *rateset);
-u8 r8712_getrfreg_cmd(struct _adapter *padapter, u8 offset, u8 * pval);
+u8 r8712_getrfreg_cmd(struct _adapter *padapter, u8 offset, u8 *pval);
 u8 r8712_setrfintfs_cmd(struct _adapter *padapter, u8 mode);
 u8 r8712_setrfreg_cmd(struct _adapter  *padapter, u8 offset, u32 val);
 u8 r8712_setrttbl_cmd(struct _adapter  *padapter,
 		      struct setratable_parm *prate_table);
-u8 r8712_gettssi_cmd(struct _adapter  *padapter, u8 offset, u8 *pval);
-u8 r8712_setptm_cmd(struct _adapter *padapter, u8 type);
 u8 r8712_setfwdig_cmd(struct _adapter *padapter, u8 type);
 u8 r8712_setfwra_cmd(struct _adapter *padapter, u8 type);
 u8 r8712_addbareq_cmd(struct _adapter *padapter, u8 tid);

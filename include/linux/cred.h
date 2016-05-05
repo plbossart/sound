@@ -62,34 +62,35 @@ do {							\
 		groups_free(group_info);		\
 } while (0)
 
-extern struct group_info *groups_alloc(int);
 extern struct group_info init_groups;
+#ifdef CONFIG_MULTIUSER
+extern struct group_info *groups_alloc(int);
 extern void groups_free(struct group_info *);
+
+extern int in_group_p(kgid_t);
+extern int in_egroup_p(kgid_t);
+#else
+static inline void groups_free(struct group_info *group_info)
+{
+}
+
+static inline int in_group_p(kgid_t grp)
+{
+        return 1;
+}
+static inline int in_egroup_p(kgid_t grp)
+{
+        return 1;
+}
+#endif
 extern int set_current_groups(struct group_info *);
-extern int set_groups(struct cred *, struct group_info *);
+extern void set_groups(struct cred *, struct group_info *);
 extern int groups_search(const struct group_info *, kgid_t);
+extern bool may_setgroups(void);
 
 /* access the groups "array" with this macro */
 #define GROUP_AT(gi, i) \
 	((gi)->blocks[(i) / NGROUPS_PER_BLOCK][(i) % NGROUPS_PER_BLOCK])
-
-extern int in_group_p(kgid_t);
-extern int in_egroup_p(kgid_t);
-
-/*
- * The common credentials for a thread group
- * - shared by CLONE_THREAD
- */
-#ifdef CONFIG_KEYS
-struct thread_group_cred {
-	atomic_t	usage;
-	pid_t		tgid;			/* thread group process ID */
-	spinlock_t	lock;
-	struct key __rcu *session_keyring;	/* keyring inherited over fork */
-	struct key	*process_keyring;	/* keyring private to this process */
-	struct rcu_head	rcu;			/* RCU deletion hook */
-};
-#endif
 
 /*
  * The security context of a task
@@ -136,12 +137,14 @@ struct cred {
 	kernel_cap_t	cap_permitted;	/* caps we're permitted */
 	kernel_cap_t	cap_effective;	/* caps we can actually use */
 	kernel_cap_t	cap_bset;	/* capability bounding set */
+	kernel_cap_t	cap_ambient;	/* Ambient capability set */
 #ifdef CONFIG_KEYS
 	unsigned char	jit_keyring;	/* default keyring to attach requested
 					 * keys to */
+	struct key __rcu *session_keyring; /* keyring inherited over fork */
+	struct key	*process_keyring; /* keyring private to this process */
 	struct key	*thread_keyring; /* keyring private to this thread */
 	struct key	*request_key_auth; /* assumed request_key authority */
-	struct thread_group_cred *tgcred; /* thread-group shared credentials */
 #endif
 #ifdef CONFIG_SECURITY
 	void		*security;	/* subjective LSM security */
@@ -210,6 +213,13 @@ static inline void validate_process_creds(void)
 }
 #endif
 
+static inline bool cap_ambient_invariant_ok(const struct cred *cred)
+{
+	return cap_issubset(cred->cap_ambient,
+			    cap_intersect(cred->cap_permitted,
+					  cred->cap_inheritable));
+}
+
 /**
  * get_new_cred - Get a reference on a new set of credentials
  * @cred: The new credentials to reference
@@ -271,6 +281,15 @@ static inline void put_cred(const struct cred *_cred)
  */
 #define current_cred() \
 	rcu_dereference_protected(current->cred, 1)
+
+/**
+ * current_real_cred - Access the current task's objective credentials
+ *
+ * Access the objective credentials of the current task.  RCU-safe,
+ * since nobody else can modify it.
+ */
+#define current_real_cred() \
+	rcu_dereference_protected(current->real_cred, 1)
 
 /**
  * __task_cred - Access a task's objective credentials
@@ -357,10 +376,11 @@ static inline void put_cred(const struct cred *_cred)
 extern struct user_namespace init_user_ns;
 #ifdef CONFIG_USER_NS
 #define current_user_ns()	(current_cred_xxx(user_ns))
-#define task_user_ns(task)	(task_cred_xxx((task), user_ns))
 #else
-#define current_user_ns()	(&init_user_ns)
-#define task_user_ns(task)	(&init_user_ns)
+static inline struct user_namespace *current_user_ns(void)
+{
+	return &init_user_ns;
+}
 #endif
 
 

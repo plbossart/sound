@@ -16,8 +16,6 @@
 
 #include <asm/page.h>
 
-#define PREEMPT_ACTIVE		0x10000000
-
 #ifdef CONFIG_4KSTACKS
 #define THREAD_SIZE		(4096)
 #define THREAD_SIZE_ORDER	(0)
@@ -42,7 +40,6 @@ typedef struct {
 
 struct thread_info {
 	struct task_struct	*task;		/* main task structure */
-	struct exec_domain	*exec_domain;	/* execution domain */
 	struct pt_regs		*frame;		/* current exception frame */
 	unsigned long		flags;		/* low level flags */
 	__u32			cpu;		/* current CPU */
@@ -52,7 +49,6 @@ struct thread_info {
 						   0-0xBFFFFFFF for user-thead
 						   0-0xFFFFFFFF for kernel-thread
 						*/
-	struct restart_block    restart_block;
 
 	__u8			supervisor_stack[0];
 };
@@ -77,14 +73,10 @@ struct thread_info {
 #define INIT_THREAD_INFO(tsk)			\
 {						\
 	.task		= &tsk,			\
-	.exec_domain	= &default_exec_domain,	\
 	.flags		= 0,			\
 	.cpu		= 0,			\
 	.preempt_count	= INIT_PREEMPT_COUNT,	\
 	.addr_limit	= KERNEL_DS,		\
-	.restart_block = {			\
-		.fn = do_no_restart_syscall,	\
-	},					\
 }
 
 #define init_thread_info	(init_thread_union.thread_info)
@@ -160,7 +152,6 @@ void arch_release_thread_info(struct thread_info *ti);
 #define _TIF_SIGPENDING		+(1 << TIF_SIGPENDING)
 #define _TIF_NEED_RESCHED	+(1 << TIF_NEED_RESCHED)
 #define _TIF_SINGLESTEP		+(1 << TIF_SINGLESTEP)
-#define _TIF_RESTORE_SIGMASK	+(1 << TIF_RESTORE_SIGMASK)
 #define _TIF_POLLING_NRFLAG	+(1 << TIF_POLLING_NRFLAG)
 
 #define _TIF_WORK_MASK		0x0000FFFE	/* work to do on interrupt/exception return */

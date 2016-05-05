@@ -17,6 +17,8 @@
 #include <linux/regulator/driver.h>
 #include <linux/regulator/machine.h>
 #include <linux/mfd/max8925.h>
+#include <linux/of.h>
+#include <linux/regulator/of_regulator.h>
 
 #define SD1_DVM_VMIN		850000
 #define SD1_DVM_VMAX		1000000
@@ -34,9 +36,7 @@
 
 struct max8925_regulator_info {
 	struct regulator_desc	desc;
-	struct regulator_dev	*regulator;
 	struct i2c_client	*i2c;
-	struct max8925_chip	*chip;
 
 	int	vol_reg;
 	int	enable_reg;
@@ -187,6 +187,34 @@ static struct regulator_ops max8925_regulator_ldo_ops = {
 	.enable_reg	= MAX8925_LDOCTL##_id,			\
 }
 
+#ifdef CONFIG_OF
+static struct of_regulator_match max8925_regulator_matches[] = {
+	{ .name	= "SDV1",},
+	{ .name = "SDV2",},
+	{ .name = "SDV3",},
+	{ .name = "LDO1",},
+	{ .name = "LDO2",},
+	{ .name = "LDO3",},
+	{ .name = "LDO4",},
+	{ .name = "LDO5",},
+	{ .name = "LDO6",},
+	{ .name = "LDO7",},
+	{ .name = "LDO8",},
+	{ .name = "LDO9",},
+	{ .name = "LDO10",},
+	{ .name = "LDO11",},
+	{ .name = "LDO12",},
+	{ .name = "LDO13",},
+	{ .name = "LDO14",},
+	{ .name = "LDO15",},
+	{ .name = "LDO16",},
+	{ .name = "LDO17",},
+	{ .name = "LDO18",},
+	{ .name = "LDO19",},
+	{ .name = "LDO20",},
+};
+#endif
+
 static struct max8925_regulator_info max8925_regulator_info[] = {
 	MAX8925_SDV(1, 637.5, 1425, 12.5),
 	MAX8925_SDV(2,   650, 2225,   25),
@@ -214,40 +242,75 @@ static struct max8925_regulator_info max8925_regulator_info[] = {
 	MAX8925_LDO(20, 750, 3900, 50),
 };
 
-static struct max8925_regulator_info * __devinit find_regulator_info(int id)
+#ifdef CONFIG_OF
+static int max8925_regulator_dt_init(struct platform_device *pdev,
+				    struct regulator_config *config,
+				    int ridx)
 {
-	struct max8925_regulator_info *ri;
-	int i;
+	struct device_node *nproot, *np;
+	int rcount;
 
-	for (i = 0; i < ARRAY_SIZE(max8925_regulator_info); i++) {
-		ri = &max8925_regulator_info[i];
-		if (ri->desc.id == id)
-			return ri;
+	nproot = pdev->dev.parent->of_node;
+	if (!nproot)
+		return -ENODEV;
+	np = of_get_child_by_name(nproot, "regulators");
+	if (!np) {
+		dev_err(&pdev->dev, "failed to find regulators node\n");
+		return -ENODEV;
 	}
-	return NULL;
-}
 
-static int __devinit max8925_regulator_probe(struct platform_device *pdev)
+	rcount = of_regulator_match(&pdev->dev, np,
+				&max8925_regulator_matches[ridx], 1);
+	of_node_put(np);
+	if (rcount < 0)
+		return rcount;
+	config->init_data =	max8925_regulator_matches[ridx].init_data;
+	config->of_node = max8925_regulator_matches[ridx].of_node;
+
+	return 0;
+}
+#else
+#define max8925_regulator_dt_init(x, y, z)	(-1)
+#endif
+
+static int max8925_regulator_probe(struct platform_device *pdev)
 {
 	struct max8925_chip *chip = dev_get_drvdata(pdev->dev.parent);
-	struct max8925_platform_data *pdata = chip->dev->platform_data;
+	struct regulator_init_data *pdata = dev_get_platdata(&pdev->dev);
 	struct regulator_config config = { };
 	struct max8925_regulator_info *ri;
+	struct resource *res;
 	struct regulator_dev *rdev;
+	int i, regulator_idx;
 
-	ri = find_regulator_info(pdev->id);
-	if (ri == NULL) {
-		dev_err(&pdev->dev, "invalid regulator ID specified\n");
+	res = platform_get_resource(pdev, IORESOURCE_REG, 0);
+	if (!res) {
+		dev_err(&pdev->dev, "No REG resource!\n");
+		return -EINVAL;
+	}
+	for (i = 0; i < ARRAY_SIZE(max8925_regulator_info); i++) {
+		ri = &max8925_regulator_info[i];
+		if (ri->vol_reg == res->start) {
+			regulator_idx = i;
+			break;
+		}
+	}
+
+	if (i == ARRAY_SIZE(max8925_regulator_info)) {
+		dev_err(&pdev->dev, "Failed to find regulator %llu\n",
+			(unsigned long long)res->start);
 		return -EINVAL;
 	}
 	ri->i2c = chip->i2c;
-	ri->chip = chip;
 
 	config.dev = &pdev->dev;
-	config.init_data = pdata->regulator[pdev->id];
 	config.driver_data = ri;
 
-	rdev = regulator_register(&ri->desc, &config);
+	if (max8925_regulator_dt_init(pdev, &config, regulator_idx))
+		if (pdata)
+			config.init_data = pdata;
+
+	rdev = devm_regulator_register(&pdev->dev, &ri->desc, &config);
 	if (IS_ERR(rdev)) {
 		dev_err(&pdev->dev, "failed to register regulator %s\n",
 				ri->desc.name);
@@ -258,23 +321,11 @@ static int __devinit max8925_regulator_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int __devexit max8925_regulator_remove(struct platform_device *pdev)
-{
-	struct regulator_dev *rdev = platform_get_drvdata(pdev);
-
-	platform_set_drvdata(pdev, NULL);
-	regulator_unregister(rdev);
-
-	return 0;
-}
-
 static struct platform_driver max8925_regulator_driver = {
 	.driver		= {
 		.name	= "max8925-regulator",
-		.owner	= THIS_MODULE,
 	},
 	.probe		= max8925_regulator_probe,
-	.remove		= __devexit_p(max8925_regulator_remove),
 };
 
 static int __init max8925_regulator_init(void)

@@ -5,7 +5,7 @@
  * Written by Ralf Baechle and Andreas Busse, modified for DECstation
  * support by Paul Antoine and Harald Koerfgen.
  *
- * completly rewritten:
+ * completely rewritten:
  * Copyright (C) 1998 Harald Koerfgen
  *
  * Rewritten extensively for controller-driven IRQ support
@@ -55,67 +55,67 @@
  * DS2100/3100's, aka kn01, aka Pmax:
  *
  *	MIPS IRQ	Source
- *      --------        ------
- *             0	Software (ignored)
- *             1        Software (ignored)
- *             2        SCSI
- *             3        Lance Ethernet
- *             4        DZ11 serial
- *             5        RTC
- *             6        Memory Controller & Video
- *             7        FPU
+ *	--------	------
+ *	       0	Software (ignored)
+ *	       1	Software (ignored)
+ *	       2	SCSI
+ *	       3	Lance Ethernet
+ *	       4	DZ11 serial
+ *	       5	RTC
+ *	       6	Memory Controller & Video
+ *	       7	FPU
  *
  * DS5000/200, aka kn02, aka 3max:
  *
  *	MIPS IRQ	Source
- *      --------        ------
- *             0	Software (ignored)
- *             1        Software (ignored)
- *             2        TurboChannel
- *             3        RTC
- *             4        Reserved
- *             5        Memory Controller
- *             6        Reserved
- *             7        FPU
+ *	--------	------
+ *	       0	Software (ignored)
+ *	       1	Software (ignored)
+ *	       2	TurboChannel
+ *	       3	RTC
+ *	       4	Reserved
+ *	       5	Memory Controller
+ *	       6	Reserved
+ *	       7	FPU
  *
  * DS5000/1xx's, aka kn02ba, aka 3min:
  *
  *	MIPS IRQ	Source
- *      --------        ------
- *             0	Software (ignored)
- *             1        Software (ignored)
- *             2        TurboChannel Slot 0
- *             3        TurboChannel Slot 1
- *             4        TurboChannel Slot 2
- *             5        TurboChannel Slot 3 (ASIC)
- *             6        Halt button
- *             7        FPU/R4k timer
+ *	--------	------
+ *	       0	Software (ignored)
+ *	       1	Software (ignored)
+ *	       2	TurboChannel Slot 0
+ *	       3	TurboChannel Slot 1
+ *	       4	TurboChannel Slot 2
+ *	       5	TurboChannel Slot 3 (ASIC)
+ *	       6	Halt button
+ *	       7	FPU/R4k timer
  *
  * DS5000/2x's, aka kn02ca, aka maxine:
  *
  *	MIPS IRQ	Source
- *      --------        ------
- *             0	Software (ignored)
- *             1        Software (ignored)
- *             2        Periodic Interrupt (100usec)
- *             3        RTC
- *             4        I/O write timeout
- *             5        TurboChannel (ASIC)
- *             6        Halt Keycode from Access.Bus keyboard (CTRL-ALT-ENTER)
- *             7        FPU/R4k timer
+ *	--------	------
+ *	       0	Software (ignored)
+ *	       1	Software (ignored)
+ *	       2	Periodic Interrupt (100usec)
+ *	       3	RTC
+ *	       4	I/O write timeout
+ *	       5	TurboChannel (ASIC)
+ *	       6	Halt Keycode from Access.Bus keyboard (CTRL-ALT-ENTER)
+ *	       7	FPU/R4k timer
  *
  * DS5000/2xx's, aka kn03, aka 3maxplus:
  *
  *	MIPS IRQ	Source
- *      --------        ------
- *             0	Software (ignored)
- *             1        Software (ignored)
- *             2        System Board (ASIC)
- *             3        RTC
- *             4        Reserved
- *             5        Memory
- *             6        Halt Button
- *             7        FPU/R4k timer
+ *	--------	------
+ *	       0	Software (ignored)
+ *	       1	Software (ignored)
+ *	       2	System Board (ASIC)
+ *	       3	RTC
+ *	       4	Reserved
+ *	       5	Memory
+ *	       6	Halt Button
+ *	       7	FPU/R4k timer
  *
  * We handle the IRQ according to _our_ priority (see setup.c),
  * then we just return.  If multiple IRQs are pending then we will
@@ -267,8 +267,13 @@ handle_it:
 
 #ifdef CONFIG_32BIT
 fpu:
+		lw	t0,fpu_kstat_irq
+		nop
+		lw	t1,(t0)
+		nop
+		addu	t1,1
 		j	handle_fpe_int
-		 nop
+		 sw	t1,(t0)
 #endif
 
 spurious:

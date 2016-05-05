@@ -9,9 +9,9 @@
  *          Dave Airlie
  */
 #include <linux/module.h>
-#include "drmP.h"
-#include "drm.h"
-#include "drm_fb_helper.h"
+#include <drm/drmP.h>
+#include <drm/drm_fb_helper.h>
+#include <drm/drm_crtc_helper.h>
 
 #include <linux/fb.h>
 
@@ -25,17 +25,53 @@ static void cirrus_dirty_update(struct cirrus_fbdev *afbdev,
 	struct cirrus_bo *bo;
 	int src_offset, dst_offset;
 	int bpp = (afbdev->gfb.base.bits_per_pixel + 7)/8;
-	int ret;
+	int ret = -EBUSY;
 	bool unmap = false;
+	bool store_for_later = false;
+	int x2, y2;
+	unsigned long flags;
 
 	obj = afbdev->gfb.obj;
 	bo = gem_to_cirrus_bo(obj);
 
-	ret = cirrus_bo_reserve(bo, true);
+	/*
+	 * try and reserve the BO, if we fail with busy
+	 * then the BO is being moved and we should
+	 * store up the damage until later.
+	 */
+	if (drm_can_sleep())
+		ret = cirrus_bo_reserve(bo, true);
 	if (ret) {
-		DRM_ERROR("failed to reserve fb bo\n");
+		if (ret != -EBUSY)
+			return;
+		store_for_later = true;
+	}
+
+	x2 = x + width - 1;
+	y2 = y + height - 1;
+	spin_lock_irqsave(&afbdev->dirty_lock, flags);
+
+	if (afbdev->y1 < y)
+		y = afbdev->y1;
+	if (afbdev->y2 > y2)
+		y2 = afbdev->y2;
+	if (afbdev->x1 < x)
+		x = afbdev->x1;
+	if (afbdev->x2 > x2)
+		x2 = afbdev->x2;
+
+	if (store_for_later) {
+		afbdev->x1 = x;
+		afbdev->x2 = x2;
+		afbdev->y1 = y;
+		afbdev->y2 = y2;
+		spin_unlock_irqrestore(&afbdev->dirty_lock, flags);
 		return;
 	}
+
+	afbdev->x1 = afbdev->y1 = INT_MAX;
+	afbdev->x2 = afbdev->y2 = 0;
+	spin_unlock_irqrestore(&afbdev->dirty_lock, flags);
 
 	if (!bo->kmap.virtual) {
 		ret = ttm_bo_kmap(&bo->bo, 0, bo->bo.num_pages, &bo->kmap);
@@ -62,7 +98,7 @@ static void cirrus_fillrect(struct fb_info *info,
 			 const struct fb_fillrect *rect)
 {
 	struct cirrus_fbdev *afbdev = info->par;
-	sys_fillrect(info, rect);
+	drm_fb_helper_sys_fillrect(info, rect);
 	cirrus_dirty_update(afbdev, rect->dx, rect->dy, rect->width,
 			 rect->height);
 }
@@ -71,7 +107,7 @@ static void cirrus_copyarea(struct fb_info *info,
 			 const struct fb_copyarea *area)
 {
 	struct cirrus_fbdev *afbdev = info->par;
-	sys_copyarea(info, area);
+	drm_fb_helper_sys_copyarea(info, area);
 	cirrus_dirty_update(afbdev, area->dx, area->dy, area->width,
 			 area->height);
 }
@@ -80,7 +116,7 @@ static void cirrus_imageblit(struct fb_info *info,
 			  const struct fb_image *image)
 {
 	struct cirrus_fbdev *afbdev = info->par;
-	sys_imageblit(info, image);
+	drm_fb_helper_sys_imageblit(info, image);
 	cirrus_dirty_update(afbdev, image->dx, image->dy, image->width,
 			 image->height);
 }
@@ -99,10 +135,11 @@ static struct fb_ops cirrusfb_ops = {
 };
 
 static int cirrusfb_create_object(struct cirrus_fbdev *afbdev,
-			       struct drm_mode_fb_cmd2 *mode_cmd,
+			       const struct drm_mode_fb_cmd2 *mode_cmd,
 			       struct drm_gem_object **gobj_p)
 {
 	struct drm_device *dev = afbdev->helper.dev;
+	struct cirrus_device *cdev = dev->dev_private;
 	u32 bpp, depth;
 	u32 size;
 	struct drm_gem_object *gobj;
@@ -110,8 +147,10 @@ static int cirrusfb_create_object(struct cirrus_fbdev *afbdev,
 	int ret = 0;
 	drm_fb_get_bpp_depth(mode_cmd->pixel_format, &depth, &bpp);
 
-	if (bpp > 24)
+	if (!cirrus_check_framebuffer(cdev, mode_cmd->width, mode_cmd->height,
+				      bpp, mode_cmd->pitches[0]))
 		return -EINVAL;
+
 	size = mode_cmd->pitches[0] * mode_cmd->height;
 	ret = cirrus_gem_create(dev, size, true, &gobj);
 	if (ret)
@@ -121,15 +160,15 @@ static int cirrusfb_create_object(struct cirrus_fbdev *afbdev,
 	return ret;
 }
 
-static int cirrusfb_create(struct cirrus_fbdev *gfbdev,
+static int cirrusfb_create(struct drm_fb_helper *helper,
 			   struct drm_fb_helper_surface_size *sizes)
 {
-	struct drm_device *dev = gfbdev->helper.dev;
+	struct cirrus_fbdev *gfbdev =
+		container_of(helper, struct cirrus_fbdev, helper);
 	struct cirrus_device *cdev = gfbdev->helper.dev->dev_private;
 	struct fb_info *info;
 	struct drm_framebuffer *fb;
 	struct drm_mode_fb_cmd2 mode_cmd;
-	struct device *device = &dev->pdev->dev;
 	void *sysram;
 	struct drm_gem_object *gobj = NULL;
 	struct cirrus_bo *bo = NULL;
@@ -154,9 +193,9 @@ static int cirrusfb_create(struct cirrus_fbdev *gfbdev,
 	if (!sysram)
 		return -ENOMEM;
 
-	info = framebuffer_alloc(0, device);
-	if (info == NULL)
-		return -ENOMEM;
+	info = drm_fb_helper_alloc_fbi(helper);
+	if (IS_ERR(info))
+		return PTR_ERR(info);
 
 	info->par = gfbdev;
 
@@ -175,10 +214,8 @@ static int cirrusfb_create(struct cirrus_fbdev *gfbdev,
 
 	/* setup helper */
 	gfbdev->helper.fb = fb;
-	gfbdev->helper.fbdev = info;
 
 	strcpy(info->fix.id, "cirrusdrmfb");
-
 
 	info->flags = FBINFO_DEFAULT;
 	info->fbops = &cirrusfb_ops;
@@ -188,26 +225,17 @@ static int cirrusfb_create(struct cirrus_fbdev *gfbdev,
 			       sizes->fb_height);
 
 	/* setup aperture base/size for vesafb takeover */
-	info->apertures = alloc_apertures(1);
-	if (!info->apertures) {
-		ret = -ENOMEM;
-		goto out_iounmap;
-	}
 	info->apertures->ranges[0].base = cdev->dev->mode_config.fb_base;
 	info->apertures->ranges[0].size = cdev->mc.vram_size;
+
+	info->fix.smem_start = cdev->dev->mode_config.fb_base;
+	info->fix.smem_len = cdev->mc.vram_size;
 
 	info->screen_base = sysram;
 	info->screen_size = size;
 
 	info->fix.mmio_start = 0;
 	info->fix.mmio_len = 0;
-
-	ret = fb_alloc_cmap(&info->cmap, 256, 0);
-	if (ret) {
-		DRM_ERROR("%s: can't allocate color map\n", info->fix.id);
-		ret = -ENOMEM;
-		goto out_iounmap;
-	}
 
 	DRM_INFO("fb mappable at 0x%lX\n", info->fix.smem_start);
 	DRM_INFO("vram aper at 0x%lX\n", (unsigned long)info->fix.smem_start);
@@ -216,41 +244,15 @@ static int cirrusfb_create(struct cirrus_fbdev *gfbdev,
 	DRM_INFO("   pitch is %d\n", fb->pitches[0]);
 
 	return 0;
-out_iounmap:
-	return ret;
-}
-
-static int cirrus_fb_find_or_create_single(struct drm_fb_helper *helper,
-					   struct drm_fb_helper_surface_size
-					   *sizes)
-{
-	struct cirrus_fbdev *gfbdev = (struct cirrus_fbdev *)helper;
-	int new_fb = 0;
-	int ret;
-
-	if (!helper->fb) {
-		ret = cirrusfb_create(gfbdev, sizes);
-		if (ret)
-			return ret;
-		new_fb = 1;
-	}
-	return new_fb;
 }
 
 static int cirrus_fbdev_destroy(struct drm_device *dev,
 				struct cirrus_fbdev *gfbdev)
 {
-	struct fb_info *info;
 	struct cirrus_framebuffer *gfb = &gfbdev->gfb;
 
-	if (gfbdev->helper.fbdev) {
-		info = gfbdev->helper.fbdev;
-
-		unregister_framebuffer(info);
-		if (info->cmap.len)
-			fb_dealloc_cmap(&info->cmap);
-		framebuffer_release(info);
-	}
+	drm_fb_helper_unregister_fbi(&gfbdev->helper);
+	drm_fb_helper_release_fbi(&gfbdev->helper);
 
 	if (gfb->obj) {
 		drm_gem_object_unreference_unlocked(gfb->obj);
@@ -259,15 +261,16 @@ static int cirrus_fbdev_destroy(struct drm_device *dev,
 
 	vfree(gfbdev->sysram);
 	drm_fb_helper_fini(&gfbdev->helper);
+	drm_framebuffer_unregister_private(&gfb->base);
 	drm_framebuffer_cleanup(&gfb->base);
 
 	return 0;
 }
 
-static struct drm_fb_helper_funcs cirrus_fb_helper_funcs = {
+static const struct drm_fb_helper_funcs cirrus_fb_helper_funcs = {
 	.gamma_set = cirrus_crtc_fb_gamma_set,
 	.gamma_get = cirrus_crtc_fb_gamma_get,
-	.fb_probe = cirrus_fb_find_or_create_single,
+	.fb_probe = cirrusfb_create,
 };
 
 int cirrus_fbdev_init(struct cirrus_device *cdev)
@@ -282,18 +285,24 @@ int cirrus_fbdev_init(struct cirrus_device *cdev)
 		return -ENOMEM;
 
 	cdev->mode_info.gfbdev = gfbdev;
-	gfbdev->helper.funcs = &cirrus_fb_helper_funcs;
+	spin_lock_init(&gfbdev->dirty_lock);
+
+	drm_fb_helper_prepare(cdev->dev, &gfbdev->helper,
+			      &cirrus_fb_helper_funcs);
 
 	ret = drm_fb_helper_init(cdev->dev, &gfbdev->helper,
 				 cdev->num_crtc, CIRRUSFB_CONN_LIMIT);
-	if (ret) {
-		kfree(gfbdev);
+	if (ret)
 		return ret;
-	}
-	drm_fb_helper_single_add_all_connectors(&gfbdev->helper);
-	drm_fb_helper_initial_config(&gfbdev->helper, bpp_sel);
 
-	return 0;
+	ret = drm_fb_helper_single_add_all_connectors(&gfbdev->helper);
+	if (ret)
+		return ret;
+
+	/* disable all the possible outputs/crtcs before entering KMS mode */
+	drm_helper_disable_unused_functions(cdev->dev);
+
+	return drm_fb_helper_initial_config(&gfbdev->helper, bpp_sel);
 }
 
 void cirrus_fbdev_fini(struct cirrus_device *cdev)

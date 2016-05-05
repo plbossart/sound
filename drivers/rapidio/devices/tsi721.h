@@ -21,6 +21,46 @@
 #ifndef __TSI721_H
 #define __TSI721_H
 
+/* Debug output filtering masks */
+enum {
+	DBG_NONE	= 0,
+	DBG_INIT	= BIT(0), /* driver init */
+	DBG_EXIT	= BIT(1), /* driver exit */
+	DBG_MPORT	= BIT(2), /* mport add/remove */
+	DBG_MAINT	= BIT(3), /* maintenance ops messages */
+	DBG_DMA		= BIT(4), /* DMA transfer messages */
+	DBG_DMAV	= BIT(5), /* verbose DMA transfer messages */
+	DBG_IBW		= BIT(6), /* inbound window */
+	DBG_EVENT	= BIT(7), /* event handling messages */
+	DBG_OBW		= BIT(8), /* outbound window messages */
+	DBG_DBELL	= BIT(9), /* doorbell messages */
+	DBG_OMSG	= BIT(10), /* doorbell messages */
+	DBG_IMSG	= BIT(11), /* doorbell messages */
+	DBG_ALL		= ~0,
+};
+
+#ifdef DEBUG
+extern u32 dbg_level;
+
+#define tsi_debug(level, dev, fmt, arg...)				\
+	do {								\
+		if (DBG_##level & dbg_level)				\
+			dev_dbg(dev, "%s: " fmt "\n", __func__, ##arg);	\
+	} while (0)
+#else
+#define tsi_debug(level, dev, fmt, arg...) \
+		no_printk(KERN_DEBUG "%s: " fmt "\n", __func__, ##arg)
+#endif
+
+#define tsi_info(dev, fmt, arg...) \
+	dev_info(dev, "%s: " fmt "\n", __func__, ##arg)
+
+#define tsi_warn(dev, fmt, arg...) \
+	dev_warn(dev, "%s: WARNING " fmt "\n", __func__, ##arg)
+
+#define tsi_err(dev, fmt, arg...) \
+	dev_err(dev, "%s: ERROR " fmt "\n", __func__, ##arg)
+
 #define DRV_NAME	"tsi721"
 
 #define DEFAULT_HOPCOUNT	0xff
@@ -71,8 +111,6 @@
 #define TSI721_PCIECFG_MSIXPBA	0x0a8
 #define TSI721_MSIXPBA_OFFSET	0x2a000
 #define TSI721_PCIECFG_EPCTL	0x400
-
-#define MAX_READ_REQUEST_SZ_SHIFT	12
 
 /*
  * Event Management Registers
@@ -156,9 +194,18 @@
 
 #define TSI721_IBWIN_NUM	8
 
-#define TSI721_IBWINLB(x)	(0x29000 + (x) * 0x20)
-#define TSI721_IBWINLB_BA	0xfffff000
-#define TSI721_IBWINLB_WEN	0x00000001
+#define TSI721_IBWIN_LB(x)	(0x29000 + (x) * 0x20)
+#define TSI721_IBWIN_LB_BA	0xfffff000
+#define TSI721_IBWIN_LB_WEN	0x00000001
+
+#define TSI721_IBWIN_UB(x)	(0x29004 + (x) * 0x20)
+#define TSI721_IBWIN_SZ(x)	(0x29008 + (x) * 0x20)
+#define TSI721_IBWIN_SZ_SIZE	0x00001f00
+#define TSI721_IBWIN_SIZE(size)	(__fls(size) - 12)
+
+#define TSI721_IBWIN_TLA(x)	(0x2900c + (x) * 0x20)
+#define TSI721_IBWIN_TLA_ADD	0xfffff000
+#define TSI721_IBWIN_TUA(x)	(0x29010 + (x) * 0x20)
 
 #define TSI721_SR2PC_GEN_INTE	0x29800
 #define TSI721_SR2PC_PWE	0x29804
@@ -635,23 +682,26 @@ enum tsi721_smsg_int_flag {
 
 #ifdef CONFIG_RAPIDIO_DMA_ENGINE
 
+#define TSI721_BDMA_MAX_BCOUNT	(TSI721_DMAD_BCOUNT1 + 1)
+
 struct tsi721_tx_desc {
 	struct dma_async_tx_descriptor	txd;
-	struct tsi721_dma_desc		*hw_desc;
 	u16				destid;
 	/* low 64-bits of 66-bit RIO address */
 	u64				rio_addr;
 	/* upper 2-bits of 66-bit RIO address */
 	u8				rio_addr_u;
-	bool				interrupt;
+	enum dma_rtype			rtype;
 	struct list_head		desc_node;
-	struct list_head		tx_list;
+	struct scatterlist		*sg;
+	unsigned int			sg_len;
+	enum dma_status			status;
 };
 
 struct tsi721_bdma_chan {
 	int		id;
 	void __iomem	*regs;
-	int		bd_num;		/* number of buffer descriptors */
+	int		bd_num;		/* number of HW buffer descriptors */
 	void		*bd_base;	/* start of DMA descriptors */
 	dma_addr_t	bd_phys;
 	void		*sts_base;	/* start of DMA BD status FIFO */
@@ -664,11 +714,11 @@ struct tsi721_bdma_chan {
 	struct dma_chan		dchan;
 	struct tsi721_tx_desc	*tx_desc;
 	spinlock_t		lock;
-	struct list_head	active_list;
+	struct tsi721_tx_desc	*active_tx;
 	struct list_head	queue;
 	struct list_head	free_list;
-	dma_cookie_t		completed_cookie;
 	struct tasklet_struct	tasklet;
+	bool			active;
 };
 
 #endif /* CONFIG_RAPIDIO_DMA_ENGINE */
@@ -798,9 +848,38 @@ struct msix_irq {
 };
 #endif /* CONFIG_PCI_MSI */
 
+struct tsi721_ib_win_mapping {
+	struct list_head node;
+	dma_addr_t	lstart;
+};
+
+struct tsi721_ib_win {
+	u64		rstart;
+	u32		size;
+	dma_addr_t	lstart;
+	bool		active;
+	bool		xlat;
+	struct list_head mappings;
+};
+
+struct tsi721_obw_bar {
+	u64		base;
+	u64		size;
+	u64		free;
+};
+
+struct tsi721_ob_win {
+	u64		base;
+	u32		size;
+	u16		destid;
+	u64		rstart;
+	bool		active;
+	struct tsi721_obw_bar *pbar;
+};
+
 struct tsi721_device {
 	struct pci_dev	*pdev;
-	struct rio_mport *mport;
+	struct rio_mport mport;
 	u32		flags;
 	void __iomem	*regs;
 #ifdef CONFIG_PCI_MSI
@@ -833,11 +912,25 @@ struct tsi721_device {
 	/* Outbound Messaging */
 	int		omsg_init[TSI721_OMSG_CHNUM];
 	struct tsi721_omsg_ring	omsg_ring[TSI721_OMSG_CHNUM];
+
+	/* Inbound Mapping Windows */
+	struct tsi721_ib_win ib_win[TSI721_IBWIN_NUM];
+	int		ibwin_cnt;
+
+	/* Outbound Mapping Windows */
+	struct tsi721_obw_bar p2r_bar[2];
+	struct tsi721_ob_win  ob_win[TSI721_OBWIN_NUM];
+	int		obwin_cnt;
 };
 
 #ifdef CONFIG_RAPIDIO_DMA_ENGINE
 extern void tsi721_bdma_handler(struct tsi721_bdma_chan *bdma_chan);
-extern int __devinit tsi721_register_dma(struct tsi721_device *priv);
+extern int tsi721_register_dma(struct tsi721_device *priv);
+extern void tsi721_unregister_dma(struct tsi721_device *priv);
+extern void tsi721_dma_stop_all(struct tsi721_device *priv);
+#else
+#define tsi721_dma_stop_all(priv) do {} while (0)
+#define tsi721_unregister_dma(priv) do {} while (0)
 #endif
 
 #endif

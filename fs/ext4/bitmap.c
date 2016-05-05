@@ -8,7 +8,6 @@
  */
 
 #include <linux/buffer_head.h>
-#include <linux/jbd2.h>
 #include "ext4.h"
 
 unsigned int ext4_count_free(char *bitmap, unsigned int numchars)
@@ -24,8 +23,7 @@ int ext4_inode_bitmap_csum_verify(struct super_block *sb, ext4_group_t group,
 	__u32 provided, calculated;
 	struct ext4_sb_info *sbi = EXT4_SB(sb);
 
-	if (!EXT4_HAS_RO_COMPAT_FEATURE(sb,
-					EXT4_FEATURE_RO_COMPAT_METADATA_CSUM))
+	if (!ext4_has_metadata_csum(sb))
 		return 1;
 
 	provided = le16_to_cpu(gdp->bg_inode_bitmap_csum_lo);
@@ -46,8 +44,7 @@ void ext4_inode_bitmap_csum_set(struct super_block *sb, ext4_group_t group,
 	__u32 csum;
 	struct ext4_sb_info *sbi = EXT4_SB(sb);
 
-	if (!EXT4_HAS_RO_COMPAT_FEATURE(sb,
-					EXT4_FEATURE_RO_COMPAT_METADATA_CSUM))
+	if (!ext4_has_metadata_csum(sb))
 		return;
 
 	csum = ext4_chksum(sbi, sbi->s_csum_seed, (__u8 *)bh->b_data, sz);
@@ -58,14 +55,14 @@ void ext4_inode_bitmap_csum_set(struct super_block *sb, ext4_group_t group,
 
 int ext4_block_bitmap_csum_verify(struct super_block *sb, ext4_group_t group,
 				  struct ext4_group_desc *gdp,
-				  struct buffer_head *bh, int sz)
+				  struct buffer_head *bh)
 {
 	__u32 hi;
 	__u32 provided, calculated;
 	struct ext4_sb_info *sbi = EXT4_SB(sb);
+	int sz = EXT4_CLUSTERS_PER_GROUP(sb) / 8;
 
-	if (!EXT4_HAS_RO_COMPAT_FEATURE(sb,
-					EXT4_FEATURE_RO_COMPAT_METADATA_CSUM))
+	if (!ext4_has_metadata_csum(sb))
 		return 1;
 
 	provided = le16_to_cpu(gdp->bg_block_bitmap_csum_lo);
@@ -79,19 +76,18 @@ int ext4_block_bitmap_csum_verify(struct super_block *sb, ext4_group_t group,
 	if (provided == calculated)
 		return 1;
 
-	ext4_error(sb, "Bad block bitmap checksum: block_group = %u", group);
 	return 0;
 }
 
 void ext4_block_bitmap_csum_set(struct super_block *sb, ext4_group_t group,
 				struct ext4_group_desc *gdp,
-				struct buffer_head *bh, int sz)
+				struct buffer_head *bh)
 {
+	int sz = EXT4_CLUSTERS_PER_GROUP(sb) / 8;
 	__u32 csum;
 	struct ext4_sb_info *sbi = EXT4_SB(sb);
 
-	if (!EXT4_HAS_RO_COMPAT_FEATURE(sb,
-			EXT4_FEATURE_RO_COMPAT_METADATA_CSUM))
+	if (!ext4_has_metadata_csum(sb))
 		return;
 
 	csum = ext4_chksum(sbi, sbi->s_csum_seed, (__u8 *)bh->b_data, sz);

@@ -107,7 +107,22 @@
 #define HV_DISPATCH_ENTRY_SIZE 32
 
 /** Version of the hypervisor interface defined by this file */
-#define _HV_VERSION 11
+#define _HV_VERSION 13
+
+/** Last version of the hypervisor interface with old hv_init() ABI.
+ *
+ * The change from version 12 to version 13 corresponds to launching
+ * the client by default at PL2 instead of PL1 (corresponding to the
+ * hv itself running at PL3 instead of PL2).  To make this explicit,
+ * the hv_init() API was also extended so the client can report its
+ * desired PL, resulting in a more helpful failure diagnostic.  If you
+ * call hv_init() with _HV_VERSION_OLD_HV_INIT and omit the client_pl
+ * argument, the hypervisor will assume client_pl = 1.
+ *
+ * Note that this is a deprecated solution and we do not expect to
+ * support clients of the Tilera hypervisor running at PL1 indefinitely.
+ */
+#define _HV_VERSION_OLD_HV_INIT 12
 
 /* Index into hypervisor interface dispatch code blocks.
  *
@@ -303,8 +318,14 @@
 /** hv_set_pte_super_shift */
 #define HV_DISPATCH_SET_PTE_SUPER_SHIFT           57
 
+/** hv_console_set_ipi */
+#define HV_DISPATCH_CONSOLE_SET_IPI               63
+
+/** hv_send_nmi */
+#define HV_DISPATCH_SEND_NMI                      65
+
 /** One more than the largest dispatch value */
-#define _HV_DISPATCH_END                          58
+#define _HV_DISPATCH_END                          66
 
 
 #ifndef __ASSEMBLER__
@@ -377,7 +398,11 @@ typedef int HV_Errno;
 #ifndef __ASSEMBLER__
 
 /** Pass HV_VERSION to hv_init to request this version of the interface. */
-typedef enum { HV_VERSION = _HV_VERSION } HV_VersionNumber;
+typedef enum {
+  HV_VERSION = _HV_VERSION,
+  HV_VERSION_OLD_HV_INIT = _HV_VERSION_OLD_HV_INIT,
+
+} HV_VersionNumber;
 
 /** Initializes the hypervisor.
  *
@@ -385,9 +410,11 @@ typedef enum { HV_VERSION = _HV_VERSION } HV_VersionNumber;
  * that this program expects, typically HV_VERSION.
  * @param chip_num Architecture number of the chip the client was built for.
  * @param chip_rev_num Revision number of the chip the client was built for.
+ * @param client_pl Privilege level the client is built for
+ *   (not required if interface_version_number == HV_VERSION_OLD_HV_INIT).
  */
 void hv_init(HV_VersionNumber interface_version_number,
-             int chip_num, int chip_rev_num);
+             int chip_num, int chip_rev_num, int client_pl);
 
 
 /** Queries we can make for hv_sysconf().
@@ -520,14 +547,24 @@ typedef enum {
   HV_CONFSTR_CPUMOD_REV      = 18,
 
   /** Human-readable CPU module description. */
-  HV_CONFSTR_CPUMOD_DESC     = 19
+  HV_CONFSTR_CPUMOD_DESC     = 19,
+
+  /** Per-tile hypervisor statistics.  When this identifier is specified,
+   *  the hv_confstr call takes two extra arguments.  The first is the
+   *  HV_XY_TO_LOTAR of the target tile's coordinates.  The second is
+   *  a flag word.  The only current flag is the lowest bit, which means
+   *  "zero out the stats instead of retrieving them"; in this case the
+   *  buffer and buffer length are ignored. */
+  HV_CONFSTR_HV_STATS        = 20
 
 } HV_ConfstrQuery;
 
 /** Query a configuration string from the hypervisor.
  *
  * @param query Identifier for the specific string to be retrieved
- *        (HV_CONFSTR_xxx).
+ *        (HV_CONFSTR_xxx).  Some strings may require or permit extra
+ *        arguments to be appended which select specific objects to be
+ *        described; see the string descriptions above.
  * @param buf Buffer in which to place the string.
  * @param len Length of the buffer.
  * @return If query is valid, then the length of the corresponding string,
@@ -535,21 +572,16 @@ typedef enum {
  *        was truncated.  If query is invalid, HV_EINVAL.  If the specified
  *        buffer is not writable by the client, HV_EFAULT.
  */
-int hv_confstr(HV_ConfstrQuery query, HV_VirtAddr buf, int len);
+int hv_confstr(HV_ConfstrQuery query, HV_VirtAddr buf, int len, ...);
 
 /** Tile coordinate */
 typedef struct
 {
-#ifndef __BIG_ENDIAN__
   /** X coordinate, relative to supervisor's top-left coordinate */
   int x;
 
   /** Y coordinate, relative to supervisor's top-left coordinate */
   int y;
-#else
-  int y;
-  int x;
-#endif
 } HV_Coord;
 
 
@@ -563,6 +595,30 @@ typedef struct
  * @result Zero if no error, non-zero for invalid parameters.
  */
 int hv_get_ipi_pte(HV_Coord tile, int pl, HV_PTE* pte);
+
+/** Configure the console interrupt.
+ *
+ * When the console client interrupt is enabled, the hypervisor will
+ * deliver the specified IPI to the client in the following situations:
+ *
+ * - The console has at least one character available for input.
+ *
+ * - The console can accept new characters for output, and the last call
+ *   to hv_console_write() did not write all of the characters requested
+ *   by the client.
+ *
+ * Note that in some system configurations, console interrupt will not
+ * be available; clients should be prepared for this routine to fail and
+ * to fall back to periodic console polling in that case.
+ *
+ * @param ipi Index of the IPI register which will receive the interrupt.
+ * @param event IPI event number for console interrupt. If less than 0,
+ *        disable the console IPI interrupt.
+ * @param coord Tile to be targeted for console interrupt.
+ * @return 0 on success, otherwise, HV_EINVAL if illegal parameter,
+ *         HV_ENOTSUP if console interrupt are not available.
+ */
+int hv_console_set_ipi(int ipi, int event, HV_Coord coord);
 
 #else /* !CHIP_HAS_IPI() */
 
@@ -908,7 +964,11 @@ typedef enum {
   HV_INQ_TILES_HFH_CACHE       = 2,
 
   /** The set of tiles that can be legally used as a LOTAR for a PTE. */
-  HV_INQ_TILES_LOTAR           = 3
+  HV_INQ_TILES_LOTAR           = 3,
+
+  /** The set of "shared" driver tiles that the hypervisor may
+   *  periodically interrupt. */
+  HV_INQ_TILES_SHARED          = 4
 } HV_InqTileSet;
 
 /** Returns specific information about various sets of tiles within the
@@ -1071,13 +1131,8 @@ HV_VirtAddrRange hv_inquire_virtual(int idx);
 /** A range of ASID values. */
 typedef struct
 {
-#ifndef __BIG_ENDIAN__
   HV_ASID start;        /**< First ASID in the range. */
   unsigned int size;    /**< Number of ASIDs. Zero for an invalid range. */
-#else
-  unsigned int size;    /**< Number of ASIDs. Zero for an invalid range. */
-  HV_ASID start;        /**< First ASID in the range. */
-#endif
 } HV_ASIDRange;
 
 /** Returns information about a range of ASIDs.
@@ -1201,6 +1256,11 @@ void hv_downcall_dispatch(void);
 #define INT_DMATLB_ACCESS_DWNCL  INT_DMA_CPL
 /** Device interrupt downcall interrupt vector */
 #define INT_DEV_INTR_DWNCL       INT_WORLD_ACCESS
+/** NMI downcall interrupt vector */
+#define INT_NMI_DWNCL            64
+
+#define HV_NMI_FLAG_FORCE    0x1  /**< Force an NMI downcall regardless of
+               the ICS bit of the client. */
 
 #ifndef __ASSEMBLER__
 
@@ -1401,7 +1461,6 @@ typedef enum
 /** Message recipient. */
 typedef struct
 {
-#ifndef __BIG_ENDIAN__
   /** X coordinate, relative to supervisor's top-left coordinate */
   unsigned int x:11;
 
@@ -1410,11 +1469,6 @@ typedef struct
 
   /** Status of this recipient */
   HV_Recip_State state:10;
-#else //__BIG_ENDIAN__
-  HV_Recip_State state:10;
-  unsigned int y:11;
-  unsigned int x:11;
-#endif
 } HV_Recipient;
 
 /** Send a message to a set of recipients.
@@ -1732,6 +1786,56 @@ int hv_dev_poll(int devhdl, __hv32 events, HV_IntArg intarg);
  *         error code.
  */
 int hv_dev_poll_cancel(int devhdl);
+
+
+/** NMI information */
+typedef struct
+{
+  /** Result: negative error, or HV_NMI_RESULT_xxx. */
+  int result;
+
+  /** PC from interrupted remote core (if result != HV_NMI_RESULT_FAIL_HV). */
+  HV_VirtAddr pc;
+
+} HV_NMI_Info;
+
+/** NMI issued successfully. */
+#define HV_NMI_RESULT_OK        0
+
+/** NMI not issued: remote tile running at client PL with ICS set. */
+#define HV_NMI_RESULT_FAIL_ICS  1
+
+/** NMI not issued: remote tile waiting in hypervisor. */
+#define HV_NMI_RESULT_FAIL_HV   2
+
+/** Force an NMI downcall regardless of the ICS bit of the client. */
+#define HV_NMI_FLAG_FORCE    0x1
+
+/** Send an NMI interrupt request to a particular tile.
+ *
+ *  This will cause the NMI to be issued on the remote tile regardless
+ *  of the state of the client interrupt mask.  However, if the remote
+ *  tile is in the hypervisor, it will not execute the NMI, and
+ *  HV_NMI_RESULT_FAIL_HV will be returned.  Similarly, if the remote
+ *  tile is in a client interrupt critical section at the time of the
+ *  NMI, it will not execute the NMI, and HV_NMI_RESULT_FAIL_ICS will
+ *  be returned.  In this second case, however, if HV_NMI_FLAG_FORCE
+ *  is set in flags, then the remote tile will enter its NMI interrupt
+ *  vector regardless.  Forcing the NMI vector during an interrupt
+ *  critical section will mean that the client can not safely continue
+ *  execution after handling the interrupt.
+ *
+ *  @param tile Tile to which the NMI request is sent.
+ *  @param info NMI information which is defined by and interpreted by the
+ *         supervisor, is passed to the specified tile, and is
+ *         stored in the SPR register SYSTEM_SAVE_{CLIENT_PL}_2 on the
+ *         specified tile when entering the NMI handler routine.
+ *         Typically, this parameter stores the NMI type, or an aligned
+ *         VA plus some special bits, etc.
+ *  @param flags Flags (HV_NMI_FLAG_xxx).
+ *  @return Information about the requested NMI.
+ */
+HV_NMI_Info hv_send_nmi(HV_Coord tile, unsigned long info, __hv64 flags);
 
 
 /** Scatter-gather list for preada/pwritea calls. */
