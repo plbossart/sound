@@ -593,6 +593,17 @@ static int intel_config_stream(struct sdw_intel *sdw,
 	return -EIO;
 }
 
+static int intel_free_stream(struct sdw_intel *sdw,
+			     struct snd_pcm_substream *substream,
+			     struct snd_soc_dai *dai)
+{
+	if (sdw->res->ops && sdw->res->ops->free_stream && sdw->res->arg)
+		return sdw->res->ops->free_stream(sdw->res->arg,
+				substream, dai);
+
+	return 0;
+}
+
 /*
  * bank switch routines
  */
@@ -738,6 +749,62 @@ static int intel_startup(struct snd_pcm_substream *substream,
 	return ret;
 }
 
+static int sdw_stream_setup(struct snd_pcm_substream *substream,
+			    struct snd_soc_dai *dai)
+{
+	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+	struct sdw_stream_runtime *sdw_stream = NULL;
+	char *name;
+	int i, ret = 0;
+
+	name = kzalloc(32, GFP_KERNEL);
+	if (!name)
+		return -ENOMEM;
+
+	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
+		snprintf(name, 32, "%s-Playback", dai->name);
+	else
+		snprintf(name, 32, "%s-Capture", dai->name);
+
+	sdw_stream = sdw_alloc_stream(name);
+	if (!sdw_stream) {
+		dev_err(dai->dev,
+			"alloc stream failed for DAI %s: %d",
+			dai->name, ret);
+		ret = -ENOMEM;
+		goto error;
+	}
+
+	/* Set stream pointer on CPU DAI */
+	ret = snd_soc_dai_set_sdw_stream(dai,
+					 sdw_stream,
+					 substream->stream);
+	if (ret < 0) {
+		dev_err(dai->dev, "failed to set stream pointer on cpu dai %s",
+			dai->name);
+		return ret;
+	}
+
+	/* Set stream pointer on all CODEC DAIs */
+	for (i = 0; i < rtd->num_codecs; i++) {
+		ret = snd_soc_dai_set_sdw_stream(rtd->codec_dais[i],
+						 sdw_stream,
+						 substream->stream);
+		if (ret < 0) {
+			dev_err(dai->dev, "failed to set stream pointer on codec dai %s",
+				rtd->codec_dais[i]->name);
+			return ret;
+		}
+	}
+
+	return 0;
+
+error:
+	kfree(name);
+	sdw_release_stream(sdw_stream);
+	return ret;
+}
+
 static int intel_hw_params(struct snd_pcm_substream *substream,
 			   struct snd_pcm_hw_params *params,
 			   struct snd_soc_dai *dai)
@@ -749,6 +816,12 @@ static int intel_hw_params(struct snd_pcm_substream *substream,
 	struct sdw_port_config *pconfig;
 	int ret, i, ch, dir;
 	bool pcm = true;
+
+	ret = sdw_stream_setup(substream, dai);
+	if (ret) {
+		dev_err(cdns->dev, "stream setup failed:%d\n", ret);
+		return -EIO;
+	}
 
 	dma = snd_soc_dai_get_dma_data(dai, substream);
 	if (!dma)
@@ -835,16 +908,84 @@ port_error:
 	return ret;
 }
 
+static int intel_prepare(struct snd_pcm_substream *substream,
+			 struct snd_soc_dai *dai)
+{
+	struct sdw_cdns_dma_data *dma;
+	int ret;
+
+	dma = snd_soc_dai_get_dma_data(dai, substream);
+	if (!dma) {
+		dev_err(dai->dev, "failed to get dma data in %s",
+			__func__);
+		return -EIO;
+	}
+
+	ret = sdw_prepare_stream(dma->stream);
+	return ret;
+}
+
+static int intel_trigger(struct snd_pcm_substream *substream, int cmd,
+			 struct snd_soc_dai *dai)
+{
+	struct sdw_cdns_dma_data *dma;
+	int ret;
+
+	dma = snd_soc_dai_get_dma_data(dai, substream);
+	if (!dma) {
+		dev_err(dai->dev, "failed to get dma data in %s", __func__);
+		return -EIO;
+	}
+
+	switch (cmd) {
+	case SNDRV_PCM_TRIGGER_START:
+	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
+	case SNDRV_PCM_TRIGGER_RESUME:
+		ret = sdw_enable_stream(dma->stream);
+		if (ret) {
+			dev_err(dai->dev,
+				"%s trigger %d failed: %d",
+				__func__, cmd, ret);
+			return ret;
+		}
+		break;
+
+	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
+	case SNDRV_PCM_TRIGGER_SUSPEND:
+	case SNDRV_PCM_TRIGGER_STOP:
+		ret = sdw_disable_stream(dma->stream);
+		if (ret) {
+			dev_err(dai->dev,
+				"%s trigger %d failed: %d",
+				__func__, cmd, ret);
+			return ret;
+		}
+		break;
+
+	default:
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
 static int
 intel_hw_free(struct snd_pcm_substream *substream, struct snd_soc_dai *dai)
 {
 	struct sdw_cdns *cdns = snd_soc_dai_get_drvdata(dai);
+	struct sdw_intel *sdw = cdns_to_intel(cdns);
 	struct sdw_cdns_dma_data *dma;
 	int ret;
 
 	dma = snd_soc_dai_get_dma_data(dai, substream);
 	if (!dma)
 		return -EIO;
+
+	ret = sdw_deprepare_stream(dma->stream);
+	if (ret) {
+		dev_err(dai->dev, "sdw_deprepare_stream: failed %d", ret);
+		return ret;
+	}
 
 	ret = sdw_stream_remove_master(&cdns->bus, dma->stream);
 	if (ret < 0)
@@ -853,6 +994,10 @@ intel_hw_free(struct snd_pcm_substream *substream, struct snd_soc_dai *dai)
 
 	intel_port_cleanup(dma);
 	kfree(dma->port);
+
+	ret = intel_free_stream(sdw, substream, dai);
+	sdw_release_stream(dma->stream);
+
 	return ret;
 }
 
@@ -898,6 +1043,8 @@ static const struct snd_soc_dai_ops intel_pcm_dai_ops = {
 	.hw_free = intel_hw_free,
 	.shutdown = intel_shutdown,
 	.set_sdw_stream = intel_pcm_set_sdw_stream,
+	.prepare = intel_prepare,
+	.trigger = intel_trigger,
 };
 
 static const struct snd_soc_dai_ops intel_pdm_dai_ops = {
@@ -905,6 +1052,8 @@ static const struct snd_soc_dai_ops intel_pdm_dai_ops = {
 	.hw_free = intel_hw_free,
 	.shutdown = intel_shutdown,
 	.set_sdw_stream = intel_pdm_set_sdw_stream,
+	.prepare = intel_prepare,
+	.trigger = intel_trigger,
 };
 
 static const struct snd_soc_component_driver dai_component = {
