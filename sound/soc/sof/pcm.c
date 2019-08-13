@@ -248,7 +248,7 @@ static int sof_pcm_hw_free(struct snd_pcm_substream *substream)
 
 	/* skip front-end specific inits for BE */
 	if (rtd->dai_link->no_pcm)
-		goto platform_hw_free;
+		return 0;
 
 	spcm = snd_sof_find_spcm_dai(sdev, rtd);
 	if (!spcm)
@@ -269,7 +269,6 @@ static int sof_pcm_hw_free(struct snd_pcm_substream *substream)
 	if (ret < 0)
 		return ret;
 
-platform_hw_free:
 	ret = snd_sof_pcm_platform_hw_free(sdev, substream);
 	if (ret < 0)
 		dev_err(sdev->dev, "error: platform hw free failed\n");
@@ -287,10 +286,8 @@ static int sof_pcm_prepare(struct snd_pcm_substream *substream)
 	int ret;
 
 	/* skip front-end specific inits for BE */
-	if (rtd->dai_link->no_pcm) {
-		snd_sof_pcm_platform_prepare(sdev, substream);
+	if (rtd->dai_link->no_pcm)
 		return 0;
-	}
 
 	spcm = snd_sof_find_spcm_dai(sdev, rtd);
 	if (!spcm)
@@ -329,10 +326,8 @@ static int sof_pcm_trigger(struct snd_pcm_substream *substream, int cmd)
 	int ret;
 
 	/* skip front-end specific inits for BE */
-	if (rtd->dai_link->no_pcm) {
-		snd_sof_pcm_platform_trigger(sdev, substream, cmd);
+	if (rtd->dai_link->no_pcm)
 		return 0;
-	}
 
 	spcm = snd_sof_find_spcm_dai(sdev, rtd);
 	if (!spcm)
@@ -433,7 +428,7 @@ static int sof_pcm_open(struct snd_pcm_substream *substream)
 
 	/* skip front-end specific inits for BE */
 	if (rtd->dai_link->no_pcm)
-		goto platform_open;
+		return 0;
 
 	spcm = snd_sof_find_spcm_dai(sdev, rtd);
 	if (!spcm)
@@ -490,7 +485,6 @@ static int sof_pcm_open(struct snd_pcm_substream *substream)
 	spcm->stream[substream->stream].substream = substream;
 	spcm->prepared[substream->stream] = false;
 
-platform_open:
 	ret = snd_sof_pcm_platform_open(sdev, substream);
 	if (ret < 0)
 		dev_err(sdev->dev, "error: pcm open failed %d\n", ret);
@@ -509,7 +503,7 @@ static int sof_pcm_close(struct snd_pcm_substream *substream)
 
 	/* skip front-end specific inits for BE */
 	if (rtd->dai_link->no_pcm)
-		goto platform_close;
+		return 0;
 
 	spcm = snd_sof_find_spcm_dai(sdev, rtd);
 	if (!spcm)
@@ -518,7 +512,6 @@ static int sof_pcm_close(struct snd_pcm_substream *substream)
 	dev_dbg(sdev->dev, "pcm: close stream %d dir %d\n", spcm->pcm.pcm_id,
 		substream->stream);
 
-platform_close:
 	err = snd_sof_pcm_platform_close(sdev, substream);
 	if (err < 0) {
 		dev_err(sdev->dev, "error: pcm close failed %d\n",
