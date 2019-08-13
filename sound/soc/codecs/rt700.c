@@ -1232,20 +1232,14 @@ static int rt700_pcm_hw_params(struct snd_pcm_substream *substream,
 {
 	struct snd_soc_component *component = dai->component;
 	struct rt700_priv *rt700 = snd_soc_component_get_drvdata(component);
-	struct sdw_stream_config stream_config;
-	struct sdw_port_config port_config;
+	struct sdw_stream_config *stream_config;
+	struct sdw_port_config *port_config;
 	enum sdw_data_direction direction;
-	struct sdw_stream_data *stream;
-	int retval, port, num_channels;
+	int port, num_channels;
 	unsigned int val = 0;
 
 	dev_err(dai->dev, "%s %s", __func__, dai->name);
-	stream = snd_soc_dai_get_dma_data(dai, substream);
 
-	if (!stream)
-		return -ENOMEM;
-
-	dev_err(dai->dev, "1 %s %s", __func__, dai->name);
 	if (!rt700->slave)
 		return 0;
 
@@ -1269,24 +1263,17 @@ static int rt700_pcm_hw_params(struct snd_pcm_substream *substream,
 		dev_err(component->dev, "Invalid DAI id %d\n", dai->id);
 		return -EINVAL;
 	}
-	dev_err(dai->dev, "2 %s %s", __func__, dai->name);
 
-	stream_config.frame_rate =  params_rate(params);
-	stream_config.ch_count = params_channels(params);
-	stream_config.bps = snd_pcm_format_width(params_format(params));
-	stream_config.direction = direction;
+	stream_config = &rt700->stream_config;
+	stream_config->frame_rate = params_rate(params);
+	stream_config->ch_count = params_channels(params);
+	stream_config->bps = snd_pcm_format_width(params_format(params));
+	stream_config->direction = direction;
 
-	dev_err(dai->dev, "3 %s %s", __func__, dai->name);
 	num_channels = params_channels(params);
-	port_config.ch_mask = (1 << (num_channels)) - 1;
-	port_config.num = port;
-
-	retval = sdw_stream_add_slave(rt700->slave, &stream_config,
-				      &port_config, 1, stream->sdw_stream);
-	if (retval) {
-		dev_err(dai->dev, "Unable to configure port\n");
-		return retval;
-	}
+	port_config = &rt700->port_config;
+	port_config->ch_mask = (1 << (num_channels)) - 1;
+	port_config->num = port;
 
 	dev_err(dai->dev, "4 %s %s", __func__, dai->name);
 	switch (params_rate(params)) {
@@ -1339,7 +1326,33 @@ static int rt700_pcm_hw_params(struct snd_pcm_substream *substream,
 	snd_soc_component_write(component, RT700_ADC_FORMAT_L, val);
 
 	dev_err(dai->dev, "5 %s %s", __func__, dai->name);
-	return retval;
+	return 0;
+}
+
+static int rt700_prepare_stream(struct snd_pcm_substream *substream,
+				struct snd_soc_dai *dai)
+{
+	struct snd_soc_component *component = dai->component;
+	struct rt700_priv *rt700 = snd_soc_component_get_drvdata(component);
+	struct sdw_stream_data *stream;
+	int retval;
+
+	stream = snd_soc_dai_get_dma_data(dai, substream);
+
+	if (!stream) {
+		dev_err(dai->dev, "no dma data found in dai %s", dai->name);
+		return -ENOMEM;
+	}
+
+	retval = sdw_stream_add_slave(rt700->slave, &rt700->stream_config,
+				      &rt700->port_config, 1,
+				      stream->sdw_stream);
+	if (retval) {
+		dev_err(dai->dev, "Unable to configure port\n");
+		return retval;
+	}
+
+	return 0;
 }
 
 static int rt700_pcm_hw_free(struct snd_pcm_substream *substream,
@@ -1365,6 +1378,7 @@ static struct snd_soc_dai_ops rt700_ops = {
 	.hw_params	= rt700_pcm_hw_params,
 	.hw_free	= rt700_pcm_hw_free,
 	.set_sdw_stream	= rt700_set_sdw_stream,
+	.prepare	= rt700_prepare_stream,
 	.shutdown	= rt700_shutdown,
 };
 

@@ -25,6 +25,8 @@ struct  rt700_priv {
 	int dbg_payload;
 	enum sdw_slave_status status;
 	struct sdw_bus_params params;
+	struct sdw_stream_config stream_config;
+	struct sdw_port_config port_config;
 	bool hw_init;
 };
 
