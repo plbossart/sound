@@ -81,8 +81,36 @@ static int sdw_config_stream(void *arg, void *s, void *dai,
 	return ret;
 }
 
+static int sdw_free_stream(void *arg, void *s, void *dai)
+{
+	struct snd_sof_dev *sdev = arg;
+	struct sof_ipc_dai_config config;
+	struct sof_ipc_reply reply;
+	int size = sizeof(config);
+	int ret;
+
+	memset(&config, 0, size);
+	config.hdr.size = size;
+	config.hdr.cmd = SOF_IPC_GLB_DAI_MSG | SOF_IPC_DAI_CONFIG;
+	config.type = SOF_DAI_INTEL_ALH;
+	config.dai_index = 0; /* FIXME: make this dynamic */
+	config.alh.stream_id = 0xFFFFFFFF;
+
+	/* send message to DSP */
+	ret = sof_ipc_tx_message(sdev->ipc,
+				 config.hdr.cmd, &config, size, &reply,
+				 sizeof(reply));
+	if (ret < 0) {
+		dev_err(sdev->dev, "error: failed to set DAI hw_free for ALH %d\n",
+			config.dai_index);
+	}
+
+	return ret;
+}
+
 static const struct sdw_intel_ops sdw_callback = {
 	.config_stream = sdw_config_stream,
+	.free_stream = sdw_free_stream,
 };
 
 static int hda_sdw_init(struct snd_sof_dev *sdev)
