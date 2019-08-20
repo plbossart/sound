@@ -145,6 +145,8 @@ static int cnl_rt700_codec_fixup(struct snd_soc_pcm_runtime *rtd,
 
 SND_SOC_DAILINK_DEF(sdw0_pin2,
 	DAILINK_COMP_ARRAY(COMP_CPU("SDW0 Pin2")));
+SND_SOC_DAILINK_DEF(sdw0_pin3,
+	DAILINK_COMP_ARRAY(COMP_CPU("SDW0 Pin3")));
 SND_SOC_DAILINK_DEF(sdw0_codec,
 	DAILINK_COMP_ARRAY(COMP_CODEC("sdw:0:25d:700:0:0", "rt700-aif1")));
 
@@ -179,15 +181,24 @@ SND_SOC_DAILINK_DEF(platform,
 
 struct snd_soc_dai_link cnl_rt700_msic_dailink[] = {
 	{
-		.name = "SDW0-Codec",
+		.name = "SDW0-Playback",
 		.id = 0,
 		.be_hw_params_fixup = cnl_rt700_codec_fixup,
 		.ignore_suspend = 1,
 		.no_pcm = 1,
 		.dpcm_playback = 1,
-		.dpcm_capture = 1,
 		.nonatomic = true,
 		SND_SOC_DAILINK_REG(sdw0_pin2, sdw0_codec, platform),
+	},
+	{
+		.name = "SDW0-Capture",
+		.id = 1,
+		.be_hw_params_fixup = cnl_rt700_codec_fixup,
+		.ignore_suspend = 1,
+		.no_pcm = 1,
+		.dpcm_capture = 1,
+		.nonatomic = true,
+		SND_SOC_DAILINK_REG(sdw0_pin3, sdw0_codec, platform),
 	},
 	{
 		.name = "dmic01",
