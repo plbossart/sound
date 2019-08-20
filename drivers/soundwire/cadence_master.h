@@ -24,6 +24,8 @@ struct sdw_cdns_pdi {
 	int l_ch_num;
 	int h_ch_num;
 	int ch_count;
+	int link_id;
+	int dai_id;
 	enum sdw_data_direction dir;
 	enum sdw_stream_type type;
 };
@@ -155,7 +157,7 @@ int sdw_cdns_get_stream(struct sdw_cdns *cdns,
 			u32 ch, u32 dir);
 struct sdw_cdns_pdi *sdw_cdns_alloc_pdi(struct sdw_cdns *cdns,
 					struct sdw_cdns_streams *stream,
-					u32 ch, u32 dir);
+					u32 ch, u32 dir, int dai_id);
 void sdw_cdns_config_stream(struct sdw_cdns *cdns,
 			    u32 ch, u32 dir, struct sdw_cdns_pdi *pdi);
 

@@ -918,6 +918,8 @@ static int cdns_allocate_pdi(struct sdw_cdns *cdns,
 	for (i = 0; i < num; i++) {
 		pdi[i].num = i + pdi_offset;
 		pdi[i].assigned = false;
+		pdi[i].link_id = -1;
+		pdi[i].dai_id = -1;
 	}
 
 	*stream = pdi;
@@ -1276,10 +1278,21 @@ EXPORT_SYMBOL(cdns_set_sdw_stream);
 static struct sdw_cdns_pdi *cdns_find_pdi(struct sdw_cdns *cdns,
 					  unsigned int offset,
 					  unsigned int num,
-					  struct sdw_cdns_pdi *pdi)
+					  struct sdw_cdns_pdi *pdi,
+					  int link_id,
+					  int dai_id)
 {
 	int i;
 
+	/* Check if we can find assigned pdi first */
+	for (i = offset; i < num; i++) {
+		if (pdi[i].link_id == link_id && pdi[i].dai_id == dai_id) {
+			pdi[i].assigned = true;
+			return &pdi[i];
+		}
+	}
+
+	/* Assign a new one, if we can't find a assigned one */
 	for (i = offset; i < num; i++) {
 		if (pdi[i].assigned)
 			continue;
@@ -1325,24 +1338,30 @@ EXPORT_SYMBOL(sdw_cdns_config_stream);
  */
 struct sdw_cdns_pdi *sdw_cdns_alloc_pdi(struct sdw_cdns *cdns,
 					struct sdw_cdns_streams *stream,
-					u32 ch, u32 dir)
+					u32 ch, u32 dir, int dai_id)
 {
 	struct sdw_cdns_pdi *pdi = NULL;
 
 	if (dir == SDW_DATA_DIR_RX)
-		pdi = cdns_find_pdi(cdns, 0, stream->num_in, stream->in);
+		pdi = cdns_find_pdi(cdns, 0, stream->num_in, stream->in,
+				    cdns->bus.link_id, dai_id);
 	else
-		pdi = cdns_find_pdi(cdns, 0, stream->num_out, stream->out);
+		pdi = cdns_find_pdi(cdns, 0, stream->num_out, stream->out,
+				    cdns->bus.link_id, dai_id);
 
 	/* check if we found a PDI, else find in bi-directional */
 	if (!pdi)
-		pdi = cdns_find_pdi(cdns, 2, stream->num_bd, stream->bd);
+		pdi = cdns_find_pdi(cdns, 2, stream->num_bd, stream->bd,
+				    cdns->bus.link_id, dai_id);
 
 	if (pdi) {
 		pdi->l_ch_num = 0;
 		pdi->h_ch_num = ch - 1;
 		pdi->dir = dir;
 		pdi->ch_count = ch;
+		/* assign link_id and dai_id and we will reuse the pdi */
+		pdi->link_id = cdns->bus.link_id;
+		pdi->dai_id = dai_id;
 	}
 
 	return pdi;
