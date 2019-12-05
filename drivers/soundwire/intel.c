@@ -1595,6 +1595,22 @@ static int intel_suspend_runtime(struct device *dev)
 		}
 
 		intel_shim_wake(sdw, true);
+	} else if (!clock_stop_quirks) {
+		/* FIXME: is this the right sequence? */
+		ret = sdw_cdns_clock_stop(cdns, true);
+		if (ret < 0) {
+			dev_err(dev, "cannot enable clock stop on suspend\n");
+			return ret;
+		}
+
+		ret = sdw_cdns_enable_interrupt(cdns, false);
+		if (ret < 0) {
+			dev_err(dev, "cannot disable interrupts on suspend\n");
+			return ret;
+		}
+
+		intel_shim_wake(sdw, true);
+
 	} else {
 		dev_err(dev, "%s clock_stop_quirks %x unsupported\n",
 			__func__, clock_stop_quirks);
@@ -1749,6 +1765,20 @@ static int intel_resume_runtime(struct device *dev)
 			dev_err(dev, "unable to resume master during resume\n");
 			return ret;
 		}
+	} else if (!clock_stop_quirks) {
+		/* FIXME: is this the right sequence ? */
+		ret = sdw_cdns_enable_interrupt(cdns, true);
+		if (ret < 0) {
+			dev_err(dev, "cannot enable interrupts during resume\n");
+			return ret;
+		}
+
+		ret = sdw_cdns_clock_restart(cdns, false);
+		if (ret < 0) {
+			dev_err(dev, "unable to resume master during resume\n");
+			return ret;
+		}
+
 	} else {
 		dev_err(dev, "%s clock_stop_quirks %x unsupported\n",
 			__func__, clock_stop_quirks);
