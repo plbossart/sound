@@ -664,7 +664,6 @@ static inline irqreturn_t hda_dsp_sdw_thread(int irq, void *context)
 
 static void hda_sdw_process_wakeen(struct snd_sof_dev *sdev)
 {
-	return false;
 }
 #endif
 

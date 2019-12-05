@@ -345,17 +345,19 @@ int hda_dsp_cl_boot_firmware(struct snd_sof_dev *sdev)
 	}
 
 	/*
-	 * When soundwire is in clock stop state, slave will wake up
-	 * master for some events like jack plugged and wakeen interrupt
-	 * will be triggered by audio pci device and routed to PME if pci
-	 * device is in D3. Resume function in audio pci driver will be
-	 * invoked by ACPI for PME event and initialize the device and
-	 * process wakeen interrupt.
+	 * When a SoundWire link is in clock stop state, a Slave
+	 * device may trigger in-band wakes for events such as jack
+	 * insertion or acoustic event detection. This event will lead
+	 * to a WAKEEN interrupt, handled by the PCI device and routed
+	 * to PME if the PCI device is in D3. The resume function in
+	 * audio PCI driver will be invoked by ACPI for PME event and
+	 * initialize the device and process WAKEEN interrupt.
 	 *
-	 * wakeen interrupt should be processed ASAP to prevent interrupt
-	 * flood, otherwise other interrupts, such ipc, can't work as normal.
-	 * It is proccessed here because the soundwire shim registers can be
-	 * accessed only after ROM is initialized successfully.
+	 * The WAKEEN interrupt should be processed ASAP to prevent an
+	 * interrupt flood, otherwise other interrupts, such IPC,
+	 * cannot work normally.  The WAKEEN is handled after the ROM
+	 * is initialized successfully, which ensures power rails are
+	 * enabled before accessing the SoundWire SHIM registers
 	 */
 	hda_sdw_process_wakeen(sdev);
 
