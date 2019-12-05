@@ -722,7 +722,8 @@ static void sdw_modify_slave_status(struct sdw_slave *slave,
 		init_completion(&slave->enumeration_complete);
 		init_completion(&slave->initialization_complete);
 
-	} else if (status == SDW_SLAVE_ATTACHED) {
+	} else if ((status == SDW_SLAVE_ATTACHED) &&
+		   (slave->status == SDW_SLAVE_UNATTACHED)) {
 		dev_dbg(&slave->dev,
 			"%s: signaling completion for Slave %d\n",
 			__func__, slave->dev_num);
