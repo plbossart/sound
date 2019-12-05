@@ -1268,14 +1268,11 @@ static struct sdw_master_ops sdw_intel_ops = {
 	.post_bank_switch = intel_post_bank_switch,
 };
 
-static int intel_init(struct sdw_intel *sdw, bool init_master)
+static int intel_init(struct sdw_intel *sdw)
 {
 	/* Initialize shim and controller */
 	intel_link_power_up(sdw);
 	intel_shim_init(sdw);
-
-	if (!init_master)
-		return 0;
 
 	return sdw_cdns_init(&sdw->cdns);
 }
@@ -1347,7 +1344,7 @@ static int intel_master_startup(struct sdw_master_device *md)
 	}
 
 	/* Initialize shim, controller and Cadence IP */
-	ret = intel_init(sdw, true);
+	ret = intel_init(sdw);
 	if (ret)
 		goto err_init;
 
@@ -1574,7 +1571,7 @@ static int intel_resume(struct device *dev)
 			pm_runtime_idle(&md->dev);
 	}
 
-	ret = intel_init(sdw, true);
+	ret = intel_init(sdw);
 	if (ret) {
 		dev_err(dev, "%s failed: %d", __func__, ret);
 		return ret;
@@ -1634,7 +1631,7 @@ static int intel_resume_runtime(struct device *dev)
 	clock_stop_quirks = sdw->link_res->clock_stop_quirks;
 
 	if (clock_stop_quirks & SDW_INTEL_CLK_STOP_TEARDOWN) {
-		ret = intel_init(sdw, true);
+		ret = intel_init(sdw);
 		if (ret) {
 			dev_err(dev, "%s failed: %d", __func__, ret);
 			return ret;
