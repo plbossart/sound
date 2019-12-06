@@ -359,7 +359,8 @@ int hda_dsp_cl_boot_firmware(struct snd_sof_dev *sdev)
 	 * is initialized successfully, which ensures power rails are
 	 * enabled before accessing the SoundWire SHIM registers
 	 */
-	hda_sdw_process_wakeen(sdev);
+	if (!sdev->first_boot)
+		hda_sdw_process_wakeen(sdev);
 
 	/*
 	 * at this point DSP ROM has been initialized and
