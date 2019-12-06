@@ -693,6 +693,10 @@ static irqreturn_t hda_dsp_interrupt_thread(int irq, void *context)
 	if (hda_dsp_check_sdw_irq(sdev))
 		hda_dsp_sdw_thread(irq, hdev->sdw);
 
+	if (snd_sof_dsp_read(sdev, HDA_DSP_BAR,
+			     HDA_DSP_REG_SNDW_WAKE_STS))
+		hda_sdw_process_wakeen(sdev);
+
 	/* enable GIE interrupt */
 	snd_sof_dsp_update_bits(sdev, HDA_DSP_HDA_BAR,
 				SOF_HDA_INTCTL,
