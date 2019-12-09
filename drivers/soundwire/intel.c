@@ -472,13 +472,8 @@ void sdw_intel_process_wakeen_event(struct sdw_intel_ctx *ctx)
 		 * the wakeen event and let codec driver check codec status
 		 */
 		list_for_each_entry(slave, &bus->slaves, node) {
-			if (slave->prop.wake_capable) {
-				if (slave->status != SDW_SLAVE_ATTACHED &&
-				    slave->status != SDW_SLAVE_ALERT)
-					continue;
-
+			if (slave->prop.wake_capable)
 				pm_request_resume(&slave->dev);
-			}
 		}
 	}
 }
