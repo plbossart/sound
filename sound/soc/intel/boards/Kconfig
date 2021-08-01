@@ -512,7 +512,7 @@ config SND_SOC_INTEL_SOF_PCM512x_MACH
 	  If unsure select "N".
 
 config SND_SOC_INTEL_SOF_ES8336_MACH
-	tristate "SOF with ES8336 codec"
+	tristate "SOF with ES8336 codec in I2S mode"
 	depends on I2C && ACPI
 	depends on ((SND_HDA_CODEC_HDMI && SND_SOC_SOF_HDA_AUDIO_CODEC) &&\
 		    (MFD_INTEL_LPSS || COMPILE_TEST))
