@@ -174,16 +174,12 @@ static int sof_es8336_hw_params(struct snd_pcm_substream *substream,
 		gpiod_set_value_cansleep(ctx->gpio_pa, true);
 	}
 
-	ret = snd_soc_dai_set_sysclk(codec_dai, 1,
-				     sysclk, SND_SOC_CLOCK_OUT);
+	ret = snd_soc_dai_set_sysclk(codec_dai, 1, sysclk, SND_SOC_CLOCK_OUT);
 	if (ret < 0) {
 		dev_err(rtd->dev, "%s, Failed to set ES8336 SYSCLK: %d\n",
 			__func__, ret);
 		return ret;
 	}
-	ret = snd_soc_dai_set_tdm_slot(codec_dai, 0x3, 0x3, 2, 24);
-	if (ret < 0)
-		return ret;
 
 	return 0;
 }
@@ -348,7 +344,7 @@ static int sof_es8336_probe(struct platform_device *pdev)
 	snd_soc_card_set_drvdata(card, ctx);
 
 	return devm_snd_soc_register_card(dev, card);
-	}
+}
 
 static int sof_es8336_remove(struct platform_device *pdev)
 {
