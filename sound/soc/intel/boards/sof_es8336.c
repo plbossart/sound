@@ -23,8 +23,6 @@
 #define SOF_ES8336_SSP_CODEC(quirk)		((quirk) & GENMASK(3, 0))
 #define SOF_ES8336_SSP_CODEC_MASK		(GENMASK(3, 0))
 
-#define SOF_ES8336_PA_GPIO_QUIRK		BIT(4)
-
 static unsigned long quirk;
 
 static int quirk_override = -1;
@@ -37,11 +35,16 @@ struct sof_card_private {
 	bool speaker_en;
 };
 
+static const struct acpi_gpio_params pa_enable_gpio = { 0, 0, false };
+
+static const struct acpi_gpio_mapping acpi_es8336_gpios[] = {
+	{ "pa-enable-gpios", &pa_enable_gpio, 1 },
+	{ }
+};
+
 static void log_quirks(struct device *dev)
 {
 	dev_info(dev, "quirk SSP%ld",  SOF_ES8336_SSP_CODEC(quirk));
-	if (quirk & SOF_ES8336_PA_GPIO_QUIRK)
-		dev_info(dev, "quirk PA_GPIO enabled");
 }
 
 static int sof_es8316_speaker_power_event(struct snd_soc_dapm_widget *w,
@@ -154,8 +157,7 @@ static const struct dmi_system_id sof_es8336_quirk_table[] = {
 			DMI_MATCH(DMI_SYS_VENDOR, "CHUWI Innovation And Technology"),
 			DMI_MATCH(DMI_BOARD_NAME, "Hi10 X"),
 		},
-		.driver_data = (void *)(SOF_ES8336_SSP_CODEC(2) |
-					SOF_ES8336_PA_GPIO_QUIRK)
+		.driver_data = (void *)SOF_ES8336_SSP_CODEC(2)
 	},
 	{}
 };
@@ -263,15 +265,6 @@ devm_err:
  /* i2c-<HID>:00 with HID being 8 chars */
 static char codec_name[SND_ACPI_I2C_ID_LEN];
 
-// FIXME: add comment on INT3453
-static struct gpiod_lookup_table gpios_table = {
-	/* .dev_id is set during probe */
-	.table = {
-		GPIO_LOOKUP("INT3453:00", 29, "PA_ENABLE", GPIO_ACTIVE_LOW),
-		{ },
-	},
-};
-
 static int sof_es8336_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -281,6 +274,7 @@ static int sof_es8336_probe(struct platform_device *pdev)
 	struct sof_card_private *ctx;
 	struct acpi_device *adev;
 	struct snd_soc_dai_link *dai_links;
+	struct device *codec_dev;
 	int ret;
 
 	ctx = devm_kzalloc(dev, sizeof(*ctx), GFP_KERNEL);
@@ -296,29 +290,15 @@ static int sof_es8336_probe(struct platform_device *pdev)
 	if (dmi_id) {
 		quirk = (unsigned long)dmi_id->driver_data;
 	} else {
-		quirk = SOF_ES8336_SSP_CODEC(2) |
-			SOF_ES8336_PA_GPIO_QUIRK;
+		quirk = SOF_ES8336_SSP_CODEC(2);
 	}
+
 	if (quirk_override != -1) {
 		dev_info(dev, "Overriding quirk 0x%lx => 0x%x\n",
 			 quirk, quirk_override);
 		quirk = quirk_override;
 	}
 	log_quirks(dev);
-
-	if (quirk & SOF_ES8336_PA_GPIO_QUIRK) {
-		gpios_table.dev_id = dev_name(dev);
-		gpiod_add_lookup_table(&gpios_table);
-
-		ctx->gpio_pa = devm_gpiod_get(dev, "PA_ENABLE",
-					      GPIOD_OUT_LOW);
-		if (IS_ERR(ctx->gpio_pa)) {
-			ret = PTR_ERR(ctx->gpio_pa);
-			dev_err(dev, "%s, could not get PA_ENABLE: %d\n",
-				__func__, ret);
-			return ret;
-		}
-	}
 
 	dai_links = sof_card_dai_links_create(dev,
 					      SOF_ES8336_SSP_CODEC(quirk));
@@ -341,6 +321,25 @@ static int sof_es8336_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
+	/* get speaker enable GPIO */
+	codec_dev = bus_find_device_by_name(&i2c_bus_type, NULL, codec_name);
+	if (!codec_dev)
+		return -EPROBE_DEFER;
+
+	ret = devm_acpi_dev_add_driver_gpios(codec_dev, acpi_es8336_gpios);
+	if (ret)
+		dev_err(codec_dev, "unable to add GPIO mapping table\n");
+
+	ctx->gpio_pa = gpiod_get(codec_dev, "pa-enable", GPIOD_OUT_LOW);
+	if (IS_ERR(ctx->gpio_pa)) {
+		ret = PTR_ERR(ctx->gpio_pa);
+		dev_err(codec_dev, "%s, could not get pa-enable: %d\n",
+			__func__, ret);
+		return ret;
+	}
+
+	put_device(codec_dev);
+
 	snd_soc_card_set_drvdata(card, ctx);
 
 	return devm_snd_soc_register_card(dev, card);
@@ -348,8 +347,6 @@ static int sof_es8336_probe(struct platform_device *pdev)
 
 static int sof_es8336_remove(struct platform_device *pdev)
 {
-	if (quirk & SOF_ES8336_PA_GPIO_QUIRK)
-		gpiod_remove_lookup_table(&gpios_table);
 	return 0;
 }
 
