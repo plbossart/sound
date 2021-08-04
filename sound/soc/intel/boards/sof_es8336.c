@@ -29,7 +29,7 @@ static int quirk_override = -1;
 module_param_named(quirk, quirk_override, int, 0444);
 MODULE_PARM_DESC(quirk, "Board-specific quirk override");
 
-struct sof_card_private {
+struct sof_es8336_private {
 	struct device *codec_dev;
 	struct gpio_desc *gpio_pa;
 	struct snd_soc_jack jack;
@@ -52,7 +52,7 @@ static int sof_es8316_speaker_power_event(struct snd_soc_dapm_widget *w,
 					  struct snd_kcontrol *kcontrol, int event)
 {
 	struct snd_soc_card *card = w->dapm->card;
-	struct sof_card_private *priv = snd_soc_card_get_drvdata(card);
+	struct sof_es8336_private *priv = snd_soc_card_get_drvdata(card);
 
 	if (SND_SOC_DAPM_EVENT_ON(event))
 		priv->speaker_en = false;
@@ -115,7 +115,7 @@ static int sof_es8316_init(struct snd_soc_pcm_runtime *runtime)
 {
 	struct snd_soc_component *codec = asoc_rtd_to_codec(runtime, 0)->component;
 	struct snd_soc_card *card = runtime->card;
-	struct sof_card_private *priv = snd_soc_card_get_drvdata(card);
+	struct sof_es8336_private *priv = snd_soc_card_get_drvdata(card);
 	const struct snd_soc_dapm_route *custom_map;
 	int num_routes;
 	int ret;
@@ -167,14 +167,14 @@ static int sof_es8336_hw_params(struct snd_pcm_substream *substream,
 				struct snd_pcm_hw_params *params)
 {
 	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
-	struct sof_card_private *ctx = snd_soc_card_get_drvdata(rtd->card);
+	struct sof_es8336_private *priv = snd_soc_card_get_drvdata(rtd->card);
 	struct snd_soc_dai *codec_dai = asoc_rtd_to_codec(rtd, 0);
 	const int sysclk = 19200000;
 	int ret;
 
-	if (!(IS_ERR_OR_NULL(ctx->gpio_pa))) {
-		gpiod_set_value_cansleep(ctx->gpio_pa, false);
-		gpiod_set_value_cansleep(ctx->gpio_pa, true);
+	if (!(IS_ERR_OR_NULL(priv->gpio_pa))) {
+		gpiod_set_value_cansleep(priv->gpio_pa, false);
+		gpiod_set_value_cansleep(priv->gpio_pa, true);
 	}
 
 	ret = snd_soc_dai_set_sysclk(codec_dai, 1, sysclk, SND_SOC_CLOCK_OUT);
@@ -272,14 +272,14 @@ static int sof_es8336_probe(struct platform_device *pdev)
 	struct snd_soc_card *card;
 	struct snd_soc_acpi_mach *mach = pdev->dev.platform_data;
 	const struct dmi_system_id *dmi_id;
-	struct sof_card_private *ctx;
+	struct sof_es8336_private *priv;
 	struct acpi_device *adev;
 	struct snd_soc_dai_link *dai_links;
 	struct device *codec_dev;
 	int ret;
 
-	ctx = devm_kzalloc(dev, sizeof(*ctx), GFP_KERNEL);
-	if (!ctx)
+	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
+	if (!priv)
 		return -ENOMEM;
 
 	mach = pdev->dev.platform_data;
@@ -331,16 +331,16 @@ static int sof_es8336_probe(struct platform_device *pdev)
 	if (ret)
 		dev_warn(codec_dev, "unable to add GPIO mapping table\n");
 
-	ctx->gpio_pa = gpiod_get(codec_dev, "pa-enable", GPIOD_OUT_LOW);
-	if (IS_ERR(ctx->gpio_pa)) {
-		ret = PTR_ERR(ctx->gpio_pa);
+	priv->gpio_pa = gpiod_get(codec_dev, "pa-enable", GPIOD_OUT_LOW);
+	if (IS_ERR(priv->gpio_pa)) {
+		ret = PTR_ERR(priv->gpio_pa);
 		dev_err(codec_dev, "%s, could not get pa-enable: %d\n",
 			__func__, ret);
 		goto err;
 	}
-	ctx->codec_dev = codec_dev;
+	priv->codec_dev = codec_dev;
 
-	snd_soc_card_set_drvdata(card, ctx);
+	snd_soc_card_set_drvdata(card, priv);
 
 	ret = devm_snd_soc_register_card(dev, card);
 	if (ret) {
@@ -359,7 +359,7 @@ err:
 static int sof_es8336_remove(struct platform_device *pdev)
 {
 	struct snd_soc_card *card = platform_get_drvdata(pdev);
-	struct sof_card_private *priv = snd_soc_card_get_drvdata(card);
+	struct sof_es8336_private *priv = snd_soc_card_get_drvdata(card);
 
 	gpiod_put(priv->gpio_pa);
 	put_device(priv->codec_dev);
