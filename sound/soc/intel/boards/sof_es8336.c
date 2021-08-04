@@ -30,6 +30,7 @@ module_param_named(quirk, quirk_override, int, 0444);
 MODULE_PARM_DESC(quirk, "Board-specific quirk override");
 
 struct sof_card_private {
+	struct device *codec_dev;
 	struct gpio_desc *gpio_pa;
 	struct snd_soc_jack jack;
 	bool speaker_en;
@@ -328,25 +329,41 @@ static int sof_es8336_probe(struct platform_device *pdev)
 
 	ret = devm_acpi_dev_add_driver_gpios(codec_dev, acpi_es8336_gpios);
 	if (ret)
-		dev_err(codec_dev, "unable to add GPIO mapping table\n");
+		dev_warn(codec_dev, "unable to add GPIO mapping table\n");
 
 	ctx->gpio_pa = gpiod_get(codec_dev, "pa-enable", GPIOD_OUT_LOW);
 	if (IS_ERR(ctx->gpio_pa)) {
 		ret = PTR_ERR(ctx->gpio_pa);
 		dev_err(codec_dev, "%s, could not get pa-enable: %d\n",
 			__func__, ret);
-		return ret;
+		goto err;
 	}
-
-	put_device(codec_dev);
+	ctx->codec_dev = codec_dev;
 
 	snd_soc_card_set_drvdata(card, ctx);
 
-	return devm_snd_soc_register_card(dev, card);
+	ret = devm_snd_soc_register_card(dev, card);
+	if (ret) {
+		gpiod_put(priv->gpio_pa);
+		dev_err(dev, "snd_soc_register_card failed: %d\n", ret);
+		goto err;
+	}
+	platform_set_drvdata(pdev, &sof_es8336_card);
+	return 0;
+
+err:
+	put_device(codec_dev);
+	return ret;
 }
 
 static int sof_es8336_remove(struct platform_device *pdev)
 {
+	struct snd_soc_card *card = platform_get_drvdata(pdev);
+	struct sof_card_private *priv = snd_soc_card_get_drvdata(card);
+
+	gpiod_put(priv->gpio_pa);
+	put_device(priv->codec_dev);
+
 	return 0;
 }
 
