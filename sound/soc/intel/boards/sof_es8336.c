@@ -24,6 +24,7 @@
 #define SOF_ES8336_SSP_CODEC_MASK		(GENMASK(3, 0))
 
 #define SOF_ES8336_TGL_GPIO_QUIRK		BIT(4)
+#define SOF_ES8336_ENABLE_DMIC			BIT(5)
 
 static unsigned long quirk;
 
@@ -84,6 +85,10 @@ static const struct snd_soc_dapm_widget sof_es8316_widgets[] = {
 			    SND_SOC_DAPM_PRE_PMD | SND_SOC_DAPM_POST_PMU),
 };
 
+static const struct snd_soc_dapm_widget dmic_widgets[] = {
+	SND_SOC_DAPM_MIC("SoC DMIC", NULL),
+};
+
 static const struct snd_soc_dapm_route sof_es8316_audio_map[] = {
 	{"Headphone", NULL, "HPOL"},
 	{"Headphone", NULL, "HPOR"},
@@ -100,6 +105,11 @@ static const struct snd_soc_dapm_route sof_es8316_audio_map[] = {
 static const struct snd_soc_dapm_route sof_es8316_intmic_in1_map[] = {
 	{"MIC1", NULL, "Internal Mic"},
 	{"MIC2", NULL, "Headset Mic"},
+};
+
+static const struct snd_soc_dapm_route dmic_map[] = {
+	/* digital mics */
+	{"DMic", NULL, "SoC DMIC"},
 };
 
 static const struct snd_kcontrol_new sof_es8316_controls[] = {
@@ -119,6 +129,26 @@ static struct snd_soc_jack_pin sof_es8316_jack_pins[] = {
 		.mask	= SND_JACK_MICROPHONE,
 	},
 };
+
+static int dmic_init(struct snd_soc_pcm_runtime *runtime)
+{
+	struct snd_soc_card *card = runtime->card;
+	int ret;
+
+	ret = snd_soc_dapm_new_controls(&card->dapm, dmic_widgets,
+					ARRAY_SIZE(dmic_widgets));
+	if (ret) {
+		dev_err(card->dev, "DMic widget addition failed: %d\n", ret);
+		return ret;
+	}
+
+	ret = snd_soc_dapm_add_routes(&card->dapm, dmic_map,
+				      ARRAY_SIZE(dmic_map));
+	if (ret)
+		dev_err(card->dev, "DMic map addition failed: %d\n", ret);
+
+	return ret;
+}
 
 static int sof_es8316_init(struct snd_soc_pcm_runtime *runtime)
 {
@@ -187,7 +217,8 @@ static const struct dmi_system_id sof_es8336_quirk_table[] = {
 			DMI_MATCH(DMI_BOARD_NAME, "WN1"),
 		},
 		.driver_data = (void *)(SOF_ES8336_SSP_CODEC(0) |
-					SOF_ES8336_TGL_GPIO_QUIRK)
+					SOF_ES8336_TGL_GPIO_QUIRK |
+					SOF_ES8336_ENABLE_DMIC)
 	},
 	{}
 };
@@ -231,6 +262,13 @@ static struct snd_soc_dai_link_component platform_component[] = {
 SND_SOC_DAILINK_DEF(ssp1_codec,
 	DAILINK_COMP_ARRAY(COMP_CODEC("i2c-ESSX8336:00", "ES8316 HiFi")));
 
+static struct snd_soc_dai_link_component dmic_component[] = {
+	{
+		.name = "dmic-codec",
+		.dai_name = "dmic-hifi",
+	}
+};
+
 /* SoC card */
 static struct snd_soc_card sof_es8336_card = {
 	.name = "essx8336", /* sof- prefix added automatically */
@@ -245,11 +283,14 @@ static struct snd_soc_card sof_es8336_card = {
 	.num_links = 1,
 };
 
-static struct snd_soc_dai_link *sof_card_dai_links_create(struct device *dev, int ssp_codec)
+static struct snd_soc_dai_link *sof_card_dai_links_create(struct device *dev,
+							  int ssp_codec,
+							  int dmic_be_num)
 {
 	struct snd_soc_dai_link_component *cpus;
 	struct snd_soc_dai_link *links;
 	int id = 0;
+	int i;
 
 	links = devm_kcalloc(dev, sof_es8336_card.num_links,
 			     sizeof(struct snd_soc_dai_link), GFP_KERNEL);
@@ -287,7 +328,38 @@ static struct snd_soc_dai_link *sof_card_dai_links_create(struct device *dev, in
 
 	id++;
 
+	/* dmic */
+	if (dmic_be_num > 0) {
+		/* at least we have dmic01 */
+		links[id].name = "dmic01";
+		links[id].cpus = &cpus[id];
+		links[id].cpus->dai_name = "DMIC01 Pin";
+		links[id].init = dmic_init;
+		if (dmic_be_num > 1) {
+			/* set up 2 BE links at most */
+			links[id + 1].name = "dmic16k";
+			links[id + 1].cpus = &cpus[id + 1];
+			links[id + 1].cpus->dai_name = "DMIC16k Pin";
+			dmic_be_num = 2;
+		}
+	}
+
+	for (i = 0; i < dmic_be_num; i++) {
+		links[id].id = id;
+		links[id].num_cpus = 1;
+		links[id].codecs = dmic_component;
+		links[id].num_codecs = ARRAY_SIZE(dmic_component);
+		links[id].platforms = platform_component;
+		links[id].num_platforms = ARRAY_SIZE(platform_component);
+		links[id].ignore_suspend = 1;
+		links[id].dpcm_capture = 1;
+		links[id].no_pcm = 1;
+
+		id++;
+	}
+
 	return links;
+
 devm_err:
 	return NULL;
 }
@@ -304,6 +376,7 @@ static int sof_es8336_probe(struct platform_device *pdev)
 	struct acpi_device *adev;
 	struct snd_soc_dai_link *dai_links;
 	struct device *codec_dev;
+	int dmic_be_num;
 	int ret;
 
 	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
@@ -318,6 +391,9 @@ static int sof_es8336_probe(struct platform_device *pdev)
 	if (!dmi_check_system(sof_es8336_quirk_table))
 		quirk = SOF_ES8336_SSP_CODEC(2);
 
+	if (quirk & SOF_ES8336_ENABLE_DMIC)
+		dmic_be_num = 2;
+
 	if (quirk_override != -1) {
 		dev_info(dev, "Overriding quirk 0x%lx => 0x%x\n",
 			 quirk, quirk_override);
@@ -325,8 +401,10 @@ static int sof_es8336_probe(struct platform_device *pdev)
 	}
 	log_quirks(dev);
 
+	sof_es8336_card.num_links += dmic_be_num;
 	dai_links = sof_card_dai_links_create(dev,
-					      SOF_ES8336_SSP_CODEC(quirk));
+					      SOF_ES8336_SSP_CODEC(quirk),
+					      dmic_be_num);
 	if (!dai_links)
 		return -ENOMEM;
 
