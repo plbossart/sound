@@ -23,6 +23,8 @@
 #define SOF_ES8336_SSP_CODEC(quirk)		((quirk) & GENMASK(3, 0))
 #define SOF_ES8336_SSP_CODEC_MASK		(GENMASK(3, 0))
 
+#define SOF_ES8336_TGL_GPIO_QUIRK		BIT(4)
+
 static unsigned long quirk;
 
 static int quirk_override = -1;
@@ -37,11 +39,18 @@ struct sof_es8336_private {
 };
 
 static const struct acpi_gpio_params pa_enable_gpio = { 0, 0, false };
-
 static const struct acpi_gpio_mapping acpi_es8336_gpios[] = {
 	{ "pa-enable-gpios", &pa_enable_gpio, 1 },
 	{ }
 };
+
+static const struct acpi_gpio_params quirk_pa_enable_gpio = { 1, 0, false };
+static const struct acpi_gpio_mapping quirk_acpi_es8336_gpios[] = {
+	{ "pa-enable-gpios", &quirk_pa_enable_gpio, 1 },
+	{ }
+};
+
+static const struct acpi_gpio_mapping *gpio_mapping = acpi_es8336_gpios;
 
 static void log_quirks(struct device *dev)
 {
@@ -152,13 +161,33 @@ static void sof_es8316_exit(struct snd_soc_pcm_runtime *rtd)
 	snd_soc_component_set_jack(component, NULL, NULL);
 }
 
+static int sof_es8336_quirk_cb(const struct dmi_system_id *id)
+{
+	quirk = (unsigned long)id->driver_data;
+
+	if (quirk & SOF_ES8336_TGL_GPIO_QUIRK)
+		gpio_mapping = quirk_acpi_es8336_gpios;
+
+	return 1;
+}
+
 static const struct dmi_system_id sof_es8336_quirk_table[] = {
 	{
+		.callback = sof_es8336_quirk_cb,
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "CHUWI Innovation And Technology"),
 			DMI_MATCH(DMI_BOARD_NAME, "Hi10 X"),
 		},
 		.driver_data = (void *)SOF_ES8336_SSP_CODEC(2)
+	},
+	{
+		.callback = sof_es8336_quirk_cb,
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "IP3 tech"),
+			DMI_MATCH(DMI_BOARD_NAME, "WN1"),
+		},
+		.driver_data = (void *)(SOF_ES8336_SSP_CODEC(0) |
+					SOF_ES8336_TGL_GPIO_QUIRK)
 	},
 	{}
 };
@@ -271,7 +300,6 @@ static int sof_es8336_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct snd_soc_card *card;
 	struct snd_soc_acpi_mach *mach = pdev->dev.platform_data;
-	const struct dmi_system_id *dmi_id;
 	struct sof_es8336_private *priv;
 	struct acpi_device *adev;
 	struct snd_soc_dai_link *dai_links;
@@ -287,12 +315,8 @@ static int sof_es8336_probe(struct platform_device *pdev)
 	card = &sof_es8336_card;
 	card->dev = dev;
 
-	dmi_id = dmi_first_match(sof_es8336_quirk_table);
-	if (dmi_id) {
-		quirk = (unsigned long)dmi_id->driver_data;
-	} else {
+	if (!dmi_check_system(sof_es8336_quirk_table))
 		quirk = SOF_ES8336_SSP_CODEC(2);
-	}
 
 	if (quirk_override != -1) {
 		dev_info(dev, "Overriding quirk 0x%lx => 0x%x\n",
@@ -327,7 +351,7 @@ static int sof_es8336_probe(struct platform_device *pdev)
 	if (!codec_dev)
 		return -EPROBE_DEFER;
 
-	ret = devm_acpi_dev_add_driver_gpios(codec_dev, acpi_es8336_gpios);
+	ret = devm_acpi_dev_add_driver_gpios(codec_dev, gpio_mapping);
 	if (ret)
 		dev_warn(codec_dev, "unable to add GPIO mapping table\n");
 
