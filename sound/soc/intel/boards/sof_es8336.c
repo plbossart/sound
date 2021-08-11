@@ -19,6 +19,8 @@
 #include <sound/pcm_params.h>
 #include <sound/soc.h>
 #include <sound/soc-acpi.h>
+#include "hda_dsp_common.h"
+#include "../../codecs/hdac_hdmi.h"
 
 #define SOF_ES8336_SSP_CODEC(quirk)		((quirk) & GENMASK(3, 0))
 #define SOF_ES8336_SSP_CODEC_MASK		(GENMASK(3, 0))
@@ -36,7 +38,15 @@ struct sof_es8336_private {
 	struct device *codec_dev;
 	struct gpio_desc *gpio_pa;
 	struct snd_soc_jack jack;
+	struct list_head hdmi_pcm_list;
+	bool common_hdmi_codec_drv;
 	bool speaker_en;
+};
+
+struct sof_hdmi_pcm {
+	struct list_head head;
+	struct snd_soc_dai *codec_dai;
+	int device;
 };
 
 static const struct acpi_gpio_params pa_enable_gpio = { 0, 0, false };
@@ -148,6 +158,25 @@ static int dmic_init(struct snd_soc_pcm_runtime *runtime)
 		dev_err(card->dev, "DMic map addition failed: %d\n", ret);
 
 	return ret;
+}
+
+static int sof_hdmi_init(struct snd_soc_pcm_runtime *runtime)
+{
+	struct sof_es8336_private *priv = snd_soc_card_get_drvdata(runtime->card);
+	struct snd_soc_dai *dai = asoc_rtd_to_codec(runtime, 0);
+	struct sof_hdmi_pcm *pcm;
+
+	pcm = devm_kzalloc(runtime->card->dev, sizeof(*pcm), GFP_KERNEL);
+	if (!pcm)
+		return -ENOMEM;
+
+	/* dai_link id is 1:1 mapped to the PCM device */
+	pcm->device = runtime->dai_link->id;
+	pcm->codec_dai = dai;
+
+	list_add_tail(&pcm->head, &priv->hdmi_pcm_list);
+
+	return 0;
 }
 
 static int sof_es8316_init(struct snd_soc_pcm_runtime *runtime)
@@ -269,6 +298,25 @@ static struct snd_soc_dai_link_component dmic_component[] = {
 	}
 };
 
+static int sof_es8336_late_probe(struct snd_soc_card *card)
+{
+	struct sof_es8336_private *priv = snd_soc_card_get_drvdata(card);
+	struct snd_soc_component *component;
+	struct sof_hdmi_pcm *pcm;
+
+	if (list_empty(&priv->hdmi_pcm_list))
+		return -EINVAL;
+
+	if (priv->common_hdmi_codec_drv) {
+		pcm = list_first_entry(&priv->hdmi_pcm_list, struct sof_hdmi_pcm,
+				       head);
+		component = pcm->codec_dai->component;
+		return hda_dsp_hdmi_build_controls(card, component);
+	}
+
+	return -EINVAL;
+}
+
 /* SoC card */
 static struct snd_soc_card sof_es8336_card = {
 	.name = "essx8336", /* sof- prefix added automatically */
@@ -280,15 +328,19 @@ static struct snd_soc_card sof_es8336_card = {
 	.controls = sof_es8316_controls,
 	.num_controls = ARRAY_SIZE(sof_es8316_controls),
 	.fully_routed = true,
+	.late_probe = sof_es8336_late_probe,
 	.num_links = 1,
 };
 
 static struct snd_soc_dai_link *sof_card_dai_links_create(struct device *dev,
 							  int ssp_codec,
-							  int dmic_be_num)
+							  int dmic_be_num,
+							  int hdmi_num)
 {
 	struct snd_soc_dai_link_component *cpus;
 	struct snd_soc_dai_link *links;
+	struct snd_soc_dai_link_component *idisp_components;
+	int hdmi_id_offset = 0;
 	int id = 0;
 	int i;
 
@@ -342,6 +394,9 @@ static struct snd_soc_dai_link *sof_card_dai_links_create(struct device *dev,
 			links[id + 1].cpus->dai_name = "DMIC16k Pin";
 			dmic_be_num = 2;
 		}
+	} else {
+		/* HDMI dai link starts at 3 according to current topology settings */
+		hdmi_id_offset = 2;
 	}
 
 	for (i = 0; i < dmic_be_num; i++) {
@@ -353,6 +408,48 @@ static struct snd_soc_dai_link *sof_card_dai_links_create(struct device *dev,
 		links[id].num_platforms = ARRAY_SIZE(platform_component);
 		links[id].ignore_suspend = 1;
 		links[id].dpcm_capture = 1;
+		links[id].no_pcm = 1;
+
+		id++;
+	}
+
+	/* HDMI */
+	if (hdmi_num > 0) {
+		idisp_components = devm_kzalloc(dev,
+				   sizeof(struct snd_soc_dai_link_component) *
+				   hdmi_num, GFP_KERNEL);
+		if (!idisp_components)
+			goto devm_err;
+	}
+
+	for (i = 1; i <= hdmi_num; i++) {
+		links[id].name = devm_kasprintf(dev, GFP_KERNEL,
+						"iDisp%d", i);
+		if (!links[id].name)
+			goto devm_err;
+
+		links[id].id = id + hdmi_id_offset;
+		links[id].cpus = &cpus[id];
+		links[id].num_cpus = 1;
+		links[id].cpus->dai_name = devm_kasprintf(dev, GFP_KERNEL,
+							  "iDisp%d Pin", i);
+		if (!links[id].cpus->dai_name)
+			goto devm_err;
+
+		idisp_components[i - 1].name = "ehdaudio0D2";
+		idisp_components[i - 1].dai_name = devm_kasprintf(dev,
+								  GFP_KERNEL,
+								  "intel-hdmi-hifi%d",
+								  i);
+		if (!idisp_components[i - 1].dai_name)
+			goto devm_err;
+
+		links[id].codecs = &idisp_components[i - 1];
+		links[id].num_codecs = 1;
+		links[id].platforms = platform_component;
+		links[id].num_platforms = ARRAY_SIZE(platform_component);
+		links[id].init = sof_hdmi_init;
+		links[id].dpcm_playback = 1;
 		links[id].no_pcm = 1;
 
 		id++;
@@ -376,7 +473,8 @@ static int sof_es8336_probe(struct platform_device *pdev)
 	struct acpi_device *adev;
 	struct snd_soc_dai_link *dai_links;
 	struct device *codec_dev;
-	int dmic_be_num;
+	int dmic_be_num = 0;
+	int hdmi_num = 3;
 	int ret;
 
 	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
@@ -401,10 +499,10 @@ static int sof_es8336_probe(struct platform_device *pdev)
 	}
 	log_quirks(dev);
 
-	sof_es8336_card.num_links += dmic_be_num;
+	sof_es8336_card.num_links += dmic_be_num + hdmi_num;
 	dai_links = sof_card_dai_links_create(dev,
 					      SOF_ES8336_SSP_CODEC(quirk),
-					      dmic_be_num);
+					      dmic_be_num, hdmi_num);
 	if (!dai_links)
 		return -ENOMEM;
 
@@ -440,7 +538,10 @@ static int sof_es8336_probe(struct platform_device *pdev)
 			__func__, ret);
 		goto err;
 	}
+
 	priv->codec_dev = codec_dev;
+	priv->common_hdmi_codec_drv = mach->mach_params.common_hdmi_codec_drv;
+	INIT_LIST_HEAD(&priv->hdmi_pcm_list);
 
 	snd_soc_card_set_drvdata(card, priv);
 
@@ -482,3 +583,4 @@ module_platform_driver(sof_es8336_driver);
 MODULE_DESCRIPTION("ASoC Intel(R) SOF + ES8336 Machine driver");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS("platform:sof-essx8336");
+MODULE_IMPORT_NS(SND_SOC_INTEL_HDA_DSP_COMMON);
