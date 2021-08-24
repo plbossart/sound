@@ -48,13 +48,13 @@ struct sof_hdmi_pcm {
 	int device;
 };
 
-static const struct acpi_gpio_params pa_enable_gpio = { 0, 0, false };
+static const struct acpi_gpio_params pa_enable_gpio = { 0, 0, true };
 static const struct acpi_gpio_mapping acpi_es8336_gpios[] = {
 	{ "pa-enable-gpios", &pa_enable_gpio, 1 },
 	{ }
 };
 
-static const struct acpi_gpio_params quirk_pa_enable_gpio = { 1, 0, false };
+static const struct acpi_gpio_params quirk_pa_enable_gpio = { 1, 0, true };
 static const struct acpi_gpio_mapping quirk_acpi_es8336_gpios[] = {
 	{ "pa-enable-gpios", &quirk_pa_enable_gpio, 1 },
 	{ }
@@ -255,15 +255,9 @@ static int sof_es8336_hw_params(struct snd_pcm_substream *substream,
 				struct snd_pcm_hw_params *params)
 {
 	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
-	struct sof_es8336_private *priv = snd_soc_card_get_drvdata(rtd->card);
 	struct snd_soc_dai *codec_dai = asoc_rtd_to_codec(rtd, 0);
 	const int sysclk = 19200000;
 	int ret;
-
-	if (!(IS_ERR_OR_NULL(priv->gpio_pa))) {
-		gpiod_set_value_cansleep(priv->gpio_pa, false);
-		gpiod_set_value_cansleep(priv->gpio_pa, true);
-	}
 
 	ret = snd_soc_dai_set_sysclk(codec_dai, 1, sysclk, SND_SOC_CLOCK_OUT);
 	if (ret < 0) {
