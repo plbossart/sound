@@ -43,6 +43,7 @@ struct es8316_priv {
 	unsigned int allowed_rates[NR_SUPPORTED_MCLK_LRCK_RATIOS];
 	struct snd_pcm_hw_constraint_list sysclk_constraints;
 	bool jd_inverted;
+	bool jd_initialized;
 };
 
 /*
@@ -65,11 +66,6 @@ static const SNDRV_CTL_TLVD_DECLARE_DB_RANGE(adc_pga_gain_tlv,
 	3, 3, TLV_DB_SCALE_ITEM(450, 0, 0),
 	4, 7, TLV_DB_SCALE_ITEM(700, 300, 0),
 	8, 10, TLV_DB_SCALE_ITEM(1800, 300, 0),
-);
-
-static const SNDRV_CTL_TLVD_DECLARE_DB_RANGE(hpout_vol_tlv,
-	0, 0, TLV_DB_SCALE_ITEM(-4800, 0, 0),
-	1, 3, TLV_DB_SCALE_ITEM(-2400, 1200, 0),
 );
 
 static const char * const ng_type_txt[] =
@@ -655,8 +651,6 @@ static irqreturn_t es8316_irq(int irq, void *data)
 	struct snd_soc_component *comp = es8316->component;
 	unsigned int flags;
 
-	dev_dbg(comp->dev, "Enter into %s\n", __func__);
-
 	mutex_lock(&es8316->lock);
 
 	snd_soc_component_write(comp, ES8316_GPIO_DEBOUNCE, 0xf0);
@@ -748,7 +742,6 @@ out:
 	snd_soc_component_write(comp, ES8316_GPIO_DEBOUNCE, 0xf2);
 
 	mutex_unlock(&es8316->lock);
-	dev_dbg(comp->dev, "Exit %s\n", __func__);
 
 	return IRQ_HANDLED;
 }
@@ -757,10 +750,17 @@ static void es8316_enable_jack_detect(struct snd_soc_component *component,
 				      struct snd_soc_jack *jack)
 {
 	struct es8316_priv *es8316 = snd_soc_component_get_drvdata(component);
-	static int initial = 0;
 
-	if (!initial) {
-		es8316->jd_inverted = false;
+	/*
+	 * Init es8316->jd_inverted here and not in the probe, as we cannot
+	 * guarantee that the bytchr-es8316 driver, which might set this
+	 * property, will probe before us.
+	 */
+	es8316->jd_inverted = device_property_read_bool(component->dev,
+							"everest,jack-detect-inverted");
+
+	if (!es8316->jd_initialized) {
+		es8316->jd_initialized = true;
 
 		mutex_lock(&es8316->lock);
 
@@ -773,11 +773,10 @@ static void es8316_enable_jack_detect(struct snd_soc_component *component,
 					      ES8316_GPIO_ENABLE_INTERRUPT);
 
 		mutex_unlock(&es8316->lock);
+
 		/* Enable irq and sync initial jack state */
 		enable_irq(es8316->irq);
 		es8316_irq(es8316->irq, es8316);
-
-		initial = 1;
 	}
 }
 
@@ -897,6 +896,7 @@ static int es8316_i2c_probe(struct i2c_client *i2c_client,
 
 	i2c_set_clientdata(i2c_client, es8316);
 
+	es8316->jd_initialized = false;
 	es8316->regmap = devm_regmap_init_i2c(i2c_client, &es8316_regmap);
 	if (IS_ERR(es8316->regmap))
 		return PTR_ERR(es8316->regmap);
@@ -929,7 +929,6 @@ MODULE_DEVICE_TABLE(i2c, es8316_i2c_id);
 
 #ifdef CONFIG_OF
 static const struct of_device_id es8316_of_match[] = {
-	{ .compatible = "everest,es8336", },
 	{ .compatible = "everest,es8316", },
 	{},
 };
