@@ -470,11 +470,23 @@ static int sof_es8336_probe(struct platform_device *pdev)
 	card = &sof_es8336_card;
 	card->dev = dev;
 
-	if (!dmi_check_system(sof_es8336_quirk_table))
+	if (!dmi_check_system(sof_es8336_quirk_table)) {
 		quirk = SOF_ES8336_SSP_CODEC(2);
-
-	if (quirk & SOF_ES8336_ENABLE_DMIC)
-		dmic_be_num = 2;
+	} else {
+		/*
+		 *  Set configuration based on platform NHLT.
+		 * In this machine driver, we can only support one SSP for the
+		 * ES8336 link, the else-if below are intentional
+		 */
+		if (mach->mach_params.i2s_link_mask & BIT(0))
+			quirk = SOF_ES8336_SSP_CODEC(0);
+		else if (mach->mach_params.i2s_link_mask & BIT(1))
+			quirk = SOF_ES8336_SSP_CODEC(1);
+		else if (mach->mach_params.i2s_link_mask & BIT(2))
+			quirk = SOF_ES8336_SSP_CODEC(2);
+		if (mach->mach_params.dmic_num)
+			quirk |= SOF_ES8336_ENABLE_DMIC;
+	}
 
 	if (quirk_override != -1) {
 		dev_info(dev, "Overriding quirk 0x%lx => 0x%x\n",
@@ -482,6 +494,9 @@ static int sof_es8336_probe(struct platform_device *pdev)
 		quirk = quirk_override;
 	}
 	log_quirks(dev);
+
+	if (quirk & SOF_ES8336_ENABLE_DMIC)
+		dmic_be_num = 2;
 
 	sof_es8336_card.num_links += dmic_be_num + hdmi_num;
 	dai_links = sof_card_dai_links_create(dev,
