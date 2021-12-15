@@ -67,11 +67,6 @@ static const SNDRV_CTL_TLVD_DECLARE_DB_RANGE(adc_pga_gain_tlv,
 	8, 10, TLV_DB_SCALE_ITEM(1800, 300, 0),
 );
 
-static const SNDRV_CTL_TLVD_DECLARE_DB_RANGE(hpout_vol_tlv,
-	0, 0, TLV_DB_SCALE_ITEM(-4800, 0, 0),
-	1, 3, TLV_DB_SCALE_ITEM(-2400, 1200, 0),
-);
-
 static const char * const ng_type_txt[] =
 	{ "Constant PGA Gain", "Mute ADC Output" };
 static const struct soc_enum ng_type =
@@ -757,9 +752,9 @@ static void es8316_enable_jack_detect(struct snd_soc_component *component,
 				      struct snd_soc_jack *jack)
 {
 	struct es8316_priv *es8316 = snd_soc_component_get_drvdata(component);
-	static int initial = 0;
+	static int initial = 1;
 
-	if (!initial) {
+	if (initial) {
 		es8316->jd_inverted = false;
 
 		mutex_lock(&es8316->lock);
@@ -777,7 +772,7 @@ static void es8316_enable_jack_detect(struct snd_soc_component *component,
 		enable_irq(es8316->irq);
 		es8316_irq(es8316->irq, es8316);
 
-		initial = 1;
+		initial = 0;
 	}
 }
 
