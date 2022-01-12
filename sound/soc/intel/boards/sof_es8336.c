@@ -469,24 +469,16 @@ static int sof_es8336_probe(struct platform_device *pdev)
 
 	card = &sof_es8336_card;
 	card->dev = dev;
-
-	if (!dmi_check_system(sof_es8336_quirk_table)) {
+	
+	if (mach->mach_params.i2s_link_mask & BIT(2))
 		quirk = SOF_ES8336_SSP_CODEC(2);
-	} else {
-		/*
-		 *  Set configuration based on platform NHLT.
-		 * In this machine driver, we can only support one SSP for the
-		 * ES8336 link, the else-if below are intentional
-		 */
-		if (mach->mach_params.i2s_link_mask & BIT(0))
-			quirk = SOF_ES8336_SSP_CODEC(0);
-		else if (mach->mach_params.i2s_link_mask & BIT(1))
-			quirk = SOF_ES8336_SSP_CODEC(1);
-		else if (mach->mach_params.i2s_link_mask & BIT(2))
-			quirk = SOF_ES8336_SSP_CODEC(2);
-		if (mach->mach_params.dmic_num)
-			quirk |= SOF_ES8336_ENABLE_DMIC;
-	}
+	else if (mach->mach_params.i2s_link_mask & BIT(1))
+		quirk = SOF_ES8336_SSP_CODEC(1);
+	else
+		quirk = SOF_ES8336_SSP_CODEC(0);
+	if (mach->mach_params.dmic_num)
+		quirk |= SOF_ES8336_ENABLE_DMIC;
+
 
 	if (quirk_override != -1) {
 		dev_info(dev, "Overriding quirk 0x%lx => 0x%x\n",
