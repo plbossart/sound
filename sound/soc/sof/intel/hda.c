@@ -1431,15 +1431,20 @@ struct snd_soc_acpi_mach *hda_machine_select(struct snd_sof_dev *sdev)
 
 		if (mach->tplg_quirk_mask & SND_SOC_ACPI_TPLG_INTEL_SSP_NUMBER &&
 		    mach->mach_params.i2s_link_mask) {
+			int ssp_num;
+
 			if (hweight_long(mach->mach_params.i2s_link_mask) > 1 &&
 			    !(mach->tplg_quirk_mask & SND_SOC_ACPI_TPLG_INTEL_SSP_MSB))
 				dev_warn(sdev->dev, "More than one SSP exposed by NHLT, choosing MSB\n");
+
+			/* fls returns 1-based results, SSPs indices are 0-based */
+			ssp_num = fls(mach->mach_params.i2s_link_mask) - 1;
 
 			tplg_filename = devm_kasprintf(sdev->dev, GFP_KERNEL,
 						       "%s%s%d",
 						       sof_pdata->tplg_filename,
 						       "-ssp",
-						       fls(mach->mach_params.i2s_link_mask));
+						       ssp_num);
 			if (!tplg_filename)
 				return NULL;
 
