@@ -35,6 +35,9 @@
 							* on primary core
 							*/
 #define SOF_DBG_PRINT_ALL_DUMPS		BIT(6) /* Print all ipc and dsp dumps */
+#define SOF_DBG_IGNORE_D3_PERSISTENT		BIT(7) /* ignore the DSP D3 persistent capability
+							* and always download firmware upon D3 exit
+							*/
 
 /* Flag definitions used for controlling the DSP dump behavior */
 #define SOF_DBG_DUMP_REGS		BIT(0)
@@ -347,8 +350,6 @@ struct snd_sof_mailbox {
 /* IPC message descriptor for host <-> DSP IO */
 struct snd_sof_ipc_msg {
 	/* message data */
-	u32 header;
-	u32 extension;
 	void *msg_data;
 	void *reply_data;
 	size_t msg_size;
@@ -577,16 +578,13 @@ void snd_sof_ipc_free(struct snd_sof_dev *sdev);
 void snd_sof_ipc_get_reply(struct snd_sof_dev *sdev);
 void snd_sof_ipc_reply(struct snd_sof_dev *sdev, u32 msg_id);
 void snd_sof_ipc_msgs_rx(struct snd_sof_dev *sdev);
-void snd_sof_ipc4_msgs_rx(struct snd_sof_dev *sdev, u32 msg, u32 msg_ext);
+void snd_sof_ipc4_msgs_rx(struct snd_sof_dev *sdev);
 int snd_sof_ipc_valid(struct snd_sof_dev *sdev);
-int sof_ipc_tx_message(struct snd_sof_ipc *ipc, u32 header,
-		       void *msg_data, size_t msg_bytes, void *reply_data,
-		       size_t reply_bytes);
-int sof_ipc4_tx_message(struct snd_sof_ipc *ipc, u32 header, u32 extension,
-			void *msg_data, size_t msg_bytes, void *reply_data,
-			size_t reply_bytes);
-int sof_ipc_tx_message_no_pm(struct snd_sof_ipc *ipc, u32 header,
-			     void *msg_data, size_t msg_bytes,
+int sof_ipc_tx_message(struct snd_sof_ipc *ipc, void *msg_data, size_t msg_bytes,
+		       void *reply_data, size_t reply_bytes);
+int sof_ipc4_tx_message(struct snd_sof_ipc *ipc, void *msg_data, size_t msg_bytes,
+			void *reply_data, size_t reply_bytes);
+int sof_ipc_tx_message_no_pm(struct snd_sof_ipc *ipc, void *msg_data, size_t msg_bytes,
 			     void *reply_data, size_t reply_bytes);
 int sof_ipc_init_msg_memory(struct snd_sof_dev *sdev);
 int sof_ipc4_init_msg_memory(struct snd_sof_dev *sdev);

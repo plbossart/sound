@@ -1556,8 +1556,7 @@ static int sof_ipc3_route_setup(struct snd_sof_dev *sdev, struct snd_sof_route *
 		sroute->sink_widget->widget->name);
 
 	/* send ipc */
-	ret = sof_ipc_tx_message(sdev->ipc, connect.hdr.cmd, &connect, sizeof(connect),
-				 &reply, sizeof(reply));
+	ret = sof_ipc_tx_message(sdev->ipc, &connect, sizeof(connect), &reply, sizeof(reply));
 	if (ret < 0)
 		dev_err(sdev->dev, "%s: route %s -> %s failed\n", __func__,
 			sroute->src_widget->widget->name, sroute->sink_widget->widget->name);
@@ -1702,7 +1701,7 @@ static int sof_ipc3_control_free(struct snd_sof_dev *sdev, struct snd_sof_contro
 	fcomp.id = scontrol->comp_id;
 
 	/* send IPC to the DSP */
-	return sof_ipc_tx_message(sdev->ipc, fcomp.hdr.cmd, &fcomp, sizeof(fcomp), NULL, 0);
+	return sof_ipc_tx_message(sdev->ipc, &fcomp, sizeof(fcomp), NULL, 0);
 }
 
 /* send pcm params ipc */
@@ -1754,7 +1753,7 @@ static int sof_ipc3_keyword_detect_pcm_params(struct snd_sof_widget *swidget, in
 	}
 
 	/* send IPC to the DSP */
-	ret = sof_ipc_tx_message(sdev->ipc, pcm.hdr.cmd, &pcm, sizeof(pcm),
+	ret = sof_ipc_tx_message(sdev->ipc, &pcm, sizeof(pcm),
 				 &ipc_params_reply, sizeof(ipc_params_reply));
 	if (ret < 0)
 		dev_err(scomp->dev, "%s: PCM params failed for %s\n", __func__,
@@ -1778,8 +1777,7 @@ static int sof_ipc3_keyword_detect_trigger(struct snd_sof_widget *swidget, int c
 	stream.comp_id = swidget->comp_id;
 
 	/* send IPC to the DSP */
-	ret = sof_ipc_tx_message(sdev->ipc, stream.hdr.cmd, &stream,
-				 sizeof(stream), &reply, sizeof(reply));
+	ret = sof_ipc_tx_message(sdev->ipc, &stream, sizeof(stream), &reply, sizeof(reply));
 	if (ret < 0)
 		dev_err(scomp->dev, "%s: Failed to trigger %s\n", __func__, swidget->widget->name);
 
@@ -1907,8 +1905,7 @@ static int sof_ipc3_complete_pipeline(struct snd_sof_dev *sdev, struct snd_sof_w
 	ready.hdr.cmd = SOF_IPC_GLB_TPLG_MSG | SOF_IPC_TPLG_PIPE_COMPLETE;
 	ready.comp_id = swidget->comp_id;
 
-	ret = sof_ipc_tx_message(sdev->ipc, ready.hdr.cmd, &ready, sizeof(ready), &reply,
-				 sizeof(reply));
+	ret = sof_ipc_tx_message(sdev->ipc, &ready, sizeof(ready), &reply, sizeof(reply));
 	if (ret < 0)
 		return ret;
 
@@ -1944,7 +1941,7 @@ static int sof_ipc3_widget_free(struct snd_sof_dev *sdev, struct snd_sof_widget 
 		break;
 	}
 
-	ret = sof_ipc_tx_message(sdev->ipc, ipc_free.hdr.cmd, &ipc_free, sizeof(ipc_free),
+	ret = sof_ipc_tx_message(sdev->ipc, &ipc_free, sizeof(ipc_free),
 				 &reply, sizeof(reply));
 	if (ret < 0)
 		dev_err(sdev->dev, "failed to free widget %s\n", swidget->widget->name);
@@ -1953,7 +1950,7 @@ static int sof_ipc3_widget_free(struct snd_sof_dev *sdev, struct snd_sof_widget 
 }
 
 static int sof_ipc3_dai_config(struct snd_sof_dev *sdev, struct snd_sof_widget *swidget,
-			       unsigned int flags)
+			       unsigned int flags, struct snd_sof_dai_config_data *data)
 {
 	struct sof_ipc_fw_version *v = &sdev->fw_ready.version;
 	struct snd_sof_dai *dai = swidget->private;
@@ -1979,17 +1976,34 @@ static int sof_ipc3_dai_config(struct snd_sof_dev *sdev, struct snd_sof_widget *
 		return -EINVAL;
 	}
 
-	/*
-	 * DAI_CONFIG IPC during hw_params/hw_free for SSP DAI's is not supported in older
-	 * firmware
-	 */
-	if (v->abi_version < SOF_ABI_VER(3, 18, 0) && config->type == SOF_DAI_INTEL_SSP &&
-	    ((flags & SOF_DAI_CONFIG_FLAGS_HW_PARAMS) || (flags & SOF_DAI_CONFIG_FLAGS_HW_FREE)))
-		return 0;
+	switch (config->type) {
+	case SOF_DAI_INTEL_SSP:
+		/*
+		 * DAI_CONFIG IPC during hw_params/hw_free for SSP DAI's is not supported in older
+		 * firmware
+		 */
+		if (v->abi_version < SOF_ABI_VER(3, 18, 0) &&
+		    ((flags & SOF_DAI_CONFIG_FLAGS_HW_PARAMS) ||
+		     (flags & SOF_DAI_CONFIG_FLAGS_HW_FREE)))
+			return 0;
+		break;
+	case SOF_DAI_INTEL_HDA:
+		if (data)
+			config->hda.link_dma_ch = data->dai_data;
+		break;
+	case SOF_DAI_INTEL_ALH:
+		if (data) {
+			config->dai_index = data->dai_index;
+			config->alh.stream_id = data->dai_data;
+		}
+		break;
+	default:
+		break;
+	}
 
 	config->flags = flags;
 
-	ret = sof_ipc_tx_message(sdev->ipc, config->hdr.cmd, config, config->hdr.size,
+	ret = sof_ipc_tx_message(sdev->ipc, config, config->hdr.size,
 				 &reply, sizeof(reply));
 	if (ret < 0)
 		dev_err(sdev->dev, "Failed to set dai config for %s\n", dai->name);
@@ -2013,7 +2027,7 @@ static int sof_ipc3_widget_setup(struct snd_sof_dev *sdev, struct snd_sof_widget
 		struct sof_dai_private_data *dai_data = dai->private;
 		struct sof_ipc_comp *comp = &dai_data->comp_dai->comp;
 
-		ret = sof_ipc_tx_message(sdev->ipc, comp->hdr.cmd, dai_data->comp_dai,
+		ret = sof_ipc_tx_message(sdev->ipc, dai_data->comp_dai,
 					 comp->hdr.size, &reply, sizeof(reply));
 		break;
 	}
@@ -2022,8 +2036,8 @@ static int sof_ipc3_widget_setup(struct snd_sof_dev *sdev, struct snd_sof_widget
 		struct sof_ipc_pipe_new *pipeline;
 
 		pipeline = swidget->private;
-		ret = sof_ipc_tx_message(sdev->ipc, pipeline->hdr.cmd, pipeline,
-					 sizeof(*pipeline), &reply, sizeof(reply));
+		ret = sof_ipc_tx_message(sdev->ipc, pipeline, sizeof(*pipeline),
+					 &reply, sizeof(reply));
 		break;
 	}
 	default:
@@ -2031,7 +2045,7 @@ static int sof_ipc3_widget_setup(struct snd_sof_dev *sdev, struct snd_sof_widget
 		struct sof_ipc_cmd_hdr *hdr;
 
 		hdr = swidget->private;
-		ret = sof_ipc_tx_message(sdev->ipc, hdr->cmd, swidget->private, hdr->size,
+		ret = sof_ipc_tx_message(sdev->ipc, swidget->private, hdr->size,
 					 &reply, sizeof(reply));
 		break;
 	}
@@ -2227,6 +2241,34 @@ static int sof_ipc3_tear_down_all_pipelines(struct snd_sof_dev *sdev, bool verif
 	return 0;
 }
 
+static int sof_ipc3_dai_get_clk(struct snd_sof_dev *sdev, struct snd_sof_dai *dai, int clk_type)
+{
+	struct sof_dai_private_data *private = dai->private;
+
+	if (!private || !private->dai_config)
+		return 0;
+
+	switch (private->dai_config->type) {
+	case SOF_DAI_INTEL_SSP:
+		switch (clk_type) {
+		case SOF_DAI_CLK_INTEL_SSP_MCLK:
+			return private->dai_config->ssp.mclk_rate;
+		case SOF_DAI_CLK_INTEL_SSP_BCLK:
+			return private->dai_config->ssp.bclk_rate;
+		default:
+			break;
+		}
+		dev_err(sdev->dev, "fail to get SSP clk %d rate\n", clk_type);
+		break;
+	default:
+		/* not yet implemented for platforms other than the above */
+		dev_err(sdev->dev, "DAI type %d not supported yet!\n", private->dai_config->type);
+		break;
+	}
+
+	return -EINVAL;
+}
+
 /* token list for each topology object */
 static enum sof_tokens host_token_list[] = {
 	SOF_CORE_TOKENS,
@@ -2334,6 +2376,7 @@ const struct ipc_tplg_ops ipc3_tplg_ops = {
 	.widget_free = sof_ipc3_widget_free,
 	.widget_setup = sof_ipc3_widget_setup,
 	.dai_config = sof_ipc3_dai_config,
+	.dai_get_clk = sof_ipc3_dai_get_clk,
 	.set_up_all_pipelines = sof_ipc3_set_up_all_pipelines,
 	.tear_down_all_pipelines = sof_ipc3_tear_down_all_pipelines,
 };

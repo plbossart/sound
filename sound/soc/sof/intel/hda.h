@@ -17,6 +17,7 @@
 #include <sound/hda_codec.h>
 #include <sound/hdaudio_ext.h>
 #include "../sof-client-probes.h"
+#include "../sof-audio.h"
 #include "shim.h"
 
 /* PCI registers */
@@ -378,9 +379,9 @@
 
 /* SSP Registers */
 #define SSP_SSC1_OFFSET		0x4
-#define SSP_SET_SCLK_SLAVE	BIT(25)
-#define SSP_SET_SFRM_SLAVE	BIT(24)
-#define SSP_SET_SLAVE		(SSP_SET_SCLK_SLAVE | SSP_SET_SFRM_SLAVE)
+#define SSP_SET_SCLK_CONSUMER	BIT(25)
+#define SSP_SET_SFRM_CONSUMER	BIT(24)
+#define SSP_SET_CBP_CFP		(SSP_SET_SCLK_CONSUMER | SSP_SET_SFRM_CONSUMER)
 
 #define HDA_IDISP_ADDR		2
 #define HDA_IDISP_CODEC(x) ((x) & BIT(HDA_IDISP_ADDR))
@@ -730,8 +731,10 @@ int hda_pci_intel_probe(struct pci_dev *pci, const struct pci_device_id *pci_id)
 
 struct snd_sof_dai;
 struct sof_ipc_dai_config;
-int hda_ctrl_dai_widget_setup(struct snd_soc_dapm_widget *w, unsigned int quirk_flags);
-int hda_ctrl_dai_widget_free(struct snd_soc_dapm_widget *w, unsigned int quirk_flags);
+int hda_ctrl_dai_widget_setup(struct snd_soc_dapm_widget *w, unsigned int quirk_flags,
+			      struct snd_sof_dai_config_data *data);
+int hda_ctrl_dai_widget_free(struct snd_soc_dapm_widget *w, unsigned int quirk_flags,
+			     struct snd_sof_dai_config_data *data);
 
 #define SOF_HDA_POSITION_QUIRK_USE_SKYLAKE_LEGACY	(0) /* previous implementation */
 #define SOF_HDA_POSITION_QUIRK_USE_DPIB_REGISTERS	(1) /* recommended if VC0 only */
