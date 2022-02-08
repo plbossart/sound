@@ -528,6 +528,20 @@ config SND_SOC_INTEL_SOF_ES8336_MACH
 	   Say Y if you have such a device.
 	   If unsure select "N".
 
+config SND_SOC_INTEL_SOF_ES8326_MACH
+	tristate "SOF with ES8326 codec in I2S mode"
+	depends on I2C && ACPI && GPIOLIB
+	depends on MFD_INTEL_LPSS || COMPILE_TEST
+	depends on SND_HDA_CODEC_HDMI && SND_SOC_SOF_HDA_AUDIO_CODEC
+	select SND_SOC_ES8326
+	select SND_SOC_DMIC
+	select SND_SOC_INTEL_HDA_DSP_COMMON
+	help
+	   This adds support for ASoC machine driver for SOF platforms
+	   with es8326 codec.
+	   Say Y if you have such a device.
+	   If unsure select "N".
+
 config SND_SOC_INTEL_SOF_NAU8825_MACH
 	tristate "SOF with nau8825 codec in I2S Mode"
 	depends on I2C && ACPI && GPIOLIB

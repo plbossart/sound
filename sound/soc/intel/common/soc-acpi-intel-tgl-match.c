@@ -11,13 +11,13 @@
 #include "soc-acpi-intel-sdw-mockup-match.h"
 
 static const struct snd_soc_acpi_codecs essx_83x6 = {
-	.num_codecs = 3,
-	.codecs = { "ESSX8316", "ESSX8326", "ESSX8336"},
+	.num_codecs = 2,
+	.codecs = { "ESSX8316", "ESSX8336"},
 };
 
-static const struct snd_soc_acpi_codecs tgl_codecs = {
+static const struct snd_soc_acpi_codecs essx_8326 = {
 	.num_codecs = 1,
-	.codecs = {"MX98357A"}
+	.codecs = {"ESSX8326"}
 };
 
 static const struct snd_soc_acpi_endpoint single_endpoint = {
@@ -378,7 +378,6 @@ struct snd_soc_acpi_mach snd_soc_acpi_intel_tgl_machines[] = {
 		.comp_ids = &tgl_rt5682_rt5682s_hp,
 		.drv_name = "tgl_mx98357_rt5682",
 		.machine_quirk = snd_soc_acpi_codec_list,
-		.quirk_data = &tgl_codecs,
 		.sof_tplg_filename = "sof-tgl-max98357a-rt5682.tplg",
 	},
 	{
@@ -398,6 +397,16 @@ struct snd_soc_acpi_mach snd_soc_acpi_intel_tgl_machines[] = {
 	{
 		.comp_ids = &essx_83x6,
 		.drv_name = "sof-essx8336",
+		.sof_tplg_filename = "sof-tgl-es8336", /* the tplg suffix is added at run time */
+		.tplg_quirk_mask = SND_SOC_ACPI_TPLG_INTEL_SSP_NUMBER |
+					SND_SOC_ACPI_TPLG_INTEL_SSP_MSB |
+					SND_SOC_ACPI_TPLG_INTEL_DMIC_NUMBER,
+	},
+	{
+		.comp_ids = &essx_8326,
+		.drv_name = "sof-essx8326",
+		.machine_quirk = snd_soc_acpi_codec_list,
+		.quirk_data = &essx_8326,
 		.sof_tplg_filename = "sof-tgl-es8336", /* the tplg suffix is added at run time */
 		.tplg_quirk_mask = SND_SOC_ACPI_TPLG_INTEL_SSP_NUMBER |
 					SND_SOC_ACPI_TPLG_INTEL_SSP_MSB |
