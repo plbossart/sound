@@ -605,7 +605,7 @@ static int hda_init(struct snd_sof_dev *sdev)
 	return ret;
 }
 
-static int check_nhlt_dmic(struct snd_sof_dev *sdev)
+static int check_dmic_num(struct snd_sof_dev *sdev)
 {
 	struct nhlt_acpi_table *nhlt;
 	int dmic_num = 0;
@@ -638,13 +638,15 @@ static int check_nhlt_ssp_mask(struct snd_sof_dev *sdev)
 	int ssp_mask = 0;
 
 	nhlt = intel_nhlt_init(sdev->dev);
-	if (nhlt && intel_nhlt_has_endpoint_type(nhlt, NHLT_LINK_SSP)) {
+	if (!nhlt)
+		return ssp_mask;
+
+	if (intel_nhlt_has_endpoint_type(nhlt, NHLT_LINK_SSP)) {
 		ssp_mask = intel_nhlt_ssp_endpoint_mask(nhlt, NHLT_DEVICE_I2S);
 		if (ssp_mask)
 			dev_info(sdev->dev, "NHLT_DEVICE_I2S detected, ssp_mask %#x\n", ssp_mask);
-
-		intel_nhlt_free(nhlt);
 	}
+	intel_nhlt_free(nhlt);
 
 	return ssp_mask;
 }
@@ -686,8 +688,8 @@ static int dmic_topology_fixup(struct snd_sof_dev *sdev,
 	const char *dmic_str;
 	int dmic_num;
 
-	/* first check NHLT for DMICs */
-	dmic_num = check_nhlt_dmic(sdev);
+	/* first check for DMICs (using NHLT or module parameter) */
+	dmic_num = check_dmic_num(sdev);
 
 	switch (dmic_num) {
 	case 1:
@@ -1294,10 +1296,7 @@ static struct snd_soc_acpi_mach *hda_sdw_machine_select(struct snd_sof_dev *sdev
 			mach->mach_params.links = mach->links;
 			mach->mach_params.link_mask = mach->link_mask;
 			mach->mach_params.platform = dev_name(sdev->dev);
-			if (mach->sof_fw_filename)
-				pdata->fw_filename = mach->sof_fw_filename;
-			else
-				pdata->fw_filename = pdata->desc->default_fw_filename;
+			pdata->fw_filename = pdata->desc->default_fw_filename[pdata->ipc_type];
 			pdata->tplg_filename = mach->sof_tplg_filename;
 
 			/*
@@ -1371,7 +1370,7 @@ struct snd_soc_acpi_mach *hda_machine_select(struct snd_sof_dev *sdev)
 			sof_pdata->tplg_filename = mach->sof_tplg_filename;
 
 		/* report to machine driver if any DMICs are found */
-		mach->mach_params.dmic_num = check_nhlt_dmic(sdev);
+		mach->mach_params.dmic_num = check_dmic_num(sdev);
 
 		if (mach->tplg_quirk_mask & SND_SOC_ACPI_TPLG_INTEL_DMIC_NUMBER &&
 		    mach->mach_params.dmic_num) {

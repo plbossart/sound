@@ -159,8 +159,8 @@ static int sof_pcm_hw_params(struct snd_soc_component *component,
 
 	/* create compressed page table for audio firmware */
 	if (runtime->buffer_changed) {
-		int ret = create_page_table(component, substream, runtime->dma_area,
-					    runtime->dma_bytes);
+		ret = create_page_table(component, substream, runtime->dma_area,
+					runtime->dma_bytes);
 
 		if (ret < 0)
 			return ret;
@@ -347,12 +347,9 @@ static int sof_pcm_trigger(struct snd_soc_component *component,
 		snd_sof_pcm_platform_trigger(sdev, substream, cmd);
 
 	/* free PCM if reset_hw_params is set and the STOP IPC is successful */
-	if (!ret && reset_hw_params) {
+	if (!ret && reset_hw_params)
 		ret = sof_pcm_stream_free(sdev, substream, spcm, substream->stream,
 					  free_widget_list);
-		if (ret < 0)
-			return ret;
-	}
 
 	return ret;
 }

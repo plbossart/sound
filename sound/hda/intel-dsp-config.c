@@ -35,7 +35,7 @@ struct config_entry {
 	const struct snd_soc_acpi_codecs *codec_hid;
 };
 
-static const struct snd_soc_acpi_codecs essx_83x6 = {
+static const struct snd_soc_acpi_codecs __maybe_unused essx_83x6 = {
 	.num_codecs = 3,
 	.codecs = { "ESSX8316", "ESSX8326", "ESSX8336"},
 };
