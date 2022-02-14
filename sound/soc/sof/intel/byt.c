@@ -216,7 +216,7 @@ irq:
 }
 
 /* baytrail ops */
-static const struct snd_sof_dsp_ops sof_byt_ops = {
+static struct snd_sof_dsp_ops sof_byt_ops = {
 	/* device init */
 	.probe		= byt_acpi_probe,
 	.remove		= byt_remove,
@@ -245,7 +245,6 @@ static const struct snd_sof_dsp_ops sof_byt_ops = {
 
 	/* ipc */
 	.send_msg	= atom_send_msg,
-	.fw_ready	= sof_fw_ready,
 	.get_mailbox_offset = atom_get_mailbox_offset,
 	.get_window_offset = atom_get_window_offset,
 
@@ -295,10 +294,11 @@ static const struct snd_sof_dsp_ops sof_byt_ops = {
 static const struct sof_intel_dsp_desc byt_chip_info = {
 	.cores_num = 1,
 	.host_managed_cores_mask = 1,
+	.hw_ip_version = SOF_INTEL_BAYTRAIL,
 };
 
 /* cherrytrail and braswell ops */
-static const struct snd_sof_dsp_ops sof_cht_ops = {
+static struct snd_sof_dsp_ops sof_cht_ops = {
 	/* device init */
 	.probe		= byt_acpi_probe,
 	.remove		= byt_remove,
@@ -327,7 +327,6 @@ static const struct snd_sof_dsp_ops sof_cht_ops = {
 
 	/* ipc */
 	.send_msg	= atom_send_msg,
-	.fw_ready	= sof_fw_ready,
 	.get_mailbox_offset = atom_get_mailbox_offset,
 	.get_window_offset = atom_get_window_offset,
 
@@ -378,6 +377,7 @@ static const struct snd_sof_dsp_ops sof_cht_ops = {
 static const struct sof_intel_dsp_desc cht_chip_info = {
 	.cores_num = 1,
 	.host_managed_cores_mask = 1,
+	.hw_ip_version = SOF_INTEL_BAYTRAIL,
 };
 
 /* BYTCR uses different IRQ index */

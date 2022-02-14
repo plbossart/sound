@@ -39,6 +39,8 @@
  */
 #define VOLUME_FWL	16
 
+#define SOF_TLV_ITEMS 3
+
 struct snd_sof_widget;
 struct snd_sof_route;
 struct snd_sof_control;
@@ -50,13 +52,13 @@ struct snd_sof_dai_config_data {
 };
 
 /**
- * struct ipc_pcm_ops - IPC-specific PCM ops
+ * struct sof_ipc_pcm_ops - IPC-specific PCM ops
  * @hw_params: Function pointer for hw_params
  * @hw_free: Function pointer for hw_free
  * @trigger: Function pointer for trigger
  * @dai_link_fixup: Function pointer for DAI link fixup
  */
-struct ipc_pcm_ops {
+struct sof_ipc_pcm_ops {
 	int (*hw_params)(struct snd_soc_component *component, struct snd_pcm_substream *substream,
 			 struct snd_pcm_hw_params *params,
 			 struct snd_sof_platform_stream_params *platform_params);
@@ -67,9 +69,9 @@ struct ipc_pcm_ops {
 };
 
 /**
- * struct ipc_tplg_control_ops - IPC-specific ops for topology kcontrol IO
+ * struct sof_ipc_tplg_control_ops - IPC-specific ops for topology kcontrol IO
  */
-struct ipc_tplg_control_ops {
+struct sof_ipc_tplg_control_ops {
 	bool (*volume_put)(struct snd_sof_control *scontrol, struct snd_ctl_elem_value *ucontrol);
 	int (*volume_get)(struct snd_sof_control *scontrol, struct snd_ctl_elem_value *ucontrol);
 	bool (*switch_put)(struct snd_sof_control *scontrol, struct snd_ctl_elem_value *ucontrol);
@@ -86,19 +88,22 @@ struct ipc_tplg_control_ops {
 			     const unsigned int __user *binary_data, unsigned int size);
 	/* update control data based on notification from the DSP */
 	void (*update)(struct snd_sof_dev *sdev, void *ipc_control_message);
+	/* Optional callback to setup kcontrols associated with an swidget */
+	int (*widget_kcontrol_setup)(struct snd_sof_dev *sdev, struct snd_sof_widget *swidget);
+	/* mandatory callback to set up volume table for volume kcontrols */
+	int (*set_up_volume_table)(struct snd_sof_control *scontrol, int tlv[SOF_TLV_ITEMS],
+				   int size);
 };
 
 /**
- * struct ipc_tplg_widget_ops - IPC-specific ops for topology widgets
+ * struct sof_ipc_tplg_widget_ops - IPC-specific ops for topology widgets
  * @ipc_setup: Function pointer for setting up widget IPC params
  * @ipc_free: Function pointer for freeing widget IPC params
  * @token_list: List of token ID's that should be parsed for the widget
  * @token_list_size: number of elements in token_list
  * @bind_event: Function pointer for binding events to the widget
- * @set_up_all_pipelines: Function pointer for setting up all topology pipelines
- * @tear_down_all_pipelines: Function pointer for tearing down all topology pipelines
  */
-struct ipc_tplg_widget_ops {
+struct sof_ipc_tplg_widget_ops {
 	int (*ipc_setup)(struct snd_sof_widget *swidget);
 	void (*ipc_free)(struct snd_sof_widget *swidget);
 	enum sof_tokens *token_list;
@@ -108,7 +113,7 @@ struct ipc_tplg_widget_ops {
 };
 
 /**
- * struct ipc_tplg_ops - IPC-specific topology ops
+ * struct sof_ipc_tplg_ops - IPC-specific topology ops
  * @widget: Array of pointers to IPC-specific ops for widgets. This should always be of size
  *	    SND_SOF_DAPM_TYPE_COUNT i.e one per widget type. Unsupported widget types will be
  *	    initialized to 0.
@@ -123,10 +128,13 @@ struct ipc_tplg_widget_ops {
  * @widget_setup: Function pointer for setting up setup in the DSP
  * @widget_free: Function pointer for freeing widget in the DSP
  * @dai_config: Function pointer for sending DAI config IPC to the DSP
+ * @dai_get_clk: Function pointer for getting the DAI clock setting
+ * @set_up_all_pipelines: Function pointer for setting up all topology pipelines
+ * @tear_down_all_pipelines: Function pointer for tearing down all topology pipelines
  */
-struct ipc_tplg_ops {
-	const struct ipc_tplg_widget_ops *widget;
-	const struct ipc_tplg_control_ops *control;
+struct sof_ipc_tplg_ops {
+	const struct sof_ipc_tplg_widget_ops *widget;
+	const struct sof_ipc_tplg_control_ops *control;
 	int (*route_setup)(struct snd_sof_dev *sdev, struct snd_sof_route *sroute);
 	const struct sof_token_info *token_list;
 	int (*control_setup)(struct snd_sof_dev *sdev, struct snd_sof_control *scontrol);
@@ -337,7 +345,6 @@ struct snd_sof_dai {
 
 	int number_configs;
 	int current_config;
-	bool configured; /* DAI configured during BE hw_params */
 	struct list_head list;	/* list in sdev dai list */
 	void *private;
 };
@@ -429,11 +436,6 @@ static inline void snd_sof_compr_fragment_elapsed(struct snd_compr_stream *cstre
 static inline void snd_sof_compr_init_elapsed_work(struct work_struct *work) { }
 #endif
 
-/*
- * Mixer IPC
- */
-int snd_sof_ipc_set_get_comp_data(struct snd_sof_control *scontrol, bool set);
-
 /* DAI link fixup */
 int sof_pcm_dai_link_fixup(struct snd_soc_pcm_runtime *rtd, struct snd_pcm_hw_params *params);
 
@@ -468,4 +470,5 @@ int sof_update_ipc_object(struct snd_soc_component *scomp, void *object, enum so
 			  size_t object_size, int token_instance_num);
 int sof_pcm_setup_connected_widgets(struct snd_sof_dev *sdev, struct snd_soc_pcm_runtime *rtd,
 				    struct snd_sof_pcm *spcm, int dir);
+u32 vol_compute_gain(u32 value, int *tlv);
 #endif

@@ -8,11 +8,16 @@
 //
 
 #include <uapi/sound/sof/tokens.h>
+#include <linux/module.h>
 #include <sound/pcm_params.h>
 #include "sof-priv.h"
 #include "sof-audio.h"
 #include "ipc3-ops.h"
 #include "ops.h"
+
+static int sof_ssp_mclk_id = -1;
+module_param_named(sof_ssp_mclk_id, sof_ssp_mclk_id, int, 0444);
+MODULE_PARM_DESC(sof_ssp_mclk_id, "SOF SSP MCLK ID quirk");
 
 /* Full volume for default values */
 #define VOL_ZERO_DB	BIT(VOLUME_FWL)
@@ -1254,6 +1259,12 @@ static int sof_link_ssp_load(struct snd_soc_component *scomp, struct snd_sof_dai
 		config[i].ssp.rx_slots = le32_to_cpu(hw_config[i].rx_slots);
 		config[i].ssp.tx_slots = le32_to_cpu(hw_config[i].tx_slots);
 
+		if (sof_ssp_mclk_id != -1) {
+			dev_warn(scomp->dev, "%s: overriding topology mclk_id %d with parameter %d\n",
+				 __func__, config[i].ssp.mclk_id, sof_ssp_mclk_id);
+			config[i].ssp.mclk_id = sof_ssp_mclk_id;
+		}
+
 		dev_dbg(scomp->dev, "tplg: config SSP%d fmt %#x mclk %d bclk %d fclk %d width (%d)%d slots %d mclk id %d quirks %d clks_control %#x\n",
 			config[i].dai_index, config[i].format,
 			config[i].ssp.mclk_rate, config[i].ssp.bclk_rate,
@@ -1541,10 +1552,6 @@ static int sof_ipc3_route_setup(struct snd_sof_dev *sdev, struct snd_sof_route *
 	struct sof_ipc_pipe_comp_connect connect;
 	struct sof_ipc_reply reply;
 	int ret;
-
-	/* nothing to do if route is already set up */
-	if (sroute->setup)
-		return 0;
 
 	connect.hdr.size = sizeof(connect);
 	connect.hdr.cmd = SOF_IPC_GLB_TPLG_MSG | SOF_IPC_TPLG_COMP_CONNECT;
@@ -1957,7 +1964,7 @@ static int sof_ipc3_dai_config(struct snd_sof_dev *sdev, struct snd_sof_widget *
 	struct sof_dai_private_data *private;
 	struct sof_ipc_dai_config *config;
 	struct sof_ipc_reply reply;
-	int ret;
+	int ret = 0;
 
 	if (!dai || !dai->private) {
 		dev_err(sdev->dev, "No private data for DAI %s\n", swidget->widget->name);
@@ -2003,10 +2010,13 @@ static int sof_ipc3_dai_config(struct snd_sof_dev *sdev, struct snd_sof_widget *
 
 	config->flags = flags;
 
-	ret = sof_ipc_tx_message(sdev->ipc, config, config->hdr.size,
-				 &reply, sizeof(reply));
-	if (ret < 0)
-		dev_err(sdev->dev, "Failed to set dai config for %s\n", dai->name);
+	/* only send the IPC if the widget is set up in the DSP */
+	if (swidget->use_count > 0) {
+		ret = sof_ipc_tx_message(sdev->ipc, config, config->hdr.size,
+					 &reply, sizeof(reply));
+		if (ret < 0)
+			dev_err(sdev->dev, "Failed to set dai config for %s\n", dai->name);
+	}
 
 	return ret;
 }
@@ -2332,7 +2342,7 @@ static enum sof_tokens process_token_list[] = {
 	SOF_COMP_TOKENS,
 };
 
-static const struct ipc_tplg_widget_ops tplg_ipc3_widget_ops[SND_SOC_DAPM_TYPE_COUNT] = {
+static const struct sof_ipc_tplg_widget_ops tplg_ipc3_widget_ops[SND_SOC_DAPM_TYPE_COUNT] = {
 	[snd_soc_dapm_aif_in] =  {sof_ipc3_widget_setup_comp_host, sof_ipc3_widget_free_comp,
 				  host_token_list, ARRAY_SIZE(host_token_list), NULL},
 	[snd_soc_dapm_aif_out] = {sof_ipc3_widget_setup_comp_host, sof_ipc3_widget_free_comp,
@@ -2368,7 +2378,7 @@ static const struct ipc_tplg_widget_ops tplg_ipc3_widget_ops[SND_SOC_DAPM_TYPE_C
 				 sof_ipc3_widget_bind_event},
 };
 
-const struct ipc_tplg_ops ipc3_tplg_ops = {
+const struct sof_ipc_tplg_ops ipc3_tplg_ops = {
 	.widget = tplg_ipc3_widget_ops,
 	.control = &tplg_ipc3_control_ops,
 	.route_setup = sof_ipc3_route_setup,

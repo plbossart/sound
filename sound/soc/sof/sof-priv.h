@@ -182,11 +182,6 @@ struct snd_sof_dsp_ops {
 	int (*load_firmware)(struct snd_sof_dev *sof_dev); /* mandatory */
 	int (*load_module)(struct snd_sof_dev *sof_dev,
 			   struct snd_sof_mod_hdr *hdr); /* optional */
-	/*
-	 * FW ready checks for ABI compatibility and creates
-	 * memory windows at first boot
-	 */
-	int (*fw_ready)(struct snd_sof_dev *sdev, u32 msg_id); /* mandatory */
 
 	/* connect pcm substream to a host stream */
 	int (*pcm_open)(struct snd_sof_dev *sdev,
@@ -361,28 +356,49 @@ struct snd_sof_ipc_msg {
 };
 
 /**
- * struct ipc_pm_ops - IPC-specific PM ops
+ * struct sof_ipc_pm_ops - IPC-specific PM ops
  * @ctx_save:		Function pointer for context save
  * @ctx_restore:	Function pointer for context restore
  */
-struct ipc_pm_ops {
+struct sof_ipc_pm_ops {
 	int (*ctx_save)(struct snd_sof_dev *sdev);
 	int (*ctx_restore)(struct snd_sof_dev *sdev);
 };
 
-struct ipc_tplg_ops;
-struct ipc_pcm_ops;
+struct sof_ipc_tplg_ops;
+struct sof_ipc_pcm_ops;
 
 /**
- * struct ipc_ops - IPC-specific ops
+ * struct sof_ipc_ops - IPC-specific ops
  * @tplg:	Pointer to IPC-specific topology ops
  * @pm:		Pointer to PM ops
  * @pcm:	Pointer to PCM ops
+ *
+ * @tx_msg:	Function pointer for sending a 'short' IPC message
+ * @set_get_data: Function pointer for set/get data ('large' IPC message). This
+ *		function may split up the 'large' message and use the @tx_msg
+ *		path to transfer individual chunks, or use other means to transfer
+ *		the message.
+ * @get_reply:	Function pointer for fetching the reply to
+ *		sdev->ipc->msg.reply_data
+ * @rx_msg:	Function pointer for handling a received message
+ *
+ * Note: both @tx_msg and @set_get_data considered as TX functions and they are
+ * serialized for the duration of the instructed transfer. A large message sent
+ * via @set_get_data is a single transfer even if at the hardware level it is
+ * handled with multiple chunks.
  */
-struct ipc_ops {
-	const struct ipc_tplg_ops *tplg;
-	const struct ipc_pm_ops *pm;
-	const struct ipc_pcm_ops *pcm;
+struct sof_ipc_ops {
+	const struct sof_ipc_tplg_ops *tplg;
+	const struct sof_ipc_pm_ops *pm;
+	const struct sof_ipc_pcm_ops *pcm;
+
+	int (*tx_msg)(struct snd_sof_dev *sdev, void *msg_data, size_t msg_bytes,
+		      void *reply_data, size_t reply_bytes, bool no_pm);
+	int (*set_get_data)(struct snd_sof_dev *sdev, void *data, size_t data_bytes,
+			    bool set);
+	int (*get_reply)(struct snd_sof_dev *sdev);
+	void (*rx_msg)(struct snd_sof_dev *sdev);
 };
 
 /* SOF generic IPC data */
@@ -400,7 +416,7 @@ struct snd_sof_ipc {
 	struct snd_sof_ipc_msg msg;
 
 	/* IPC ops based on version */
-	const struct ipc_ops *ops;
+	const struct sof_ipc_ops *ops;
 };
 
 enum sof_dtrace_state {
@@ -577,17 +593,17 @@ struct snd_sof_ipc *snd_sof_ipc_init(struct snd_sof_dev *sdev);
 void snd_sof_ipc_free(struct snd_sof_dev *sdev);
 void snd_sof_ipc_get_reply(struct snd_sof_dev *sdev);
 void snd_sof_ipc_reply(struct snd_sof_dev *sdev, u32 msg_id);
-void snd_sof_ipc_msgs_rx(struct snd_sof_dev *sdev);
-void snd_sof_ipc4_msgs_rx(struct snd_sof_dev *sdev);
+static inline void snd_sof_ipc_msgs_rx(struct snd_sof_dev *sdev)
+{
+	sdev->ipc->ops->rx_msg(sdev);
+}
 int snd_sof_ipc_valid(struct snd_sof_dev *sdev);
 int sof_ipc_tx_message(struct snd_sof_ipc *ipc, void *msg_data, size_t msg_bytes,
 		       void *reply_data, size_t reply_bytes);
-int sof_ipc4_tx_message(struct snd_sof_ipc *ipc, void *msg_data, size_t msg_bytes,
-			void *reply_data, size_t reply_bytes);
 int sof_ipc_tx_message_no_pm(struct snd_sof_ipc *ipc, void *msg_data, size_t msg_bytes,
 			     void *reply_data, size_t reply_bytes);
-int sof_ipc_init_msg_memory(struct snd_sof_dev *sdev);
-int sof_ipc4_init_msg_memory(struct snd_sof_dev *sdev);
+int sof_ipc_send_msg(struct snd_sof_dev *sdev, void *msg_data, size_t msg_bytes,
+		     size_t reply_bytes);
 
 static inline void snd_sof_ipc_process_reply(struct snd_sof_dev *sdev, u32 msg_id)
 {
@@ -658,8 +674,6 @@ int sof_block_write(struct snd_sof_dev *sdev, enum snd_sof_fw_blk_type blk_type,
 		    u32 offset, void *src, size_t size);
 int sof_block_read(struct snd_sof_dev *sdev, enum snd_sof_fw_blk_type blk_type,
 		   u32 offset, void *dest, size_t size);
-
-int sof_fw_ready(struct snd_sof_dev *sdev, u32 msg_id);
 
 int sof_ipc_msg_data(struct snd_sof_dev *sdev,
 		     struct snd_pcm_substream *substream,

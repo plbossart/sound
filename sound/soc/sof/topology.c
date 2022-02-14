@@ -32,7 +32,6 @@
 #define VOL_HALF_DB_STEP	50
 
 /* TLV data items */
-#define TLV_ITEMS	3
 #define TLV_MIN		0
 #define TLV_STEP	1
 #define TLV_MUTE	2
@@ -58,7 +57,7 @@ int sof_update_ipc_object(struct snd_soc_component *scomp, void *object, enum so
 			  size_t object_size, int token_instance_num)
 {
 	struct snd_sof_dev *sdev = snd_soc_component_get_drvdata(scomp);
-	const struct ipc_tplg_ops *ipc_tplg_ops = sdev->ipc->ops->tplg;
+	const struct sof_ipc_tplg_ops *ipc_tplg_ops = sdev->ipc->ops->tplg;
 	const struct sof_token_info *token_list = ipc_tplg_ops->token_list;
 	const struct sof_topology_token *tokens;
 	int i, j;
@@ -133,7 +132,7 @@ int sof_update_ipc_object(struct snd_soc_component *scomp, void *object, enum so
 	return 0;
 }
 
-static inline int get_tlv_data(const int *p, int tlv[TLV_ITEMS])
+static inline int get_tlv_data(const int *p, int tlv[SOF_TLV_ITEMS])
 {
 	/* we only support dB scale TLV type at the moment */
 	if ((int)p[SNDRV_CTL_TLVO_TYPE] != SNDRV_CTL_TLVT_DB_SCALE)
@@ -223,7 +222,7 @@ static u32 vol_pow32(u32 a, int exp, u32 fwl)
  * Function to calculate volume gain from TLV data.
  * This function can only handle gain steps that are multiples of 0.5 dB
  */
-static u32 vol_compute_gain(u32 value, int *tlv)
+u32 vol_compute_gain(u32 value, int *tlv)
 {
 	int dB_gain;
 	u32 linear_gain;
@@ -262,20 +261,17 @@ static u32 vol_compute_gain(u32 value, int *tlv)
  * "size" specifies the number of entries in the table
  */
 static int set_up_volume_table(struct snd_sof_control *scontrol,
-			       int tlv[TLV_ITEMS], int size)
+			       int tlv[SOF_TLV_ITEMS], int size)
 {
-	int j;
+	struct snd_soc_component *scomp = scontrol->scomp;
+	struct snd_sof_dev *sdev = snd_soc_component_get_drvdata(scomp);
+	const struct sof_ipc_tplg_ops *tplg_ops = sdev->ipc->ops->tplg;
 
-	/* init the volume table */
-	scontrol->volume_table = kcalloc(size, sizeof(u32), GFP_KERNEL);
-	if (!scontrol->volume_table)
-		return -ENOMEM;
+	if (tplg_ops->control->set_up_volume_table)
+		return tplg_ops->control->set_up_volume_table(scontrol, tlv, size);
 
-	/* populate the volume table */
-	for (j = 0; j < size ; j++)
-		scontrol->volume_table[j] = vol_compute_gain(j, tlv);
-
-	return 0;
+	dev_err(scomp->dev, "Mandatory op %s not set\n", __func__);
+	return -EINVAL;
 }
 
 struct sof_dai_types {
@@ -460,7 +456,7 @@ static int sof_copy_tuples(struct snd_sof_dev *sdev, struct snd_soc_tplg_vendor_
 			   int array_size, u32 token_id, int token_instance_num,
 			   struct snd_sof_tuple *tuples, int tuples_size, int *num_copied_tuples)
 {
-	const struct ipc_tplg_ops *ipc_tplg_ops = sdev->ipc->ops->tplg;
+	const struct sof_ipc_tplg_ops *ipc_tplg_ops = sdev->ipc->ops->tplg;
 	const struct sof_token_info *token_list = ipc_tplg_ops->token_list;
 	const struct sof_topology_token *tokens;
 	int found = 0;
@@ -771,7 +767,7 @@ static int sof_control_load_volume(struct snd_soc_component *scomp,
 	struct snd_sof_dev *sdev = snd_soc_component_get_drvdata(scomp);
 	struct snd_soc_tplg_mixer_control *mc =
 		container_of(hdr, struct snd_soc_tplg_mixer_control, hdr);
-	int tlv[TLV_ITEMS];
+	int tlv[SOF_TLV_ITEMS];
 	int ret;
 
 	/* validate topology data */
@@ -961,7 +957,7 @@ static int sof_control_unload(struct snd_soc_component *scomp,
 			      struct snd_soc_dobj *dobj)
 {
 	struct snd_sof_dev *sdev = snd_soc_component_get_drvdata(scomp);
-	const struct ipc_tplg_ops *ipc_tplg_ops = sdev->ipc->ops->tplg;
+	const struct sof_ipc_tplg_ops *ipc_tplg_ops = sdev->ipc->ops->tplg;
 	struct snd_sof_control *scontrol = dobj->private;
 	int ret = 0;
 
@@ -1092,7 +1088,7 @@ static int sof_widget_parse_tokens(struct snd_soc_component *scomp, struct snd_s
 				   enum sof_tokens *object_token_list, int count)
 {
 	struct snd_sof_dev *sdev = snd_soc_component_get_drvdata(scomp);
-	const struct ipc_tplg_ops *ipc_tplg_ops = sdev->ipc->ops->tplg;
+	const struct sof_ipc_tplg_ops *ipc_tplg_ops = sdev->ipc->ops->tplg;
 	const struct sof_token_info *token_list = ipc_tplg_ops->token_list;
 	struct snd_soc_tplg_private *private = &tw->priv;
 	int num_tuples = 0;
@@ -1177,8 +1173,8 @@ static int sof_widget_ready(struct snd_soc_component *scomp, int index,
 			    struct snd_soc_tplg_dapm_widget *tw)
 {
 	struct snd_sof_dev *sdev = snd_soc_component_get_drvdata(scomp);
-	const struct ipc_tplg_ops *ipc_tplg_ops = sdev->ipc->ops->tplg;
-	const struct ipc_tplg_widget_ops *widget_ops = ipc_tplg_ops->widget;
+	const struct sof_ipc_tplg_ops *ipc_tplg_ops = sdev->ipc->ops->tplg;
+	const struct sof_ipc_tplg_widget_ops *widget_ops = ipc_tplg_ops->widget;
 	struct snd_sof_widget *swidget;
 	struct snd_sof_dai *dai;
 	enum sof_tokens *token_list;
@@ -1327,8 +1323,8 @@ static int sof_widget_unload(struct snd_soc_component *scomp,
 			     struct snd_soc_dobj *dobj)
 {
 	struct snd_sof_dev *sdev = snd_soc_component_get_drvdata(scomp);
-	const struct ipc_tplg_ops *ipc_tplg_ops = sdev->ipc->ops->tplg;
-	const struct ipc_tplg_widget_ops *widget_ops = ipc_tplg_ops->widget;
+	const struct sof_ipc_tplg_ops *ipc_tplg_ops = sdev->ipc->ops->tplg;
+	const struct sof_ipc_tplg_widget_ops *widget_ops = ipc_tplg_ops->widget;
 	const struct snd_kcontrol_new *kc;
 	struct snd_soc_dapm_widget *widget;
 	struct snd_sof_control *scontrol;
@@ -1543,7 +1539,7 @@ static int sof_link_load(struct snd_soc_component *scomp, int index, struct snd_
 			 struct snd_soc_tplg_link_config *cfg)
 {
 	struct snd_sof_dev *sdev = snd_soc_component_get_drvdata(scomp);
-	const struct ipc_tplg_ops *ipc_tplg_ops = sdev->ipc->ops->tplg;
+	const struct sof_ipc_tplg_ops *ipc_tplg_ops = sdev->ipc->ops->tplg;
 	const struct sof_token_info *token_list = ipc_tplg_ops->token_list;
 	struct snd_soc_tplg_private *private = &cfg->priv;
 	struct snd_sof_dai_link *slink;
@@ -1848,8 +1844,8 @@ static int sof_complete(struct snd_soc_component *scomp)
 {
 	struct snd_sof_dev *sdev = snd_soc_component_get_drvdata(scomp);
 	struct snd_sof_widget *swidget, *comp_swidget;
-	const struct ipc_tplg_ops *ipc_tplg_ops = sdev->ipc->ops->tplg;
-	const struct ipc_tplg_widget_ops *widget_ops = ipc_tplg_ops->widget;
+	const struct sof_ipc_tplg_ops *ipc_tplg_ops = sdev->ipc->ops->tplg;
+	const struct sof_ipc_tplg_widget_ops *widget_ops = ipc_tplg_ops->widget;
 	struct snd_sof_control *scontrol;
 	int ret;
 

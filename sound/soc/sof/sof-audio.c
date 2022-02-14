@@ -12,51 +12,6 @@
 #include "sof-audio.h"
 #include "ops.h"
 
-static int sof_kcontrol_setup(struct snd_sof_dev *sdev, struct snd_sof_control *scontrol)
-{
-	int ret;
-
-	ret = snd_sof_ipc_set_get_comp_data(scontrol, true);
-	if (ret < 0)
-		dev_err(sdev->dev, "error: failed kcontrol value set for widget: %d\n",
-			scontrol->comp_id);
-
-	return ret;
-}
-
-static int sof_widget_kcontrol_setup(struct snd_sof_dev *sdev, struct snd_sof_widget *swidget)
-{
-	struct snd_sof_control *scontrol;
-	int ret;
-
-	/* set up all controls for the widget */
-	list_for_each_entry(scontrol, &sdev->kcontrol_list, list)
-		if (scontrol->comp_id == swidget->comp_id) {
-			/* set kcontrol data in DSP */
-			ret = sof_kcontrol_setup(sdev, scontrol);
-			if (ret < 0) {
-				dev_err(sdev->dev, "error: fail to set up kcontrols for widget %s\n",
-					swidget->widget->name);
-				return ret;
-			}
-
-			/*
-			 * Read back the data from the DSP for static widgets. This is particularly
-			 * useful for binary kcontrols associated with static pipeline widgets to
-			 * initialize the data size to match that in the DSP.
-			 */
-			if (swidget->dynamic_pipeline_widget)
-				continue;
-
-			ret = snd_sof_ipc_set_get_comp_data(scontrol, false);
-			if (ret < 0)
-				dev_warn(sdev->dev, "Failed kcontrol get for control in widget %s\n",
-					 swidget->widget->name);
-		}
-
-	return 0;
-}
-
 static void sof_reset_route_setup_status(struct snd_sof_dev *sdev, struct snd_sof_widget *widget)
 {
 	struct snd_sof_route *sroute;
@@ -68,7 +23,7 @@ static void sof_reset_route_setup_status(struct snd_sof_dev *sdev, struct snd_so
 
 int sof_widget_free(struct snd_sof_dev *sdev, struct snd_sof_widget *swidget)
 {
-	const struct ipc_tplg_ops *tplg_ops = sdev->ipc->ops->tplg;
+	const struct sof_ipc_tplg_ops *tplg_ops = sdev->ipc->ops->tplg;
 	int err = 0;
 	int ret;
 
@@ -79,11 +34,8 @@ int sof_widget_free(struct snd_sof_dev *sdev, struct snd_sof_widget *swidget)
 	if (--swidget->use_count)
 		return 0;
 
-	if (WIDGET_IS_DAI(swidget->id)) {
-		struct snd_sof_dai *dai = swidget->private;
-
-		dai->configured = false;
-	}
+	/* reset route setup status for all routes that contain this widget */
+	sof_reset_route_setup_status(sdev, swidget);
 
 	/* continue to disable core even if IPC fails */
 	if (tplg_ops->widget_free)
@@ -101,8 +53,6 @@ int sof_widget_free(struct snd_sof_dev *sdev, struct snd_sof_widget *swidget)
 			err = ret;
 	}
 
-	/* reset route setup status for all routes that contain this widget */
-	sof_reset_route_setup_status(sdev, swidget);
 	swidget->complete = 0;
 
 	/*
@@ -124,7 +74,7 @@ EXPORT_SYMBOL(sof_widget_free);
 
 int sof_widget_setup(struct snd_sof_dev *sdev, struct snd_sof_widget *swidget)
 {
-	const struct ipc_tplg_ops *tplg_ops = sdev->ipc->ops->tplg;
+	const struct sof_ipc_tplg_ops *tplg_ops = sdev->ipc->ops->tplg;
 	int ret;
 
 	/* skip if there is no private data */
@@ -172,10 +122,8 @@ int sof_widget_setup(struct snd_sof_dev *sdev, struct snd_sof_widget *swidget)
 
 	/* send config for DAI components */
 	if (WIDGET_IS_DAI(swidget->id)) {
-		struct snd_sof_dai *dai = swidget->private;
 		unsigned int flags = SOF_DAI_CONFIG_FLAGS_NONE;
 
-		dai->configured = false;
 		if (tplg_ops->dai_config) {
 			ret = tplg_ops->dai_config(sdev, swidget, flags, NULL);
 			if (ret < 0)
@@ -184,11 +132,10 @@ int sof_widget_setup(struct snd_sof_dev *sdev, struct snd_sof_widget *swidget)
 	}
 
 	/* restore kcontrols for widget */
-	ret = sof_widget_kcontrol_setup(sdev, swidget);
-	if (ret < 0) {
-		dev_err(sdev->dev, "error: failed to restore kcontrols for widget %s\n",
-			swidget->widget->name);
-		goto widget_free;
+	if (tplg_ops->control->widget_kcontrol_setup) {
+		ret = tplg_ops->control->widget_kcontrol_setup(sdev, swidget);
+		if (ret < 0)
+			goto widget_free;
 	}
 
 	dev_dbg(sdev->dev, "widget %s setup complete\n", swidget->widget->name);
@@ -212,7 +159,7 @@ EXPORT_SYMBOL(sof_widget_setup);
 int sof_route_setup(struct snd_sof_dev *sdev, struct snd_soc_dapm_widget *wsource,
 		    struct snd_soc_dapm_widget *wsink)
 {
-	const struct ipc_tplg_ops *ipc_tplg_ops = sdev->ipc->ops->tplg;
+	const struct sof_ipc_tplg_ops *ipc_tplg_ops = sdev->ipc->ops->tplg;
 	struct snd_sof_widget *src_widget = wsource->dobj.private;
 	struct snd_sof_widget *sink_widget = wsink->dobj.private;
 	struct snd_sof_route *sroute;
@@ -250,6 +197,10 @@ int sof_route_setup(struct snd_sof_dev *sdev, struct snd_soc_dapm_widget *wsourc
 			wsource->name, wsink->name);
 		return -EINVAL;
 	}
+
+	/* nothing to do if route is already set up */
+	if (sroute->setup)
+		return 0;
 
 	ret = ipc_tplg_ops->route_setup(sdev, sroute);
 	if (ret < 0)
@@ -304,7 +255,7 @@ static int sof_setup_pipeline_connections(struct snd_sof_dev *sdev,
 
 int sof_widget_list_setup(struct snd_sof_dev *sdev, struct snd_sof_pcm *spcm, int dir)
 {
-	const struct ipc_tplg_ops *ipc_tplg_ops = sdev->ipc->ops->tplg;
+	const struct sof_ipc_tplg_ops *ipc_tplg_ops = sdev->ipc->ops->tplg;
 	struct snd_soc_dapm_widget_list *list = spcm->stream[dir].list;
 	struct snd_soc_dapm_widget *widget;
 	int i, ret, num_widgets;
@@ -502,7 +453,7 @@ int sof_set_hw_params_upon_resume(struct device *dev)
 int sof_pcm_stream_free(struct snd_sof_dev *sdev, struct snd_pcm_substream *substream,
 			struct snd_sof_pcm *spcm, int dir, bool free_widget_list)
 {
-	const struct ipc_pcm_ops *pcm_ops = sdev->ipc->ops->pcm;
+	const struct sof_ipc_pcm_ops *pcm_ops = sdev->ipc->ops->pcm;
 	int ret;
 
 	/* Send PCM_FREE IPC to reset pipeline */
@@ -510,9 +461,9 @@ int sof_pcm_stream_free(struct snd_sof_dev *sdev, struct snd_pcm_substream *subs
 		ret = pcm_ops->hw_free(sdev->component, substream);
 		if (ret < 0)
 			return ret;
-
-		spcm->prepared[substream->stream] = false;
 	}
+
+	spcm->prepared[substream->stream] = false;
 
 	/* stop the DMA */
 	ret = snd_sof_pcm_platform_hw_free(sdev, substream);
@@ -636,7 +587,7 @@ static int sof_dai_get_clk(struct snd_soc_pcm_runtime *rtd, int clk_type)
 	struct snd_sof_dai *dai =
 		snd_sof_find_dai(component, (char *)rtd->dai_link->name);
 	struct snd_sof_dev *sdev = snd_soc_component_get_drvdata(component);
-	const struct ipc_tplg_ops *tplg_ops = sdev->ipc->ops->tplg;
+	const struct sof_ipc_tplg_ops *tplg_ops = sdev->ipc->ops->tplg;
 
 	/* use the tplg configured mclk if existed */
 	if (!dai)
@@ -702,7 +653,8 @@ int sof_machine_check(struct snd_sof_dev *sdev)
 		return -ENOMEM;
 
 	mach->drv_name = "sof-nocodec";
-	sof_pdata->tplg_filename = desc->nocodec_tplg_filename;
+	if (!sof_pdata->tplg_filename)
+		sof_pdata->tplg_filename = desc->nocodec_tplg_filename;
 
 	sof_pdata->machine = mach;
 	snd_sof_set_mach_params(mach, sdev);
