@@ -598,7 +598,7 @@ static struct snd_soc_dai_driver es8326_dai = {
 				.formats = es8326_FORMATS,
 				},
 		.ops = &es8326_ops,
-		.symmetric_rates = 1,
+		.symmetric_rate = 1,
 };
 
 static int es8326_probe(struct snd_soc_component*codec)

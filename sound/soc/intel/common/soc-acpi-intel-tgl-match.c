@@ -19,7 +19,7 @@ static const struct snd_soc_acpi_codecs essx_83x6 = {
 static const struct snd_soc_acpi_codecs tgl_codecs = {
 
 	.num_codecs = 1,
-	.codecs = {"ESSX8326"}
+	.codecs = {"MAX98357"}
 };
 
 static const struct snd_soc_acpi_endpoint single_endpoint = {
@@ -380,6 +380,7 @@ struct snd_soc_acpi_mach snd_soc_acpi_intel_tgl_machines[] = {
 		.comp_ids = &tgl_rt5682_rt5682s_hp,
 		.drv_name = "tgl_mx98357_rt5682",
 		.machine_quirk = snd_soc_acpi_codec_list,
+		.quirk_data = &tgl_codecs,
 		.sof_tplg_filename = "sof-tgl-max98357a-rt5682.tplg",
 	},
 	{
