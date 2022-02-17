@@ -429,8 +429,10 @@ static const struct config_entry *snd_intel_dsp_find_config
 			int i;
 
 			for (i = 0; i < table->codec_hid->num_codecs; i++)
-				if (!acpi_dev_present(table->codec_hid->codecs[i], NULL, -1))
-					continue;
+				if (acpi_dev_present(table->codec_hid->codecs[i], NULL, -1))
+					break;
+			if (i == table->codec_hid->num_codecs)
+				continue;
 		}
 		return table;
 	}
