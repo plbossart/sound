@@ -634,13 +634,39 @@ static int check_nhlt_ssp_mask(struct snd_sof_dev *sdev)
 		return ssp_mask;
 
 	if (intel_nhlt_has_endpoint_type(nhlt, NHLT_LINK_SSP)) {
-		ssp_mask = intel_nhlt_ssp_endpoint_mask(nhlt, NHLT_DEVICE_I2S);
+		ssp_mask = intel_nhlt_ssp_endpoint_mask(sdev->dev, nhlt, NHLT_DEVICE_I2S);
 		if (ssp_mask)
 			dev_info(sdev->dev, "NHLT_DEVICE_I2S detected, ssp_mask %#x\n", ssp_mask);
 	}
 	intel_nhlt_free(nhlt);
 
 	return ssp_mask;
+}
+
+static int check_nhlt_ssp_blob(struct snd_sof_dev *sdev, int instance)
+{
+	struct nhlt_acpi_table *nhlt;
+	struct nhlt_specific_cfg *cfg;
+
+	nhlt = intel_nhlt_init(sdev->dev);
+	if (!nhlt)
+		return -EINVAL;
+
+	cfg = intel_nhlt_get_endpoint_blob(sdev->dev, nhlt, instance,
+					   NHLT_LINK_SSP,
+					   24, 32, 2, 48000, 0,
+					   NHLT_DEVICE_I2S);
+	if (!cfg) {
+		dev_err(sdev->dev, "plb: could not find NHLT configuration\n");
+		return -EINVAL;
+	}
+
+	print_hex_dump_debug(__func__, DUMP_PREFIX_OFFSET, 8, 4,
+			     cfg->caps, cfg->size, false);
+
+	intel_nhlt_free(nhlt);
+
+	return 0;
 }
 
 #if IS_ENABLED(CONFIG_SND_SOC_SOF_HDA) || IS_ENABLED(CONFIG_SND_SOC_SOF_INTEL_SOUNDWIRE)
@@ -1399,6 +1425,10 @@ struct snd_soc_acpi_mach *hda_machine_select(struct snd_sof_dev *sdev)
 
 			/* fls returns 1-based results, SSPs indices are 0-based */
 			ssp_num = fls(mach->mach_params.i2s_link_mask) - 1;
+
+			if (check_nhlt_ssp_blob(sdev, ssp_num) < 0) {
+				dev_err(sdev->dev, "plb: no blob found\n");
+			}
 
 			tplg_filename = devm_kasprintf(sdev->dev, GFP_KERNEL,
 						       "%s%s%d",

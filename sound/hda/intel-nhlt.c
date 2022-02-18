@@ -111,6 +111,27 @@ int intel_nhlt_get_dmic_geo(struct device *dev, struct nhlt_acpi_table *nhlt)
 }
 EXPORT_SYMBOL_GPL(intel_nhlt_get_dmic_geo);
 
+static void nhlt_list_endpoint_formats(struct device *dev, struct nhlt_fmt *fmt)
+{
+	struct nhlt_fmt_cfg *cfg = fmt->fmt_config;
+	struct wav_fmt *wfmt;
+	u16 _bps, _vbps;
+	int i;
+
+	dev_dbg(dev, "Endpoint format count=%d\n", fmt->fmt_count);
+
+	for (i = 0; i < fmt->fmt_count; i++) {
+		wfmt = &cfg->fmt_ext.fmt;
+		_bps = wfmt->bits_per_sample;
+		_vbps = cfg->fmt_ext.sample.valid_bits_per_sample;
+
+		dev_dbg(dev, "Endpoint format: ch=%d fmt=%d/%d rate=%d\n",
+			wfmt->channels, _vbps, _bps, wfmt->samples_per_sec);
+
+		cfg = (struct nhlt_fmt_cfg *)(cfg->config.caps + cfg->config.size);
+	}
+}
+
 bool intel_nhlt_has_endpoint_type(struct nhlt_acpi_table *nhlt, u8 link_type)
 {
 	struct nhlt_endpoint *epnt;
@@ -130,9 +151,10 @@ bool intel_nhlt_has_endpoint_type(struct nhlt_acpi_table *nhlt, u8 link_type)
 }
 EXPORT_SYMBOL(intel_nhlt_has_endpoint_type);
 
-int intel_nhlt_ssp_endpoint_mask(struct nhlt_acpi_table *nhlt, u8 device_type)
+int intel_nhlt_ssp_endpoint_mask(struct device *dev, struct nhlt_acpi_table *nhlt, u8 device_type)
 {
 	struct nhlt_endpoint *epnt;
+	struct nhlt_fmt *fmt;
 	int ssp_mask = 0;
 	int i;
 
@@ -144,6 +166,10 @@ int intel_nhlt_ssp_endpoint_mask(struct nhlt_acpi_table *nhlt, u8 device_type)
 		if (epnt->linktype == NHLT_LINK_SSP && epnt->device_type == device_type) {
 			/* for SSP the virtual bus id is the SSP port */
 			ssp_mask |= BIT(epnt->virtual_bus_id);
+
+			fmt = (struct nhlt_fmt *)(epnt->config.caps + epnt->config.size);
+
+			nhlt_list_endpoint_formats(dev, fmt);
 		}
 		epnt = (struct nhlt_endpoint *)((u8 *)epnt + epnt->length);
 	}
