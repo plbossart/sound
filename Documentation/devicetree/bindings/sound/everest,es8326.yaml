@@ -86,11 +86,7 @@ required:
   - compatible
   - reg
   - "#sound-dai-cells"
-  - mclk-rate
-  - mic1-src
-  - mic2-src
-  - amic1-src
-  - amic2-src
+
 
 additionalProperties: false
 
@@ -110,6 +106,5 @@ examples:
         amic1-src = [19];
         amic2-src = [19];
         jack-pol = [0e];
-        mclk-rate = <12288000>;
       };
     };

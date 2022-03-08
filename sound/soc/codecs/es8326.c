@@ -74,7 +74,7 @@ struct es8326_priv {
 	u8 mic2_src;
 	u8 jack_pol;
 	bool jd_inverted;
-	u32 mclk_rate;
+	unsigned int sysclk;
 };
 
 static irqreturn_t es8326_irq(int irq, void *dev_id)
@@ -88,6 +88,7 @@ static irqreturn_t es8326_irq(int irq, void *dev_id)
 		goto out;
 	snd_soc_component_write(comp, ES8326_ANA_MICBIAS_1B, 0x7c);
 	mdelay(500);
+	
 	iface = snd_soc_component_read(comp, ES8326_HP_DECTECT_FB);
 	dev_dbg(comp->dev, "gpio flag %#04x", iface);
 	if ((iface & ES8326_HPINSERT_FLAG) == 0) {
@@ -363,7 +364,8 @@ static int es8326_set_dai_sysclk(struct snd_soc_dai *codec_dai,
 {
 	struct snd_soc_component *codec = codec_dai->component;
 	struct es8326_priv *es8326 = snd_soc_component_get_drvdata(codec);
-	unsigned int freq2 = es8326->mclk_rate;
+
+	es8326->sysclk = freq;
 
 	if (freq == 0) {
 		es8326->sysclk_constraints->list = NULL;
@@ -371,7 +373,7 @@ static int es8326_set_dai_sysclk(struct snd_soc_dai *codec_dai,
 		return 0;
 	}
 
-	switch (freq2) {
+	switch (freq) {
 	case 11289600:
 	case 18432000:
 	case 22579200:
@@ -447,7 +449,7 @@ static int es8326_pcm_hw_params(struct snd_pcm_substream *substream,
 	u8 srate = 0;
 	int coeff;
 
-	coeff = get_coeff(es8326->mclk_rate, params_rate(params));
+	coeff = get_coeff(es8326->sysclk, params_rate(params));
 
 	/* bit size */
 	switch (params_format(params)) {
@@ -624,13 +626,6 @@ static int es8326_probe(struct snd_soc_component *codec)
 	}
 	dev_dbg(codec->dev, "jack-pol %x", es8326->jack_pol);
 
-	ret = device_property_read_u32(codec->dev, "mclk-rate", &es8326->mclk_rate);
-	if (ret != 0) {
-		dev_dbg(codec->dev, "mclk-rate return %d", ret);
-		es8326->mclk_rate = 19200000;
-	}
-	dev_dbg(codec->dev, "mclk-rate %u", es8326->mclk_rate);
-
 	regmap_write(es8326->regmap, ES8326_CLK_CTL_01, ES8326_CLK_ON);
 	/* Two channel ADC */
 	regmap_write(es8326->regmap, ES8326_PULLUP_CTL_F9, 0x02);
@@ -755,16 +750,17 @@ static int es8326_i2c_probe(struct i2c_client *i2c,
 		return ret;
 	}
 
-	es8326->mclk = devm_clk_get_optional(&i2c->dev, "mclk");
+	es8326->mclk = devm_clk_get_optional(component->dev, "mclk");
 	if (IS_ERR(es8326->mclk)) {
-		dev_err(&i2c->dev, "%s, unable to get mclk\n", __func__);
+		dev_err(component->dev, "unable to get mclk\n");
 		return PTR_ERR(es8326->mclk);
 	}
 	if (!es8326->mclk)
-		dev_err(&i2c->dev, "%s, assuming static mclk\n", __func__);
-		ret = clk_prepare_enable(es8326->mclk);
+		dev_warn(component->dev, "assuming static mclk\n");
+
+	ret = clk_prepare_enable(es8326->mclk);
 	if (ret) {
-		dev_err(&i2c->dev, "%s, unable to enable mclk\n", __func__);
+		dev_err(component->dev, "unable to enable mclk\n");
 		return ret;
 	}
 
@@ -816,4 +812,4 @@ module_i2c_driver(es8326_i2c_driver);
 
 MODULE_DESCRIPTION("ASoC es8326 driver");
 MODULE_AUTHOR("David Yang <yangxiaohua@everest-semi.com>");
-MODULE_LICENSE("GPL v2");
+MODULE_LICENSE("GPL");
