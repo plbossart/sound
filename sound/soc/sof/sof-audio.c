@@ -839,6 +839,7 @@ int sof_machine_register(struct snd_sof_dev *sdev, void *pdata)
 	const char *drv_name;
 	const void *mach;
 	int size;
+	int ret = 0;
 
 	drv_name = plat_data->machine->drv_name;
 	mach = plat_data->machine;
@@ -854,7 +855,48 @@ int sof_machine_register(struct snd_sof_dev *sdev, void *pdata)
 	dev_dbg(sdev->dev, "created machine %s\n",
 		dev_name(&plat_data->pdev_mach->dev));
 
+	if (plat_data->machine->generic_card_flags & DISPLAY_AUDIO_GENERIC_CARD) {
+		plat_data->pdev_generic_display_audio =
+			platform_device_register_data(sdev->dev, "display_audio_generic_card",
+						      PLATFORM_DEVID_NONE, mach, size);
+		if (IS_ERR(plat_data->pdev_generic_display_audio)) {
+			ret = PTR_ERR(plat_data->pdev_generic_display_audio);
+			goto unregister_machine;
+		}
+	}
+
+	if (plat_data->machine->generic_card_flags & DMIC_GENERIC_CARD) {
+		plat_data->pdev_generic_dmic =
+			platform_device_register_data(sdev->dev, "dmic_generic_card",
+						      PLATFORM_DEVID_NONE, mach, size);
+		if (IS_ERR(plat_data->pdev_generic_dmic)) {
+			ret = PTR_ERR(plat_data->pdev_generic_dmic);
+			goto unregister_display_audio;
+		}
+	}
+
+	if (plat_data->machine->generic_card_flags & BT_AUDIO_GENERIC_CARD) {
+		plat_data->pdev_generic_bt_audio =
+			platform_device_register_data(sdev->dev, "bt_audio_generic_card",
+						      PLATFORM_DEVID_NONE, mach, size);
+		if (IS_ERR(plat_data->pdev_generic_bt_audio)) {
+			ret = PTR_ERR(plat_data->pdev_generic_bt_audio);
+			goto unregister_dmic;
+		}
+	}
+
 	return 0;
+
+unregister_dmic:
+	platform_device_unregister(plat_data->pdev_generic_dmic);
+
+unregister_display_audio:
+	platform_device_unregister(plat_data->pdev_generic_display_audio);
+
+unregister_machine:
+	platform_device_unregister(plat_data->pdev_mach);
+
+	return ret;
 }
 EXPORT_SYMBOL(sof_machine_register);
 
@@ -863,5 +905,10 @@ void sof_machine_unregister(struct snd_sof_dev *sdev, void *pdata)
 	struct snd_sof_pdata *plat_data = pdata;
 
 	platform_device_unregister(plat_data->pdev_mach);
+
+	platform_device_unregister(plat_data->pdev_generic_display_audio);
+	platform_device_unregister(plat_data->pdev_generic_dmic);
+	platform_device_unregister(plat_data->pdev_generic_bt_audio);
+
 }
 EXPORT_SYMBOL(sof_machine_unregister);

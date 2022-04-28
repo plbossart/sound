@@ -88,6 +88,10 @@ struct snd_sof_pdata {
 
 	/* machine */
 	struct platform_device *pdev_mach;
+	struct platform_device *pdev_generic_display_audio;
+	struct platform_device *pdev_generic_dmic;
+	struct platform_device *pdev_generic_bt_audio;
+
 	const struct snd_soc_acpi_mach *machine;
 
 	void *hw_pdata;
