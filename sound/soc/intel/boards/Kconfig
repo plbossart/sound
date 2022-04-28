@@ -683,4 +683,8 @@ config SND_SOC_INTEL_SOUNDWIRE_SOF_MACH
 
 endif
 
+config SND_SOC_INTEL_SOF_GENERIC_DMIC_CARD
+	tristate "SOF Generic DMIC card"
+	select SND_SOC_DMIC
+
 endif ## SND_SOC_INTEL_MACH
