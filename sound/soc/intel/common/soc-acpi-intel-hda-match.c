@@ -29,6 +29,8 @@ struct snd_soc_acpi_mach snd_soc_acpi_intel_hda_machines[] = {
 		 * combining HDA+other device (e.g. DMIC).
 		 */
 		.pdata = &hda_pdata,
+
+		.generic_card_flags = DISPLAY_AUDIO_GENERIC_CARD | DMIC_GENERIC_CARD,
 	},
 	{},
 };
