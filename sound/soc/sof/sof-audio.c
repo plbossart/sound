@@ -862,7 +862,6 @@ void sof_machine_unregister(struct snd_sof_dev *sdev, void *pdata)
 {
 	struct snd_sof_pdata *plat_data = pdata;
 
-	if (!IS_ERR_OR_NULL(plat_data->pdev_mach))
-		platform_device_unregister(plat_data->pdev_mach);
+	platform_device_unregister(plat_data->pdev_mach);
 }
 EXPORT_SYMBOL(sof_machine_unregister);
