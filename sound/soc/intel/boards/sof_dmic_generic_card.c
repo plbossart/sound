@@ -104,10 +104,10 @@ static int dmic_generic_card_probe(struct platform_device *pdev)
 
 	mach = pdev->dev.platform_data;
 
-	if (!mach->mach_params.dmic_num) {
-		dev_info(dev, "%s: no DMIC present\n", __func__);
-		return 0;
-	}
+	//if (!mach->mach_params.dmic_num) {
+	//	dev_info(dev, "%s: no DMIC present\n", __func__);
+	//	return 0;
+	//}
 
 	/* set number of dai links */
 	dmic_card.num_links = dmic_be_num;
