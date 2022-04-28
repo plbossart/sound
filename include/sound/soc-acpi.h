@@ -143,6 +143,10 @@ struct snd_soc_acpi_link_adr {
  */
 #define SND_SOC_ACPI_TPLG_INTEL_DMIC_NUMBER BIT(2)
 
+#define DISPLAY_AUDIO_GENERIC_CARD	BIT(0)
+#define DMIC_GENERIC_CARD		BIT(1)
+#define BT_AUDIO_GENERIC_CARD		BIT(2)
+
 /**
  * snd_soc_acpi_mach: ACPI-based machine descriptor. Most of the fields are
  * related to the hardware, except for the firmware and topology file names.
@@ -165,6 +169,8 @@ struct snd_soc_acpi_link_adr {
  *  is not constant since this field may be updated at run-time
  * @sof_tplg_filename: Sound Open Firmware topology file name, if enabled
  * @tplg_quirk_mask: quirks to select different topology files dynamically
+ * @generic_card_flags: flags describing which generic cards can be enabled
+ * on this hardware.
  */
 /* Descriptor for SST ASoC machine driver */
 struct snd_soc_acpi_mach {
@@ -181,6 +187,7 @@ struct snd_soc_acpi_mach {
 	struct snd_soc_acpi_mach_params mach_params;
 	const char *sof_tplg_filename;
 	const u32 tplg_quirk_mask;
+	u32 generic_card_flags;
 };
 
 #define SND_SOC_ACPI_MAX_CODECS 3
