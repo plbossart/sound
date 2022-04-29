@@ -895,10 +895,14 @@ static int sof_control_load(struct snd_soc_component *scomp, int index,
 	struct soc_mixer_control *sm;
 	struct soc_bytes_ext *sbe;
 	struct soc_enum *se;
-	struct snd_sof_dev *sdev = snd_soc_component_get_drvdata(scomp);
+	struct snd_sof_component *scomponent;
 	struct snd_soc_dobj *dobj;
 	struct snd_sof_control *scontrol;
 	int ret;
+
+	scomponent = snd_sof_find_component(scomp);
+	if (!scomponent)
+		return -EINVAL;
 
 	dev_dbg(scomp->dev, "tplg: load control type %d name : %s\n",
 		hdr->type, hdr->name);
@@ -961,7 +965,7 @@ static int sof_control_load(struct snd_soc_component *scomp, int index,
 	scontrol->led_ctl.led_value = -1;
 
 	dobj->private = scontrol;
-	list_add(&scontrol->list, &sdev->kcontrol_list);
+	list_add(&scontrol->list, &scomponent->kcontrol_list);
 	return 0;
 }
 
@@ -1258,11 +1262,16 @@ static int sof_widget_ready(struct snd_soc_component *scomp, int index,
 	struct snd_sof_dev *sdev = snd_soc_component_get_drvdata(scomp);
 	const struct sof_ipc_tplg_ops *ipc_tplg_ops = sdev->ipc->ops->tplg;
 	const struct sof_ipc_tplg_widget_ops *widget_ops = ipc_tplg_ops->widget;
+	struct snd_sof_component *scomponent;
 	struct snd_sof_widget *swidget;
 	struct snd_sof_dai *dai;
 	enum sof_tokens *token_list;
 	int token_list_size;
 	int ret = 0;
+
+	scomponent = snd_sof_find_component(scomp);
+	if (!scomponent)
+		return -EINVAL;
 
 	swidget = kzalloc(sizeof(*swidget), GFP_KERNEL);
 	if (!swidget)
@@ -1302,7 +1311,7 @@ static int sof_widget_ready(struct snd_soc_component *scomp, int index,
 			kfree(dai);
 			break;
 		}
-		list_add(&dai->list, &sdev->dai_list);
+		list_add(&dai->list, &scomponent->dai_list);
 		swidget->private = dai;
 		break;
 	case snd_soc_dapm_effect:
@@ -1381,7 +1390,7 @@ static int sof_widget_ready(struct snd_soc_component *scomp, int index,
 	}
 
 	w->dobj.private = swidget;
-	list_add(&swidget->list, &sdev->widget_list);
+	list_add(&swidget->list, &scomponent->widget_list);
 	return ret;
 }
 
@@ -1492,6 +1501,7 @@ static int sof_dai_load(struct snd_soc_component *scomp, int index,
 	struct snd_sof_dev *sdev = snd_soc_component_get_drvdata(scomp);
 	struct snd_soc_tplg_stream_caps *caps;
 	struct snd_soc_tplg_private *private = &pcm->priv;
+	struct snd_sof_component *scomponent;
 	struct snd_sof_pcm *spcm;
 	int stream;
 	int ret;
@@ -1499,6 +1509,10 @@ static int sof_dai_load(struct snd_soc_component *scomp, int index,
 	/* nothing to do for BEs atm */
 	if (!pcm)
 		return 0;
+
+	scomponent = snd_sof_find_component(scomp);
+	if (!scomponent)
+		return -EINVAL;
 
 	spcm = kzalloc(sizeof(*spcm), GFP_KERNEL);
 	if (!spcm)
@@ -1518,7 +1532,7 @@ static int sof_dai_load(struct snd_soc_component *scomp, int index,
 	dev_dbg(scomp->dev, "tplg: load pcm %s\n", pcm->dai_name);
 
 	dai_drv->dobj.private = spcm;
-	list_add(&spcm->list, &sdev->pcm_list);
+	list_add(&spcm->list, &scomponent->pcm_list);
 
 	ret = sof_parse_tokens(scomp, spcm, stream_tokens,
 			       ARRAY_SIZE(stream_tokens), private->array,
@@ -1623,6 +1637,7 @@ static int sof_link_load(struct snd_soc_component *scomp, int index, struct snd_
 	const struct sof_ipc_tplg_ops *ipc_tplg_ops = sdev->ipc->ops->tplg;
 	const struct sof_token_info *token_list = ipc_tplg_ops->token_list;
 	struct snd_soc_tplg_private *private = &cfg->priv;
+	struct snd_sof_component *scomponent;
 	struct snd_sof_dai_link *slink;
 	u32 token_id = 0;
 	int num_tuples = 0;
@@ -1632,6 +1647,11 @@ static int sof_link_load(struct snd_soc_component *scomp, int index, struct snd_
 		dev_err(scomp->dev, "error: no platforms\n");
 		return -EINVAL;
 	}
+
+	scomponent = snd_sof_find_component(scomp);
+	if (!scomponent)
+		return -EINVAL;
+
 	link->platforms->name = dev_name(scomp->dev);
 
 	/*
@@ -1793,7 +1813,7 @@ static int sof_link_load(struct snd_soc_component *scomp, int index, struct snd_
 	}
 out:
 	link->dobj.private = slink;
-	list_add(&slink->list, &sdev->dai_link_list);
+	list_add(&slink->list, &scomponent->dai_link_list);
 
 	return 0;
 
@@ -1825,11 +1845,15 @@ static int sof_link_unload(struct snd_soc_component *scomp, struct snd_soc_dobj 
 static int sof_route_load(struct snd_soc_component *scomp, int index,
 			  struct snd_soc_dapm_route *route)
 {
-	struct snd_sof_dev *sdev = snd_soc_component_get_drvdata(scomp);
 	struct snd_sof_widget *source_swidget, *sink_swidget;
+	struct snd_sof_component *scomponent;
 	struct snd_soc_dobj *dobj = &route->dobj;
 	struct snd_sof_route *sroute;
 	int ret = 0;
+
+	scomponent = snd_sof_find_component(scomp);
+	if (!scomponent)
+		return -EINVAL;
 
 	/* allocate memory for sroute and connect */
 	sroute = kzalloc(sizeof(*sroute), GFP_KERNEL);
@@ -1883,7 +1907,7 @@ static int sof_route_load(struct snd_soc_component *scomp, int index,
 	sroute->sink_widget = sink_swidget;
 
 	/* add route to route list */
-	list_add(&sroute->list, &sdev->route_list);
+	list_add(&sroute->list, &scomponent->route_list);
 
 	return 0;
 err:
@@ -1893,7 +1917,7 @@ err:
 
 /**
  * sof_set_pipe_widget - Set pipe_widget for a component
- * @sdev: pointer to struct snd_sof_dev
+ * @scomp: pointer to struct snd_soc_component
  * @pipe_widget: pointer to struct snd_sof_widget of type snd_soc_dapm_scheduler
  * @swidget: pointer to struct snd_sof_widget that has the same pipeline ID as @pipe_widget
  *
@@ -1901,17 +1925,22 @@ err:
  * The function checks if @swidget is associated with any volatile controls. If so, setting
  * the dynamic_pipeline_widget is disallowed.
  */
-static int sof_set_pipe_widget(struct snd_sof_dev *sdev, struct snd_sof_widget *pipe_widget,
+static int sof_set_pipe_widget(struct snd_soc_component *scomp, struct snd_sof_widget *pipe_widget,
 			       struct snd_sof_widget *swidget)
 {
 	struct snd_sof_control *scontrol;
+	struct snd_sof_component *scomponent;
+
+	scomponent = snd_sof_find_component(scomp);
+	if (!scomponent)
+		return -EINVAL;
 
 	if (pipe_widget->dynamic_pipeline_widget) {
 		/* dynamic widgets cannot have volatile kcontrols */
-		list_for_each_entry(scontrol, &sdev->kcontrol_list, list)
+		list_for_each_entry(scontrol, &scomponent->kcontrol_list, list)
 			if (scontrol->comp_id == swidget->comp_id &&
 			    (scontrol->access & SNDRV_CTL_ELEM_ACCESS_VOLATILE)) {
-				dev_err(sdev->dev,
+				dev_err(scomp->dev,
 					"error: volatile control found for dynamic widget %s\n",
 					swidget->widget->name);
 				return -EINVAL;
@@ -1932,15 +1961,20 @@ static int sof_complete(struct snd_soc_component *scomp)
 	struct snd_sof_widget *swidget, *comp_swidget;
 	const struct sof_ipc_tplg_ops *ipc_tplg_ops = sdev->ipc->ops->tplg;
 	const struct sof_ipc_tplg_widget_ops *widget_ops = ipc_tplg_ops->widget;
+	struct snd_sof_component *scomponent;
 	struct snd_sof_control *scontrol;
 	int ret;
 
+	scomponent = snd_sof_find_component(scomp);
+	if (!scomponent)
+		return -EINVAL;
+
 	/* first update all control IPC structures based on the IPC version */
 	if (ipc_tplg_ops->control_setup)
-		list_for_each_entry(scontrol, &sdev->kcontrol_list, list) {
+		list_for_each_entry(scontrol, &scomponent->kcontrol_list, list) {
 			ret = ipc_tplg_ops->control_setup(sdev, scontrol);
 			if (ret < 0) {
-				dev_err(sdev->dev, "failed updating IPC struct for control %s\n",
+				dev_err(scomp->dev, "failed updating IPC struct for control %s\n",
 					scontrol->name);
 				return ret;
 			}
@@ -1951,11 +1985,11 @@ static int sof_complete(struct snd_soc_component *scomp)
 	 * topology will be removed and all widgets will be unloaded resulting in freeing all
 	 * associated memories.
 	 */
-	list_for_each_entry(swidget, &sdev->widget_list, list) {
+	list_for_each_entry(swidget, &scomponent->widget_list, list) {
 		if (widget_ops[swidget->id].ipc_setup) {
 			ret = widget_ops[swidget->id].ipc_setup(swidget);
 			if (ret < 0) {
-				dev_err(sdev->dev, "failed updating IPC struct for %s\n",
+				dev_err(scomp->dev, "failed updating IPC struct for %s\n",
 					swidget->widget->name);
 				return ret;
 			}
@@ -1963,16 +1997,16 @@ static int sof_complete(struct snd_soc_component *scomp)
 	}
 
 	/* set the pipe_widget and apply the dynamic_pipeline_widget_flag */
-	list_for_each_entry(swidget, &sdev->widget_list, list) {
+	list_for_each_entry(swidget, &scomponent->widget_list, list) {
 		switch (swidget->id) {
 		case snd_soc_dapm_scheduler:
 			/*
 			 * Apply the dynamic_pipeline_widget flag and set the pipe_widget field
 			 * for all widgets that have the same pipeline ID as the scheduler widget
 			 */
-			list_for_each_entry(comp_swidget, &sdev->widget_list, list)
+			list_for_each_entry(comp_swidget, &scomponent->widget_list, list)
 				if (comp_swidget->pipeline_id == swidget->pipeline_id) {
-					ret = sof_set_pipe_widget(sdev, swidget, comp_swidget);
+					ret = sof_set_pipe_widget(scomp, swidget, comp_swidget);
 					if (ret < 0)
 						return ret;
 				}

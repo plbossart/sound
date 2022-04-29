@@ -654,13 +654,12 @@ int sof_pcm_stream_free(struct snd_sof_dev *sdev, struct snd_pcm_substream *subs
  * Generic object lookup APIs.
  */
 
-struct snd_sof_pcm *snd_sof_find_spcm_name(struct snd_soc_component *scomp,
+struct snd_sof_pcm *snd_sof_find_spcm_name(struct snd_sof_component *scomp,
 					   const char *name)
 {
-	struct snd_sof_dev *sdev = snd_soc_component_get_drvdata(scomp);
 	struct snd_sof_pcm *spcm;
 
-	list_for_each_entry(spcm, &sdev->pcm_list, list) {
+	list_for_each_entry(spcm, &scomp->pcm_list, list) {
 		/* match with PCM dai name */
 		if (strcmp(spcm->pcm.dai_name, name) == 0)
 			return spcm;
@@ -679,15 +678,14 @@ struct snd_sof_pcm *snd_sof_find_spcm_name(struct snd_soc_component *scomp,
 	return NULL;
 }
 
-struct snd_sof_pcm *snd_sof_find_spcm_comp(struct snd_soc_component *scomp,
+struct snd_sof_pcm *snd_sof_find_spcm_comp(struct snd_sof_component *scomp,
 					   unsigned int comp_id,
 					   int *direction)
 {
-	struct snd_sof_dev *sdev = snd_soc_component_get_drvdata(scomp);
 	struct snd_sof_pcm *spcm;
 	int dir;
 
-	list_for_each_entry(spcm, &sdev->pcm_list, list) {
+	list_for_each_entry(spcm, &scomp->pcm_list, list) {
 		for_each_pcm_streams(dir) {
 			if (spcm->stream[dir].comp_id == comp_id) {
 				*direction = dir;
@@ -699,13 +697,12 @@ struct snd_sof_pcm *snd_sof_find_spcm_comp(struct snd_soc_component *scomp,
 	return NULL;
 }
 
-struct snd_sof_widget *snd_sof_find_swidget(struct snd_soc_component *scomp,
+struct snd_sof_widget *snd_sof_find_swidget(struct snd_sof_component *scomp,
 					    const char *name)
 {
-	struct snd_sof_dev *sdev = snd_soc_component_get_drvdata(scomp);
 	struct snd_sof_widget *swidget;
 
-	list_for_each_entry(swidget, &sdev->widget_list, list) {
+	list_for_each_entry(swidget, &scomp->widget_list, list) {
 		if (strcmp(name, swidget->widget->name) == 0)
 			return swidget;
 	}
@@ -715,10 +712,9 @@ struct snd_sof_widget *snd_sof_find_swidget(struct snd_soc_component *scomp,
 
 /* find widget by stream name and direction */
 struct snd_sof_widget *
-snd_sof_find_swidget_sname(struct snd_soc_component *scomp,
+snd_sof_find_swidget_sname(struct snd_sof_component *scomp,
 			   const char *pcm_name, int dir)
 {
-	struct snd_sof_dev *sdev = snd_soc_component_get_drvdata(scomp);
 	struct snd_sof_widget *swidget;
 	enum snd_soc_dapm_type type;
 
@@ -727,7 +723,7 @@ snd_sof_find_swidget_sname(struct snd_soc_component *scomp,
 	else
 		type = snd_soc_dapm_aif_out;
 
-	list_for_each_entry(swidget, &sdev->widget_list, list) {
+	list_for_each_entry(swidget, &scomp->widget_list, list) {
 		if (!strcmp(pcm_name, swidget->widget->sname) &&
 		    swidget->id == type)
 			return swidget;
@@ -736,13 +732,12 @@ snd_sof_find_swidget_sname(struct snd_soc_component *scomp,
 	return NULL;
 }
 
-struct snd_sof_dai *snd_sof_find_dai(struct snd_soc_component *scomp,
+struct snd_sof_dai *snd_sof_find_dai(struct snd_sof_component *scomp,
 				     const char *name)
 {
-	struct snd_sof_dev *sdev = snd_soc_component_get_drvdata(scomp);
 	struct snd_sof_dai *dai;
 
-	list_for_each_entry(dai, &sdev->dai_list, list) {
+	list_for_each_entry(dai, &scomp->dai_list, list) {
 		if (dai->name && (strcmp(name, dai->name) == 0))
 			return dai;
 	}

@@ -284,7 +284,7 @@ struct snd_sof_pcm {
 	struct snd_soc_component *scomp;
 	struct snd_soc_tplg_pcm pcm;
 	struct snd_sof_pcm_stream stream[2];
-	struct list_head list;	/* list in sdev pcm list */
+	struct list_head list;	/* list in scomponent pcm list */
 	struct snd_pcm_hw_params params[2];
 	bool prepared[2]; /* PCM_PARAMS set successfully */
 };
@@ -314,7 +314,7 @@ struct snd_sof_control {
 	u32 size;	/* cdata size */
 	u32 *volume_table; /* volume table computed from tlv data*/
 
-	struct list_head list;	/* list in sdev control list */
+	struct list_head list;	/* list in scomponent control list */
 
 	struct snd_sof_led_control led_ctl;
 
@@ -340,7 +340,7 @@ struct snd_sof_dai_link {
 	int num_hw_configs;
 	int default_hw_cfg_id;
 	int type;
-	struct list_head list;
+	struct list_head list; /* list in scomponent dailink list */
 };
 
 /* ASoC SOF DAPM widget */
@@ -378,7 +378,7 @@ struct snd_sof_widget {
 	bool dynamic_pipeline_widget;
 
 	struct snd_soc_dapm_widget *widget;
-	struct list_head list;	/* list in sdev widget list */
+	struct list_head list;	/* list in scomponent widget list */
 	struct snd_sof_widget *pipe_widget;
 	void *module_info;
 
@@ -395,7 +395,7 @@ struct snd_sof_route {
 	struct snd_soc_component *scomp;
 
 	struct snd_soc_dapm_route *route;
-	struct list_head list;	/* list in sdev route list */
+	struct list_head list;	/* list in scomponent route list */
 	struct snd_sof_widget *src_widget;
 	struct snd_sof_widget *sink_widget;
 	bool setup;
@@ -410,7 +410,7 @@ struct snd_sof_dai {
 
 	int number_configs;
 	int current_config;
-	struct list_head list;	/* list in sdev dai list */
+	struct list_head list;	/* list in scomponent dai list */
 	void *private;
 };
 
@@ -461,6 +461,20 @@ int snd_sof_ipc_stream_posn(struct snd_soc_component *scomp,
 			    struct snd_sof_pcm *spcm, int direction,
 			    struct sof_ipc_stream_posn *posn);
 
+static inline
+struct snd_sof_component *snd_sof_find_component(struct snd_soc_component *scomp)
+{
+	struct snd_sof_dev *sdev = snd_soc_component_get_drvdata(scomp);
+	struct snd_sof_component *scomponent;
+
+	list_for_each_entry(scomponent, &sdev->scomponent_list, list) {
+		if (scomponent->component == scomp)
+			return scomponent;
+	}
+
+	return NULL;
+}
+
 struct snd_sof_widget *snd_sof_find_swidget(struct snd_soc_component *scomp,
 					    const char *name);
 struct snd_sof_widget *
@@ -473,10 +487,14 @@ static inline
 struct snd_sof_pcm *snd_sof_find_spcm_dai(struct snd_soc_component *scomp,
 					  struct snd_soc_pcm_runtime *rtd)
 {
-	struct snd_sof_dev *sdev = snd_soc_component_get_drvdata(scomp);
+	struct snd_sof_component *scomponent;
 	struct snd_sof_pcm *spcm;
 
-	list_for_each_entry(spcm, &sdev->pcm_list, list) {
+	scomponent = snd_sof_find_component(scomp);
+	if (!scomponent)
+		return NULL;
+
+	list_for_each_entry(spcm, &scomponent->pcm_list, list) {
 		if (le32_to_cpu(spcm->pcm.dai_id) == rtd->dai_link->id)
 			return spcm;
 	}

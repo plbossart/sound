@@ -468,6 +468,20 @@ enum sof_dtrace_state {
 	SOF_DTRACE_ENABLED,
 };
 
+struct snd_sof_component {
+	/* topology */
+	struct snd_soc_tplg_ops *tplg_ops;
+	struct list_head pcm_list;
+	struct list_head kcontrol_list;
+	struct list_head widget_list;
+	struct list_head dai_list;
+	struct list_head dai_link_list;
+	struct list_head route_list;
+	struct snd_soc_component *component;
+
+	struct list_head list;	/* list in sdev scomponent list */
+};
+
 /*
  * SOF Device Level.
  */
@@ -529,15 +543,8 @@ struct snd_sof_dev {
 	struct sof_ipc_fw_version fw_version;
 	struct sof_ipc_cc_version *cc_version;
 
-	/* topology */
-	struct snd_soc_tplg_ops *tplg_ops;
-	struct list_head pcm_list;
-	struct list_head kcontrol_list;
-	struct list_head widget_list;
-	struct list_head dai_list;
-	struct list_head dai_link_list;
-	struct list_head route_list;
-	struct snd_soc_component *component;
+	struct list_head scomponent_list;
+
 	u32 enabled_cores_mask; /* keep track of enabled cores */
 	bool led_present;
 

@@ -600,33 +600,62 @@ static int sof_pcm_probe(struct snd_soc_component *component)
 {
 	struct snd_sof_dev *sdev = snd_soc_component_get_drvdata(component);
 	struct snd_sof_pdata *plat_data = sdev->pdata;
+	struct snd_sof_component *scomponent;
 	const char *tplg_filename;
 	int ret;
 
-	/* load the default topology */
-	sdev->component = component;
+	scomponent = kzalloc(sizeof(*scomponent), GFP_KERNEL);
+	if (!scomponent)
+		return -ENOMEM;
 
+	scomponent->component = component;
+	list_add(&scomponent->list, &sdev->scomponent_list);
+
+	INIT_LIST_HEAD(&scomponent->pcm_list);
+	INIT_LIST_HEAD(&scomponent->kcontrol_list);
+	INIT_LIST_HEAD(&scomponent->widget_list);
+	INIT_LIST_HEAD(&scomponent->dai_list);
+	INIT_LIST_HEAD(&scomponent->dai_link_list);
+	INIT_LIST_HEAD(&scomponent->route_list);
+
+	/* load the default topology */
 	tplg_filename = devm_kasprintf(sdev->dev, GFP_KERNEL,
 				       "%s/%s",
 				       plat_data->tplg_filename_prefix,
 				       plat_data->tplg_filename);
-	if (!tplg_filename)
-		return -ENOMEM;
+	if (!tplg_filename) {
+		ret = -ENOMEM;
+		goto err;
+	}
 
 	ret = snd_sof_load_topology(component, tplg_filename);
 	if (ret < 0) {
 		dev_err(component->dev, "error: failed to load DSP topology %d\n",
 			ret);
-		return ret;
+		goto err;
 	}
+
+	return 0;
+
+err:
+	list_del(&scomponent->list);
+	kfree(scomponent);
 
 	return ret;
 }
 
 static void sof_pcm_remove(struct snd_soc_component *component)
 {
+	struct snd_sof_component *scomponent;
+
 	/* remove topology */
 	snd_soc_tplg_component_remove(component);
+
+	scomponent = snd_sof_find_component(component);
+	if (!scomponent) {
+		list_del(&scomponent->list);
+		kfree(scomponent);
+	}
 }
 
 static int sof_pcm_ack(struct snd_soc_component *component,

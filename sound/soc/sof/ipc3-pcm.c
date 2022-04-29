@@ -177,18 +177,23 @@ static int sof_ipc3_pcm_trigger(struct snd_soc_component *component,
 	return sof_ipc_tx_message(sdev->ipc, &stream, sizeof(stream), &reply, sizeof(reply));
 }
 
-static void ssp_dai_config_pcm_params_match(struct snd_sof_dev *sdev, const char *link_name,
+static void ssp_dai_config_pcm_params_match(struct snd_soc_component *scomp, const char *link_name,
 					    struct snd_pcm_hw_params *params)
 {
+	struct snd_sof_component *scomponent;
 	struct sof_ipc_dai_config *config;
 	struct snd_sof_dai *dai;
 	int i;
+
+	scomponent = snd_sof_find_component(scomp);
+	if (!scomponent)
+		return;
 
 	/*
 	 * Search for all matching DAIs as we can have both playback and capture DAI
 	 * associated with the same link.
 	 */
-	list_for_each_entry(dai, &sdev->dai_list, list) {
+	list_for_each_entry(dai, &scomponent->dai_list, list) {
 		if (!dai->name || strcmp(link_name, dai->name))
 			continue;
 		for (i = 0; i < dai->number_configs; i++) {
@@ -196,7 +201,7 @@ static void ssp_dai_config_pcm_params_match(struct snd_sof_dev *sdev, const char
 
 			config = &private->dai_config[i];
 			if (config->ssp.fsync_rate == params_rate(params)) {
-				dev_dbg(sdev->dev, "DAI config %d matches pcm hw params\n", i);
+				dev_dbg(scomp->dev, "DAI config %d matches pcm hw params\n", i);
 				dai->current_config = i;
 				break;
 			}
@@ -251,7 +256,7 @@ static int sof_ipc3_pcm_dai_link_fixup(struct snd_soc_pcm_runtime *rtd,
 	switch (private->dai_config->type) {
 	case SOF_DAI_INTEL_SSP:
 		/* search for config to pcm params match, if not found use default */
-		ssp_dai_config_pcm_params_match(sdev, (char *)rtd->dai_link->name, params);
+		ssp_dai_config_pcm_params_match(component, (char *)rtd->dai_link->name, params);
 
 		rate->min = private->dai_config[dai->current_config].ssp.fsync_rate;
 		rate->max = private->dai_config[dai->current_config].ssp.fsync_rate;
