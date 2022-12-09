@@ -1547,6 +1547,9 @@ void dpcm_be_dai_stop(struct snd_soc_pcm_runtime *fe, int stream,
 		if (dpcm == last)
 			return;
 
+		if (!be_substream)
+			continue;
+
 		/* is this op for this BE ? */
 		if (!snd_soc_dpcm_be_can_update(fe, be, stream))
 			continue;
@@ -1983,6 +1986,9 @@ int dpcm_be_dai_hw_params(struct snd_soc_pcm_runtime *fe, int stream)
 		be = dpcm->be;
 		be_substream = snd_soc_dpcm_get_substream(be, stream);
 
+		if (!be_substream)
+			continue;
+
 		/* is this op for this BE ? */
 		if (!snd_soc_dpcm_be_can_update(fe, be, stream))
 			continue;
@@ -2028,6 +2034,9 @@ unwind:
 	for_each_dpcm_be_rollback(fe, stream, dpcm) {
 		be = dpcm->be;
 		be_substream = snd_soc_dpcm_get_substream(be, stream);
+
+		if (!be_substream)
+			continue;
 
 		if (!snd_soc_dpcm_be_can_update(fe, be, stream))
 			continue;
