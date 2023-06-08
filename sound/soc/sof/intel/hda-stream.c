@@ -663,16 +663,13 @@ int hda_dsp_stream_hw_params(struct snd_sof_dev *sdev,
 				SOF_HDA_CL_DMA_SD_INT_MASK);
 
 	/* read FIFO size */
-	if (hstream->direction == SNDRV_PCM_STREAM_PLAYBACK) {
-		hstream->fifo_size =
-			snd_sof_dsp_read(sdev, HDA_DSP_HDA_BAR,
-					 sd_offset +
-					 SOF_HDA_ADSP_REG_SD_FIFOSIZE);
-		hstream->fifo_size &= 0xffff;
-		hstream->fifo_size += 1;
-	} else {
-		hstream->fifo_size = 0;
-	}
+	hstream->fifo_size = snd_sof_dsp_read(sdev, HDA_DSP_HDA_BAR,
+					      sd_offset + SOF_HDA_ADSP_REG_SD_FIFOSIZE);
+	hstream->fifo_size &= 0xffff;
+	hstream->fifo_size += 1;
+
+	dev_dbg(sdev->dev, "stream %d effective FIFO size %d\n",
+		hstream->stream_tag, hstream->fifo_size);
 
 	return ret;
 }
