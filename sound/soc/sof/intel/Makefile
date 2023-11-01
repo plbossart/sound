@@ -12,6 +12,8 @@ snd-sof-intel-hda-generic-y := hda.o hda-common-ops.o
 
 snd-sof-intel-hda-mlink-y := hda-mlink.o
 
+snd-sof-intel-hda-sdw-bpt-y := hda-sdw-bpt.o
+
 snd-sof-intel-hda-common-$(CONFIG_SND_SOC_SOF_HDA_PROBES) += hda-probes.o
 
 snd-sof-intel-hda-y := hda-codec.o
@@ -35,6 +37,8 @@ snd-sof-pci-intel-tgl-y := pci-tgl.o tgl.o
 snd-sof-pci-intel-mtl-y := pci-mtl.o mtl.o
 snd-sof-pci-intel-lnl-y := pci-lnl.o lnl.o
 snd-sof-pci-intel-ptl-y := pci-ptl.o
+
+obj-$(CONFIG_SND_SOF_SOF_HDA_SDW_BPT) += snd-sof-intel-hda-sdw-bpt.o
 
 obj-$(CONFIG_SND_SOC_SOF_MERRIFIELD) += snd-sof-pci-intel-tng.o
 obj-$(CONFIG_SND_SOC_SOF_INTEL_SKL) += snd-sof-pci-intel-skl.o
