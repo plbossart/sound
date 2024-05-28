@@ -16,6 +16,12 @@
 
 #define SDW_CADENCE_MCP_IP_OFFSET	0x4000
 
+enum pdi_type {
+	SDW_CDNS_PDI_IN,
+	SDW_CDNS_PDI_OUT,
+	SDW_CDNS_PDI_BD
+};
+
 /**
  * struct sdw_cdns_pdi: PDI (Physical Data Interface) instance
  *
@@ -26,6 +32,7 @@
  * @ch_count: total channel count for PDI
  * @dir: data direction
  * @type: stream type, (only PCM supported)
+ * @pdi_type: input, output, bd
  */
 struct sdw_cdns_pdi {
 	int num;
@@ -35,6 +42,7 @@ struct sdw_cdns_pdi {
 	int ch_count;
 	enum sdw_data_direction dir;
 	enum sdw_stream_type type;
+	enum pdi_type pdi_type;
 };
 
 /**
@@ -48,8 +56,11 @@ struct sdw_cdns_pdi {
  * @num_ch_bd: number of output stream channels
  * @num_pdi: total number of PDIs
  * @bd: bidirectional streams
+ * @ida_bd: IDA for bidirectional streams
  * @in: input streams
+ * @ida_in: IDA for input streams
  * @out: output streams
+ * @ida_out: IDA for output streams
  */
 struct sdw_cdns_streams {
 	unsigned int num_bd;
@@ -60,8 +71,11 @@ struct sdw_cdns_streams {
 	unsigned int num_ch_out;
 	unsigned int num_pdi;
 	struct sdw_cdns_pdi *bd;
+	struct ida ida_bd;
 	struct sdw_cdns_pdi *in;
+	struct ida ida_in;
 	struct sdw_cdns_pdi *out;
+	struct ida ida_out;
 };
 
 /**
@@ -179,7 +193,12 @@ void sdw_cdns_debugfs_init(struct sdw_cdns *cdns, struct dentry *root);
 
 struct sdw_cdns_pdi *sdw_cdns_alloc_pdi(struct sdw_cdns *cdns,
 					struct sdw_cdns_streams *stream,
-					u32 ch, u32 dir, int dai_id);
+					u32 ch, u32 dir);
+
+void sdw_cdns_free_pdi(struct sdw_cdns *cdns,
+		       struct sdw_cdns_streams *stream,
+		       struct sdw_cdns_pdi *pdi);
+
 void sdw_cdns_config_stream(struct sdw_cdns *cdns,
 			    u32 ch, u32 dir, struct sdw_cdns_pdi *pdi);
 

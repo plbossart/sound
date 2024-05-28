@@ -1236,7 +1236,8 @@ EXPORT_SYMBOL(sdw_cdns_enable_interrupt);
 
 static int cdns_allocate_pdi(struct sdw_cdns *cdns,
 			     struct sdw_cdns_pdi **stream,
-			     u32 num)
+			     u32 num,
+			     enum pdi_type pdi_type)
 {
 	struct sdw_cdns_pdi *pdi;
 	int i;
@@ -1250,6 +1251,7 @@ static int cdns_allocate_pdi(struct sdw_cdns *cdns,
 
 	for (i = 0; i < num; i++) {
 		pdi[i].num = i;
+		pdi[i].pdi_type = pdi_type;
 	}
 
 	*stream = pdi;
@@ -1276,17 +1278,21 @@ int sdw_cdns_pdi_init(struct sdw_cdns *cdns,
 	stream = &cdns->pcm;
 
 	/* we allocate PDI0 and PDI1 which are used for Bulk */
-	ret = cdns_allocate_pdi(cdns, &stream->bd, stream->num_bd);
+	ret = cdns_allocate_pdi(cdns, &stream->bd, stream->num_bd, SDW_CDNS_PDI_BD);
 	if (ret)
 		return ret;
 
-	ret = cdns_allocate_pdi(cdns, &stream->in, stream->num_in);
+	ret = cdns_allocate_pdi(cdns, &stream->in, stream->num_in, SDW_CDNS_PDI_IN);
 	if (ret)
 		return ret;
 
-	ret = cdns_allocate_pdi(cdns, &stream->out, stream->num_out);
+	ret = cdns_allocate_pdi(cdns, &stream->out, stream->num_out, SDW_CDNS_PDI_OUT);
 	if (ret)
 		return ret;
+
+	ida_init(&stream->ida_bd);
+	ida_init(&stream->ida_in);
+	ida_init(&stream->ida_out);
 
 	/* Update total number of PCM PDIs */
 	stream->num_pdi = stream->num_bd + stream->num_in + stream->num_out;
@@ -1798,7 +1804,8 @@ EXPORT_SYMBOL(cdns_set_sdw_stream);
  * cdns_find_pdi() - Find a free PDI
  *
  * @cdns: Cadence instance
- * @num: Number of PDIs
+ * @min: min PDI index
+ * @max: max PDI index
  * @pdi: PDI instances
  * @dai_id: DAI id
  *
@@ -1806,17 +1813,18 @@ EXPORT_SYMBOL(cdns_set_sdw_stream);
  * expected to match, return NULL otherwise.
  */
 static struct sdw_cdns_pdi *cdns_find_pdi(struct sdw_cdns *cdns,
-					  unsigned int num,
+					  unsigned int min,
+					  unsigned int max,
 					  struct sdw_cdns_pdi *pdi,
-					  int dai_id)
+					  struct ida *ida)
 {
-	int i;
+	int id;
 
-	for (i = 0; i < num; i++)
-		if (pdi[i].num == dai_id)
-			return &pdi[i];
+	id = ida_alloc_range(ida, min, max, GFP_KERNEL);
+	if (id < 0)
+		return NULL;
 
-	return NULL;
+	return &pdi[id];
 }
 
 /**
@@ -1857,25 +1865,29 @@ EXPORT_SYMBOL(sdw_cdns_config_stream);
  * @stream: Stream to be allocated
  * @ch: Channel count
  * @dir: Data direction
- * @dai_id: DAI id
  */
 struct sdw_cdns_pdi *sdw_cdns_alloc_pdi(struct sdw_cdns *cdns,
 					struct sdw_cdns_streams *stream,
-					u32 ch, u32 dir, int dai_id)
+					u32 ch, u32 dir)
 {
 	struct sdw_cdns_pdi *pdi = NULL;
 
-	if (dir == SDW_DATA_DIR_RX)
-		pdi = cdns_find_pdi(cdns, stream->num_in, stream->in,
-				    dai_id);
-	else
-		pdi = cdns_find_pdi(cdns, stream->num_out, stream->out,
-				    dai_id);
+	if (dir == SDW_DATA_DIR_RX) {
+		if (stream->num_in)
+			pdi = cdns_find_pdi(cdns, 0, stream->num_in - 1,
+					    stream->in, &stream->ida_in);
+	} else {
+		if (stream->num_out)
+			pdi = cdns_find_pdi(cdns, 0, stream->num_out - 1,
+					    stream->out, &stream->ida_out);
+	}
 
 	/* check if we found a PDI, else find in bi-directional */
-	if (!pdi)
-		pdi = cdns_find_pdi(cdns, stream->num_bd, stream->bd,
-				    dai_id);
+	if (!pdi) {
+		if (stream->num_bd > 2)
+			pdi = cdns_find_pdi(cdns, 2, stream->num_bd - 1,
+					    stream->bd, &stream->ida_bd);
+	}
 
 	if (pdi) {
 		pdi->l_ch_num = 0;
@@ -1887,6 +1899,19 @@ struct sdw_cdns_pdi *sdw_cdns_alloc_pdi(struct sdw_cdns *cdns,
 	return pdi;
 }
 EXPORT_SYMBOL(sdw_cdns_alloc_pdi);
+
+void sdw_cdns_free_pdi(struct sdw_cdns *cdns,
+		       struct sdw_cdns_streams *stream,
+		       struct sdw_cdns_pdi *pdi)
+{
+	if (pdi->pdi_type == SDW_CDNS_PDI_IN)
+		ida_free(&stream->ida_in, pdi->num);
+	else if (pdi->pdi_type == SDW_CDNS_PDI_OUT)
+		ida_free(&stream->ida_out, pdi->num);
+	else
+		ida_free(&stream->ida_bd, pdi->num);
+}
+EXPORT_SYMBOL(sdw_cdns_free_pdi);
 
 MODULE_LICENSE("Dual BSD/GPL");
 MODULE_DESCRIPTION("Cadence Soundwire Library");

@@ -741,7 +741,7 @@ static int intel_hw_params(struct snd_pcm_substream *substream,
 	else
 		dir = SDW_DATA_DIR_TX;
 
-	pdi = sdw_cdns_alloc_pdi(cdns, &cdns->pcm, ch, dir, dai->id);
+	pdi = sdw_cdns_alloc_pdi(cdns, &cdns->pcm, ch, dir);
 
 	if (!pdi) {
 		ret = -EINVAL;
@@ -876,6 +876,7 @@ intel_hw_free(struct snd_pcm_substream *substream, struct snd_soc_dai *dai)
 		return ret;
 	}
 
+	sdw_cdns_free_pdi(cdns, &cdns->pcm, dai_runtime->pdi);
 	dai_runtime->pdi = NULL;
 
 	return 0;
