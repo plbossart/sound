@@ -143,8 +143,10 @@ int sdw_bus_master_add(struct sdw_bus *bus, struct device *parent,
 	/*
 	 * Initialize clock values based on Master properties. The max
 	 * frequency is read from max_clk_freq property. Current assumption
-	 * is that the bus will start at highest clock frequency when
-	 * powered on.
+	 * is that the bus will start at the default clock frequency when
+	 * powered on. This is aligned with the SoundWire 1.2 recommendation:
+	 * PHY registers need to be programmed at a 'safe' bus clock before
+	 * increasing the bus clock.
 	 *
 	 * Default active bank will be 0 as out of reset the Slaves have
 	 * to start with bank 0 (Table 40 of Spec)
@@ -152,6 +154,26 @@ int sdw_bus_master_add(struct sdw_bus *bus, struct device *parent,
 	prop = &bus->prop;
 	bus->params.max_dr_freq = prop->max_clk_freq * SDW_DOUBLE_RATE_FACTOR;
 	bus->params.curr_dr_freq = bus->params.max_dr_freq;
+
+	if (prop->num_clk_freq > 1) {
+		long default_bus_frequency;
+		long default_bit_rate;
+		int i;
+
+		default_bit_rate =
+			prop->default_frame_rate *
+			prop->default_row *
+			prop->default_col;
+		default_bus_frequency = default_bit_rate / SDW_DOUBLE_RATE_FACTOR;
+
+		for (i = 0; i < prop->num_clk_freq; i++) {
+			if (prop->clk_freq[i] == default_bus_frequency) {
+				dev_dbg(bus->dev, "Multiple bus frequencies supported, starting bus at %ld Hz\n", default_bus_frequency);
+				bus->params.curr_dr_freq = default_bit_rate;
+				break;
+			}
+		}
+	}
 	bus->params.curr_bank = SDW_BANK0;
 	bus->params.next_bank = SDW_BANK1;
 
