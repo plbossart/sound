@@ -103,19 +103,11 @@ int intel_start_bus_after_reset(struct sdw_intel *sdw)
 		 */
 		sdw_cdns_init(&sdw->cdns);
 
-	} else {
-		ret = sdw_cdns_enable_interrupt(cdns, true);
-		if (ret < 0) {
-			dev_err(dev, "cannot enable interrupts during resume\n");
-			return ret;
-		}
 	}
 
 	ret = sdw_cdns_clock_restart(cdns, !clock_stop0);
 	if (ret < 0) {
 		dev_err(dev, "unable to restart clock during resume\n");
-		if (!clock_stop0)
-			sdw_cdns_enable_interrupt(cdns, false);
 		return ret;
 	}
 
@@ -141,15 +133,14 @@ int intel_start_bus_after_reset(struct sdw_intel *sdw)
 			dev_err(dev, "unable to exit bus reset sequence during resume\n");
 			return ret;
 		}
-
-		ret = sdw_cdns_enable_interrupt(cdns, true);
-		if (ret < 0) {
-			dev_err(dev, "cannot enable interrupts during resume\n");
-			return ret;
-		}
-
 	}
 	sdw_cdns_check_self_clearing_bits(cdns, __func__, true, INTEL_MASTER_RESET_ITERATIONS);
+
+	ret = sdw_cdns_enable_interrupt(cdns, true);
+	if (ret < 0) {
+		dev_err(dev, "cannot enable interrupts during resume\n");
+		return ret;
+	}
 
 	return 0;
 }
