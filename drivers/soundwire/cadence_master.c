@@ -812,9 +812,23 @@ cdns_xfer_msg_defer(struct sdw_bus *bus)
 }
 EXPORT_SYMBOL(cdns_xfer_msg_defer);
 
+static void cdns_log_interrupt_registers(struct sdw_cdns *cdns)
+{
+	dev_dbg(cdns->dev, "MCP_INTSTAT %#x\n", cdns_readl(cdns, CDNS_MCP_INTSTAT));
+	dev_dbg(cdns->dev, "MCP_INTMASK %#x\n", cdns_readl(cdns, CDNS_MCP_INTMASK));
+	dev_dbg(cdns->dev, "MCP_INTSET %#x\n", cdns_readl(cdns, CDNS_MCP_INTSET));
+	dev_dbg(cdns->dev, "MCP_SLAVE_STATE %#x\n", cdns_readl(cdns, CDNS_MCP_SLAVE_STAT));
+	dev_dbg(cdns->dev, "MCP_SLAVE_INTSTAT0 %#x\n", cdns_readl(cdns, CDNS_MCP_SLAVE_INTSTAT0));
+	dev_dbg(cdns->dev, "MCP_SLAVE_INTSTAT1 %#x\n", cdns_readl(cdns, CDNS_MCP_SLAVE_INTSTAT1));
+	dev_dbg(cdns->dev, "MCP_SLAVE_INTMASK0 %#x\n", cdns_readl(cdns, CDNS_MCP_SLAVE_INTMASK0));
+	dev_dbg(cdns->dev, "MCP_SLAVE_INTMASK1 %#x\n", cdns_readl(cdns, CDNS_MCP_SLAVE_INTMASK1));
+}
+
 u32 cdns_read_ping_status(struct sdw_bus *bus)
 {
 	struct sdw_cdns *cdns = bus_to_cdns(bus);
+
+	cdns_log_interrupt_registers(cdns);
 
 	return cdns_readl(cdns, CDNS_MCP_SLAVE_STAT);
 }
@@ -997,6 +1011,8 @@ static void cdns_check_attached_status_dwork(struct work_struct *work)
 	u32 val;
 	int ret;
 	int i;
+
+	cdns_log_interrupt_registers(cdns);
 
 	/*
 	 * Mask the Slave interrupt while we try to update the status.
