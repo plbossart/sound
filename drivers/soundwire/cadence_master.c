@@ -830,6 +830,9 @@ static void cdns_log_interrupt_registers(struct sdw_cdns *cdns)
 	dev_dbg(cdns->dev, "MCP_SLAVE_INTMASK1 %#x\n", cdns_readl(cdns, CDNS_MCP_SLAVE_INTMASK1));
 
 	hdac_bus_log_registers(sdw->link_res->hbus);
+
+	dev_dbg(cdns->dev, "plb: interrupt enabled: %d\n", cdns->interrupt_enabled);
+	dev_dbg(cdns->dev, "plb: first interrupt reached: %d\n", cdns->first_interrupt_reached);
 }
 
 u32 cdns_read_ping_status(struct sdw_bus *bus)
@@ -941,6 +944,11 @@ irqreturn_t sdw_cdns_irq(int irq, void *dev_id)
 
 	if (!(int_status & CDNS_MCP_INT_IRQ))
 		return IRQ_NONE;
+
+	if (cdns->first_interrupt_reached == false) {
+		dev_dbg(cdns->dev, "plb: first interrupt received\n");
+		cdns->first_interrupt_reached = true;
+	}
 
 	if (int_status & CDNS_MCP_INT_RX_WL) {
 		struct sdw_bus *bus = &cdns->bus;
@@ -1280,8 +1288,12 @@ update_masks:
 	 * we use the 'interrupt_enabled' status to prevent new work
 	 * from being queued.
 	 */
-	if (!state)
+	if (!state) {
 		cancel_work_sync(&cdns->work);
+	} else {
+		dev_dbg(cdns->dev, "plb: interrupts enabled\n");
+		cdns->first_interrupt_reached = false;
+	}
 
 	cdns_writel(cdns, CDNS_MCP_SLAVE_INTMASK0, slave_intmask0);
 	cdns_writel(cdns, CDNS_MCP_SLAVE_INTMASK1, slave_intmask1);
