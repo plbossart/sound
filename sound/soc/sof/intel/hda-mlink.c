@@ -987,6 +987,26 @@ int hdac_bus_eml_enable_offload(struct hdac_bus *bus, bool alt, int elid, bool e
 }
 EXPORT_SYMBOL_NS(hdac_bus_eml_enable_offload, SND_SOC_SOF_HDA_MLINK);
 
+void hdac_bus_log_registers(struct hdac_bus *bus)
+{
+	struct hdac_ext2_link *h2link;
+	struct hdac_ext_link *hlink;
+	u32 val;
+
+	h2link = find_ext2_link(bus, true, AZX_REG_ML_LEPTR_ID_SDW);
+	if (!h2link)
+		return;
+
+	if (!h2link->ofls)
+		return;
+
+	hlink = &h2link->hext_link;
+
+	val = readl(hlink->ml_addr + AZX_REG_ML_LCTL);
+	dev_dbg(bus->dev, "HDA-ML LCTL %#x\n", val);
+}
+EXPORT_SYMBOL_NS(hdac_bus_log_registers, SND_SOC_SOF_HDA_MLINK);
+
 #endif
 
 MODULE_LICENSE("Dual BSD/GPL");

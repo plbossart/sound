@@ -6,6 +6,7 @@
  * Used by Master driver
  */
 
+#include <linux/acpi.h>
 #include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/debugfs.h>
@@ -21,6 +22,9 @@
 #include <linux/workqueue.h>
 #include "bus.h"
 #include "cadence_master.h"
+#include <linux/soundwire/sdw_intel.h>
+#include "intel.h"
+#include <sound/hda-mlink.h>
 
 static int interrupt_mask;
 module_param_named(cnds_mcp_int_mask, interrupt_mask, int, 0444);
@@ -814,6 +818,8 @@ EXPORT_SYMBOL(cdns_xfer_msg_defer);
 
 static void cdns_log_interrupt_registers(struct sdw_cdns *cdns)
 {
+	struct sdw_intel *sdw = cdns_to_intel(cdns);
+
 	dev_dbg(cdns->dev, "MCP_INTSTAT %#x\n", cdns_readl(cdns, CDNS_MCP_INTSTAT));
 	dev_dbg(cdns->dev, "MCP_INTMASK %#x\n", cdns_readl(cdns, CDNS_MCP_INTMASK));
 	dev_dbg(cdns->dev, "MCP_INTSET %#x\n", cdns_readl(cdns, CDNS_MCP_INTSET));
@@ -822,6 +828,8 @@ static void cdns_log_interrupt_registers(struct sdw_cdns *cdns)
 	dev_dbg(cdns->dev, "MCP_SLAVE_INTSTAT1 %#x\n", cdns_readl(cdns, CDNS_MCP_SLAVE_INTSTAT1));
 	dev_dbg(cdns->dev, "MCP_SLAVE_INTMASK0 %#x\n", cdns_readl(cdns, CDNS_MCP_SLAVE_INTMASK0));
 	dev_dbg(cdns->dev, "MCP_SLAVE_INTMASK1 %#x\n", cdns_readl(cdns, CDNS_MCP_SLAVE_INTMASK1));
+
+	hdac_bus_log_registers(sdw->link_res->hbus);
 }
 
 u32 cdns_read_ping_status(struct sdw_bus *bus)
@@ -1941,3 +1949,4 @@ EXPORT_SYMBOL(sdw_cdns_alloc_pdi);
 
 MODULE_LICENSE("Dual BSD/GPL");
 MODULE_DESCRIPTION("Cadence Soundwire Library");
+MODULE_IMPORT_NS(SND_SOC_SOF_HDA_MLINK);

@@ -61,6 +61,7 @@ struct hdac_ext_link *hdac_bus_eml_sdw_get_hlink(struct hdac_bus *bus);
 struct mutex *hdac_bus_eml_get_mutex(struct hdac_bus *bus, bool alt, int elid);
 
 int hdac_bus_eml_enable_offload(struct hdac_bus *bus, bool alt, int elid, bool enable);
+void hdac_bus_log_registers(struct hdac_bus *bus);
 
 #else
 
@@ -185,4 +186,7 @@ hdac_bus_eml_enable_offload(struct hdac_bus *bus, bool alt, int elid, bool enabl
 {
 	return 0;
 }
+
+static inline void hdac_bus_log_registers(struct hdac_bus *bus) {}
+
 #endif /* CONFIG_SND_SOC_SOF_HDA_MLINK */
