@@ -9,6 +9,72 @@
 #include <linux/types.h>
 #include "internal.h"
 
+struct regmap_async_sdw {
+	struct regmap_async core;
+	struct sdw_bpt_msg bpt_msg;
+};
+
+static void regmap_async_raw_write_complete(void *data)
+{
+	struct sdw_bpt_msg *bpt_msg = data;
+	struct regmap_async_sdw *async = container_of(bpt_msg,
+						      struct regmap_async_sdw,
+						      bpt_msg);
+
+	regmap_async_complete_cb(&async->core, bpt_msg->status);
+}
+
+static struct regmap_async *regmap_async_raw_write_alloc(void)
+{
+	struct regmap_async_sdw *async_sdw;
+
+	async_sdw = kzalloc(sizeof(*async_sdw), GFP_KERNEL);
+	if (!async_sdw)
+		return NULL;
+
+	async_sdw->bpt_msg.complete = regmap_async_raw_write_complete;
+
+	return &async_sdw->core;
+}
+
+static int regmap_async_raw_write_lock(void *context, unsigned int reg, size_t val_len)
+{
+	struct device *dev = context;
+	struct sdw_slave *slave = dev_to_sdw_dev(dev);
+
+	return sdw_async_raw_write_lock(slave, reg, val_len);
+}
+
+static int regmap_async_raw_write_unlock(void *context)
+{
+	struct device *dev = context;
+	struct sdw_slave *slave = dev_to_sdw_dev(dev);
+
+	return sdw_async_raw_write_unlock(slave);
+}
+
+static int regmap_async_raw_write(void *context,
+				  const void *reg, size_t reg_len,
+				  const void *val, size_t val_len,
+				  struct regmap_async *a)
+{
+	struct device *dev = context;
+	struct sdw_slave *slave = dev_to_sdw_dev(dev);
+	struct regmap_async_sdw *async = container_of(a,
+						      struct regmap_async_sdw,
+						      core);
+	
+	if (val_len > SDW_BPT_MSG_MAX_BYTES)
+               return -EINVAL;
+
+       /* check device is enumerated */
+       if (slave->dev_num == SDW_ENUM_DEV_NUM ||
+           slave->dev_num > SDW_MAX_DEVICES)
+               return -ENODEV;
+	
+       return sdw_async_raw_write(slave, &async->bpt_msg, reg, reg_len, val, val_len);
+}
+
 static int regmap_sdw_write(void *context, const void *val_buf, size_t val_size)
 {
 	struct device *dev = context;
@@ -43,6 +109,10 @@ static int regmap_sdw_read(void *context,
 }
 
 static const struct regmap_bus regmap_sdw = {
+	.async_alloc = regmap_async_raw_write_alloc,
+	.async_raw_write_lock =  regmap_async_raw_write_lock,
+	.async_raw_write_unlock =  regmap_async_raw_write_unlock,
+	.async_write = regmap_async_raw_write,
 	.write = regmap_sdw_write,
 	.gather_write = regmap_sdw_gather_write,
 	.read = regmap_sdw_read,
