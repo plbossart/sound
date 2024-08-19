@@ -276,6 +276,34 @@ static void intel_put_device_num_ida(struct sdw_bus *bus, struct sdw_slave *slav
 		ida_free(&intel_peripheral_ida, slave->dev_num);
 }
 
+static int generic_async_raw_write_lock(struct sdw_bus *bus, struct sdw_slave *slave,
+					unsigned int reg, size_t len)
+{
+	struct sdw_cdns *cdns = bus_to_cdns(bus);
+	struct sdw_intel *sdw = cdns_to_intel(cdns);
+
+	return sdw->link_res->hw_ops->async_raw_write_lock(sdw, slave, reg, len);
+}
+
+static int generic_async_raw_write_unlock(struct sdw_bus *bus, struct sdw_slave *slave)
+{
+	struct sdw_cdns *cdns = bus_to_cdns(bus);
+	struct sdw_intel *sdw = cdns_to_intel(cdns);
+
+	return sdw->link_res->hw_ops->async_raw_write_unlock(sdw, slave);
+}
+
+static int generic_async_raw_write(struct sdw_bus *bus, struct sdw_slave *slave,
+				   struct sdw_bpt_msg *bpt_msg,
+				   const void *reg, size_t reg_len,
+				   const void *val, size_t val_len)
+{
+	struct sdw_cdns *cdns = bus_to_cdns(bus);
+	struct sdw_intel *sdw = cdns_to_intel(cdns);
+
+	return sdw->link_res->hw_ops->async_raw_write(sdw, slave, bpt_msg, reg, reg_len, val, val_len);
+}
+
 static struct sdw_master_ops sdw_intel_ops = {
 	.read_prop = intel_prop_read,
 	.override_adr = sdw_dmi_override_adr,
@@ -288,6 +316,9 @@ static struct sdw_master_ops sdw_intel_ops = {
 	.get_device_num =  intel_get_device_num_ida,
 	.put_device_num = intel_put_device_num_ida,
 	.new_peripheral_assigned = generic_new_peripheral_assigned,
+	.async_raw_write_lock = generic_async_raw_write_lock,
+	.async_raw_write_unlock = generic_async_raw_write_unlock,
+	.async_raw_write = generic_async_raw_write,
 };
 
 /*

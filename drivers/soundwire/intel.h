@@ -231,6 +231,38 @@ static inline int sdw_intel_get_link_count(struct sdw_intel *sdw)
 	return 4; /* default on older generations */
 }
 
+static inline int sdw_intel_async_raw_write_lock(struct sdw_intel *sdw,
+						 struct sdw_slave *slave,
+						 unsigned int reg, size_t len)
+{
+	if (SDW_INTEL_CHECK_OPS(sdw, async_raw_write_lock))
+		return SDW_INTEL_OPS(sdw, async_raw_write_lock)(sdw, slave, reg, len);
+	return -ENOTSUPP;
+}
+
+static inline int sdw_intel_async_raw_write_unlock(struct sdw_intel *sdw,
+						   struct sdw_slave *slave)
+{
+	if (SDW_INTEL_CHECK_OPS(sdw, async_raw_write_unlock))
+		return SDW_INTEL_OPS(sdw, async_raw_write_unlock)(sdw, slave);
+	return -ENOTSUPP;
+}
+
+static inline int sdw_intel_async_raw_write(struct sdw_intel *sdw,
+					    struct sdw_slave *slave,
+					    struct sdw_bpt_msg *bpt_msg,
+					    const void *reg, size_t reg_len,
+					    const void *val, size_t val_len)
+{
+	if (SDW_INTEL_CHECK_OPS(sdw, async_raw_write))
+		return SDW_INTEL_OPS(sdw, async_raw_write)(sdw, slave,
+							   bpt_msg,
+							   reg, reg_len,
+							   val, val_len);
+	return -ENOTSUPP;
+}
+
+
 /* common bus management */
 int intel_start_bus(struct sdw_intel *sdw);
 int intel_start_bus_after_reset(struct sdw_intel *sdw);

@@ -438,6 +438,17 @@ struct sdw_intel_hw_ops {
 	bool (*sync_check_cmdsync_unlocked)(struct sdw_intel *sdw);
 
 	void (*program_sdi)(struct sdw_intel *sdw, int dev_num);
+
+	int (*async_raw_write_lock)(struct sdw_intel *sdw,
+				    struct sdw_slave *slave,
+				    unsigned int reg, size_t len);
+	int (*async_raw_write_unlock)(struct sdw_intel *sdw,
+				      struct sdw_slave *slave);
+	int (*async_raw_write)(struct sdw_intel *sdw,
+			       struct sdw_slave *slave,
+			       struct sdw_bpt_msg *bpt_msg,
+			       const void *reg, size_t reg_len,
+			       const void *val, size_t val_len);
 };
 
 extern const struct sdw_intel_hw_ops sdw_intel_cnl_hw_ops;
