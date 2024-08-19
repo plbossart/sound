@@ -1693,6 +1693,16 @@ static int _regmap_raw_write_impl(struct regmap *map, unsigned int reg,
 	if (map->async && map->bus && map->bus->async_write) {
 		struct regmap_async *async;
 
+		if (map->bus->async_raw_write_lock) {
+			ret = map->bus->async_raw_write_lock(map->bus_context,
+							     reg, val_len);
+			if (ret < 0) {
+				dev_dbg(map->dev, "Async raw writes not available, using regular writes\n");
+				map->async = false;
+				goto hw_write_start;
+			}
+		}
+
 		trace_regmap_async_write_start(map, reg, val_len);
 
 		spin_lock_irqsave(&map->async_lock, flags);
@@ -1705,12 +1715,16 @@ static int _regmap_raw_write_impl(struct regmap *map, unsigned int reg,
 
 		if (!async) {
 			async = map->bus->async_alloc();
-			if (!async)
+			if (!async) {
+				if (map->bus->async_raw_write_unlock)
+					map->bus->async_raw_write_unlock(map->bus_context);
 				return -ENOMEM;
-
+			}
 			async->work_buf = kzalloc(map->format.buf_size,
 						  GFP_KERNEL | GFP_DMA);
 			if (!async->work_buf) {
+				if (map->bus->async_raw_write_unlock)
+					map->bus->async_raw_write_unlock(map->bus_context);
 				kfree(async);
 				return -ENOMEM;
 			}
@@ -1748,9 +1762,12 @@ static int _regmap_raw_write_impl(struct regmap *map, unsigned int reg,
 			spin_unlock_irqrestore(&map->async_lock, flags);
 		}
 
+		if (map->bus->async_raw_write_unlock)
+			map->bus->async_raw_write_unlock(map->bus_context);
 		return ret;
 	}
 
+hw_write_start:
 	trace_regmap_hw_write_start(map, reg, val_len / map->format.val_bytes);
 
 	/* If we're doing a single register write we can probably just

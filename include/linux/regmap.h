@@ -506,6 +506,9 @@ typedef int (*regmap_hw_write)(void *context, const void *data,
 typedef int (*regmap_hw_gather_write)(void *context,
 				      const void *reg, size_t reg_len,
 				      const void *val, size_t val_len);
+typedef int (*regmap_hw_async_raw_write_lock)(void *context,
+					      unsigned int reg, size_t reg_len);
+typedef int (*regmap_hw_async_raw_write_unlock)(void *context);
 typedef int (*regmap_hw_async_write)(void *context,
 				     const void *reg, size_t reg_len,
 				     const void *val, size_t val_len,
@@ -538,6 +541,9 @@ typedef void (*regmap_hw_free_context)(void *context);
  * @write: Write operation.
  * @gather_write: Write operation with split register/value, return -ENOTSUPP
  *                if not implemented  on a given device.
+ * @async_raw_write_lock: Check if @async_write can be performed for given
+ * register and payload, and take bus-specific lock
+ * @async_raw_write_unlock: release bus-specific lock taken by @async_raw_write_lock
  * @async_write: Write operation which completes asynchronously, optional and
  *               must serialise with respect to non-async I/O.
  * @reg_write: Write a single register value to the given register address. This
@@ -569,6 +575,8 @@ struct regmap_bus {
 	bool free_on_exit;
 	regmap_hw_write write;
 	regmap_hw_gather_write gather_write;
+	regmap_hw_async_raw_write_lock async_raw_write_lock;
+	regmap_hw_async_raw_write_unlock async_raw_write_unlock;
 	regmap_hw_async_write async_write;
 	regmap_hw_reg_write reg_write;
 	regmap_hw_reg_noinc_write reg_noinc_write;
