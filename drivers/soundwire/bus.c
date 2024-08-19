@@ -688,6 +688,42 @@ int sdw_write(struct sdw_slave *slave, u32 addr, u8 value)
 }
 EXPORT_SYMBOL(sdw_write);
 
+int sdw_async_raw_write_lock(struct sdw_slave *slave, unsigned int reg, size_t val_len)
+{
+	struct sdw_bus *bus = slave->bus;
+
+	if (bus->ops->async_raw_write_lock)
+		bus->ops->async_raw_write_lock(bus, slave, reg, val_len);
+	return -ENOTSUPP;
+}
+EXPORT_SYMBOL(sdw_async_raw_write_lock);
+
+int sdw_async_raw_write_unlock(struct sdw_slave *slave)
+{
+	struct sdw_bus *bus = slave->bus;
+
+	if (bus->ops->async_raw_write_unlock)
+		bus->ops->async_raw_write_unlock(bus, slave);
+	return -ENOTSUPP;
+}
+EXPORT_SYMBOL(sdw_async_raw_write_unlock);
+
+int sdw_async_raw_write(struct sdw_slave *slave,
+			struct sdw_bpt_msg *bpt_msg,
+			const void *reg, size_t reg_len,
+			const void *val, size_t val_len)
+{
+	struct sdw_bus *bus = slave->bus;
+
+	if (bus->ops->async_raw_write)
+		return bus->ops->async_raw_write(bus, slave,
+						 bpt_msg,
+						 reg, reg_len,
+						 val, val_len);
+	return -ENOTSUPP;
+}
+EXPORT_SYMBOL(sdw_async_raw_write);
+
 /*
  * SDW alert handling
  */

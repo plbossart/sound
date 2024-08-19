@@ -833,6 +833,37 @@ struct sdw_defer {
 	struct sdw_msg *msg;
 };
 
+/*
+ * Add a practical limit to BPT transfer sizes. BPT is typically used
+ * to transfer firmware, and larger firmware transfers will increase
+ * the cold latency beyond typical OS or user requirements.
+ */
+#define SDW_BPT_MSG_MAX_BYTES  (1024 * 1024)
+
+/**
+ * struct sdw_btp_msg - Message structure
+ * @addr: Start Register address accessed in the Slave
+ * @len: number of bytes to transfer. More than 64Kb can be transferred
+ * but a practical limit of SDW_BPT_MSG_MAX_BYTES is enforced.
+ * @dev_num: Slave device number
+ * @flags: transfer flags, indicate if xfer is read or write
+ * @buf: message data buffer (filled by host for write, filled
+ * by Peripheral hardware for reads)
+ * @status: 0 on success, error code otherwise
+ * @complete: callback invoked on transfer completion or timeout. The @status
+ * value must be checked upon notification.
+ */
+struct sdw_bpt_msg {
+	u32 addr;
+	u32 len;
+	u8 dev_num;
+	u8 flags;
+	u8 *buf;
+	int status;
+	void (*complete)(void *context);
+};
+
+
 /**
  * struct sdw_master_ops - Master driver ops
  * @read_prop: Read Master properties
@@ -848,6 +879,9 @@ struct sdw_defer {
  * @get_device_num: Callback for vendor-specific device_number allocation
  * @put_device_num: Callback for vendor-specific device_number release
  * @new_peripheral_assigned: Callback to handle enumeration of new peripheral.
+ * @async_raw_write_lock: Callback to reserve resources for async raw writes.
+ * @async_raw_write_unlock: Callback to free resources allocated by @async_raw_write_lock.
+ * @async_raw_write: Callback to schedule aysnc write.
  */
 struct sdw_master_ops {
 	int (*read_prop)(struct sdw_bus *bus);
@@ -867,6 +901,12 @@ struct sdw_master_ops {
 	void (*new_peripheral_assigned)(struct sdw_bus *bus,
 					struct sdw_slave *slave,
 					int dev_num);
+	int (*async_raw_write_lock)(struct sdw_bus *bus, struct sdw_slave *slave, unsigned int reg, size_t val_len);
+	int (*async_raw_write_unlock)(struct sdw_bus *bus, struct sdw_slave *slave);
+	int (*async_raw_write)(struct sdw_bus *bus, struct sdw_slave *slave,
+			       struct sdw_bpt_msg *bpt_msg,
+			       const void *reg, size_t reg_len,
+			       const void *val, size_t val_len);	
 };
 
 /**
@@ -904,6 +944,8 @@ struct sdw_master_ops {
  * synchronization will be used even if a stream only uses a single
  * SoundWire segment.
  * @stream_refcount: number of streams currently using this bus
+ * @btp_stream_refcount: number of BTP streams currently using this bus (should
+ * be zero or one, multiple streams per link is not supported).
  */
 struct sdw_bus {
 	struct device *dev;
@@ -935,6 +977,7 @@ struct sdw_bus {
 	bool multi_link;
 	int hw_sync_min_links;
 	int stream_refcount;
+	int bpt_stream_refcount;
 };
 
 int sdw_bus_master_add(struct sdw_bus *bus, struct device *parent,
@@ -1074,6 +1117,13 @@ int sdw_nwrite_no_pm(struct sdw_slave *slave, u32 addr, size_t count, const u8 *
 int sdw_update(struct sdw_slave *slave, u32 addr, u8 mask, u8 val);
 int sdw_update_no_pm(struct sdw_slave *slave, u32 addr, u8 mask, u8 val);
 
+int sdw_async_raw_write_lock(struct sdw_slave *slave, unsigned reg, size_t val_len);
+int sdw_async_raw_write_unlock(struct sdw_slave *slave);
+int sdw_async_raw_write(struct sdw_slave *slave,
+			struct sdw_bpt_msg *bpt_msg,
+			const void *reg, size_t reg_len,
+			const void *val, size_t val_len);
+
 #else
 
 static inline int sdw_stream_add_slave(struct sdw_slave *slave,
@@ -1153,6 +1203,28 @@ static inline int sdw_update_no_pm(struct sdw_slave *slave, u32 addr, u8 mask, u
 	WARN_ONCE(1, "SoundWire API is disabled");
 	return -EINVAL;
 }
+
+static inline int sdw_async_raw_write_lock(struct sdw_slave *slave, unsigned reg, size_t val_len)
+{
+	WARN_ONCE(1, "SoundWire API is disabled");
+	return -EINVAL;
+}
+	
+static inline int sdw_async_raw_write_unlock(struct sdw_slave *slave)
+{
+	WARN_ONCE(1, "SoundWire API is disabled");
+	return -EINVAL;
+}
+
+static inline int sdw_async_raw_write(struct sdw_slave *slave,
+				      struct sdw_bpt_msg *bpt_msg,
+				      const void *reg, size_t reg_len,
+				      const void *val, size_t val_len)
+{
+	WARN_ONCE(1, "SoundWire API is disabled");
+	return -EINVAL;
+}
+
 
 #endif /* CONFIG_SOUNDWIRE */
 
